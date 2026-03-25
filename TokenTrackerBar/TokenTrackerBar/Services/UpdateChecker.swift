@@ -7,6 +7,7 @@ final class UpdateChecker {
     static let shared = UpdateChecker()
 
     private let repo = "mm7894215/tokentracker"
+    private let releaseURL: String = "https://github.com/mm7894215/tokentracker/releases/latest"
 
     /// Observable status for menu item display
     private(set) var statusText: String? = nil
@@ -28,7 +29,7 @@ final class UpdateChecker {
         Task.detached { [self] in
             let result: Result<GitHubRelease, Error>
             do {
-                result = .success(try self.fetchLatestRelease())
+                result = .success(try await self.fetchLatestRelease())
             } catch {
                 result = .failure(error)
             }
@@ -39,7 +40,7 @@ final class UpdateChecker {
         }
     }
 
-    // MARK: - GitHub API
+    // MARK: - GitHub API (URLSession — respects system proxy)
 
     private struct GitHubRelease: Decodable {
         let tag_name: String
@@ -63,18 +64,17 @@ final class UpdateChecker {
         }
     }
 
-    nonisolated private func fetchLatestRelease() throws -> GitHubRelease {
+    nonisolated private func fetchLatestRelease() async throws -> GitHubRelease {
         let urlString = "https://api.github.com/repos/\(repo)/releases/latest"
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        process.arguments = ["-s", "--max-time", "15", "-H", "Accept: application/vnd.github+json", urlString]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { throw UpdateError.curlFailed(Int(process.terminationStatus)) }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let url = URL(string: urlString) else { throw UpdateError.emptyResponse }
+
+        var request = URLRequest(url: url, timeoutInterval: 15)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw UpdateError.curlFailed((response as? HTTPURLResponse)?.statusCode ?? -1)
+        }
         guard !data.isEmpty else { throw UpdateError.emptyResponse }
         return try JSONDecoder().decode(GitHubRelease.self, from: data)
     }
@@ -96,7 +96,12 @@ final class UpdateChecker {
         case .failure(let error):
             finishUpdate()
             if !silent {
-                showAlert(title: "Update Check Failed", message: error.localizedDescription, style: .warning)
+                showAlert(
+                    title: "Update Check Failed",
+                    message: "\(error.localizedDescription)\n\nYou can also check manually:",
+                    style: .warning,
+                    showReleasePage: true
+                )
             }
         }
     }
@@ -165,7 +170,7 @@ final class UpdateChecker {
         return lines.joined()
     }
 
-    // MARK: - Download + Install
+    // MARK: - Download + Install (URLSession for proxy support)
 
     private func startDownloadAndInstall(_ asset: GitHubRelease.Asset) {
         isBusy = true
@@ -194,7 +199,7 @@ final class UpdateChecker {
         Task.detached { [self] in
             let result: Result<URL, Error>
             do {
-                result = .success(try self.downloadViaCurl(from: asset.browser_download_url, fileName: asset.name))
+                result = .success(try await self.downloadViaURLSession(from: asset.browser_download_url, fileName: asset.name))
             } catch {
                 result = .failure(error)
             }
@@ -209,29 +214,39 @@ final class UpdateChecker {
                     self.performInstallAsync(dmgURL)
                 case .failure(let error):
                     self.finishUpdate()
-                    self.showAlert(title: "Download Failed", message: error.localizedDescription, style: .warning)
+                    self.showAlert(
+                        title: "Download Failed",
+                        message: "\(error.localizedDescription)\n\nYou can download manually from the Releases page.",
+                        style: .warning,
+                        showReleasePage: true
+                    )
                 }
             }
         }
     }
 
-    nonisolated private func downloadViaCurl(from urlString: String, fileName: String) throws -> URL {
+    nonisolated private func downloadViaURLSession(from urlString: String, fileName: String) async throws -> URL {
+        guard let url = URL(string: urlString) else { throw UpdateError.downloadFailed }
+
         let downloadsDir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         let destURL = downloadsDir.appendingPathComponent(fileName)
+
         if FileManager.default.fileExists(atPath: destURL.path) {
             try FileManager.default.removeItem(at: destURL)
         }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        process.arguments = ["-L", "-s", "--max-time", "300", "-o", destURL.path, urlString]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0, FileManager.default.fileExists(atPath: destURL.path) else {
+
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForResource = 300
+        let session = URLSession(configuration: config)
+
+        let (tempURL, response) = try await session.download(from: url)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw UpdateError.downloadFailed
         }
+
+        try FileManager.default.moveItem(at: tempURL, to: destURL)
         return destURL
     }
 
@@ -332,17 +347,28 @@ final class UpdateChecker {
 
     // MARK: - Helpers
 
-    private func showAlert(title: String, message: String, style: NSAlert.Style) {
+    private func showAlert(title: String, message: String, style: NSAlert.Style, showReleasePage: Bool = false) {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = style
         alert.icon = appIcon
-        alert.addButton(withTitle: "OK")
+        if showReleasePage {
+            alert.addButton(withTitle: "Open Releases Page")
+            alert.addButton(withTitle: "OK")
+        } else {
+            alert.addButton(withTitle: "OK")
+        }
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        let response = alert.runModal()
         NSApp.setActivationPolicy(.accessory)
+
+        if showReleasePage && response == .alertFirstButtonReturn {
+            if let url = URL(string: releaseURL) {
+                NSWorkspace.shared.open(url)
+            }
+        }
     }
 
     private enum UpdateError: LocalizedError {
@@ -354,9 +380,9 @@ final class UpdateChecker {
 
         var errorDescription: String? {
             switch self {
-            case .curlFailed(let code): return "Network request failed (curl exit \(code)). Please check your connection."
+            case .curlFailed(let code): return "Network request failed (HTTP \(code)). Check your connection or proxy settings."
             case .emptyResponse: return "Server returned an empty response."
-            case .downloadFailed: return "File download failed. Please try again."
+            case .downloadFailed: return "File download failed. This may be a network issue."
             case .installFailed(let reason): return "Installation failed: \(reason)"
             case .noRelease: return "No release available."
             }

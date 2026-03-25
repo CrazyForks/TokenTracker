@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 @MainActor
@@ -9,6 +10,8 @@ final class StatusBarController: NSObject {
     private let viewModel: DashboardViewModel
     private let serverManager: ServerManager
     private let launchAtLoginManager: LaunchAtLoginManager
+    private var animator: MenuBarAnimator?
+    private var cancellables = Set<AnyCancellable>()
 
     // MARK: - Init
 
@@ -22,6 +25,7 @@ final class StatusBarController: NSObject {
 
         setupStatusItem()
         setupPopover()
+        observeSyncState()
     }
 
     // MARK: - Status Item
@@ -36,6 +40,17 @@ final class StatusBarController: NSObject {
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         button.action = #selector(handleClick(_:))
         button.target = self
+
+        animator = MenuBarAnimator(button: button)
+    }
+
+    private func observeSyncState() {
+        viewModel.$isSyncing
+            .receive(on: RunLoop.main)
+            .sink { [weak self] syncing in
+                self?.animator?.setState(syncing ? .syncing : .idle)
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: - Popover
@@ -129,6 +144,12 @@ final class StatusBarController: NSObject {
 
         menu.addItem(.separator())
 
+        // Animated Icon (toggle)
+        let animItem = NSMenuItem(title: "Animated Icon", action: #selector(toggleAnimation), keyEquivalent: "")
+        animItem.target = self
+        animItem.state = (animator?.isEnabled ?? true) ? .on : .off
+        menu.addItem(animItem)
+
         // Launch at Login (toggle)
         let loginItem = NSMenuItem(title: Strings.menuLaunchAtLogin, action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         loginItem.target = self
@@ -176,6 +197,10 @@ final class StatusBarController: NSObject {
         if let url = URL(string: "https://github.com/mm7894215/tokentracker") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    @objc private func toggleAnimation() {
+        animator?.isEnabled.toggle()
     }
 
     @objc private func toggleLaunchAtLogin() {

@@ -6,8 +6,8 @@ struct DashboardView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HeaderView(viewModel: viewModel)
-            Divider()
+            // Clawd companion replaces the old header + Today card
+            ClawdCompanionView(viewModel: viewModel)
 
             switch serverManager.status {
             case .idle, .starting:
@@ -18,7 +18,7 @@ struct DashboardView: View {
                 } else if viewModel.isLoading && viewModel.summary == nil {
                     loadingView
                 } else {
-                    ScrollView(.vertical, showsIndicators: true) {
+                    ScrollView(.vertical, showsIndicators: false) {
                         LazyVStack(spacing: 12) {
                             SummaryCardsView(
                                 todayTokens: viewModel.todayTokens,
@@ -39,7 +39,7 @@ struct DashboardView: View {
                             TopModelsView(models: viewModel.topModels)
                         }
                         .padding(.horizontal, 20)
-                        .padding(.top, 12)
+                        .padding(.top, 4)
                         .padding(.bottom, 12)
                     }
                 }

@@ -6,8 +6,19 @@ final class LaunchAtLoginManager: ObservableObject {
 
     @Published var isEnabled: Bool = false
 
+    private static let didAutoEnableKey = "LaunchAtLoginAutoEnabled"
+
     init() {
         isEnabled = SMAppService.mainApp.status == .enabled
+
+        // Auto-enable on first launch
+        if !UserDefaults.standard.bool(forKey: Self.didAutoEnableKey) {
+            UserDefaults.standard.set(true, forKey: Self.didAutoEnableKey)
+            if !isEnabled {
+                try? SMAppService.mainApp.register()
+                isEnabled = SMAppService.mainApp.status == .enabled
+            }
+        }
     }
 
     func toggle() {
