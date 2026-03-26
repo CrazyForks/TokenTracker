@@ -7,9 +7,7 @@ struct FooterView: View {
     var body: some View {
         HStack(spacing: 12) {
             Button {
-                if let url = URL(string: Constants.serverBaseURL) {
-                    NSWorkspace.shared.open(url)
-                }
+                DashboardBrowserOpener.openDashboard()
             } label: {
                 HStack(spacing: 3) {
                     Image(systemName: "macwindow")

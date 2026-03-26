@@ -348,6 +348,7 @@ function getModelPricing(model) {
   if (lower.includes("gemini-2.5")) return MODEL_PRICING["gemini-2.5-pro"];
   if (lower.includes("kimi")) return MODEL_PRICING["kimi-k2.5"];
   if (lower.includes("composer")) return MODEL_PRICING["composer-1"];
+  if (lower.includes("kiro")) return MODEL_PRICING["claude-sonnet-4-6"];
   return ZERO_PRICING;
 }
 

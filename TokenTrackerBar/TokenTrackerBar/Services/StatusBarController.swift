@@ -329,9 +329,7 @@ final class StatusBarController: NSObject {
     }
 
     @objc private func openDashboard() {
-        if let url = URL(string: Constants.serverBaseURL + "?from=menubar") {
-            NSWorkspace.shared.open(url)
-        }
+        DashboardBrowserOpener.openDashboard(from: "menubar")
     }
 
     @objc private func checkForUpdates() {

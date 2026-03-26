@@ -12,6 +12,7 @@ const {
   listOpencodeMessageFiles,
   readOpencodeDbMessages,
   resolveKiroDbPath,
+  resolveKiroJsonlPath,
   parseRolloutIncremental,
   parseClaudeIncremental,
   parseGeminiIncremental,
@@ -302,15 +303,17 @@ async function cmdSync(argv) {
       }
     }
 
-    // ── Kiro (SQLite-based) ──
+    // ── Kiro (SQLite-based, with JSONL fallback) ──
     let kiroResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
     const kiroDbPath = resolveKiroDbPath();
-    if (fssync.existsSync(kiroDbPath)) {
+    const kiroJsonlPath = resolveKiroJsonlPath();
+    if (fssync.existsSync(kiroDbPath) || fssync.existsSync(kiroJsonlPath)) {
       if (progress?.enabled) {
         progress.start(`Parsing Kiro ${renderBar(0)} | buckets 0`);
       }
       kiroResult = await parseKiroIncremental({
         dbPath: kiroDbPath,
+        jsonlPath: kiroJsonlPath,
         cursors,
         queuePath,
         onProgress: (p) => {

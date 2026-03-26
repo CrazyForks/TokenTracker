@@ -9,6 +9,7 @@ const {
   parseClaudeIncremental,
   parseGeminiIncremental,
   parseOpencodeIncremental,
+  parseKiroIncremental,
 } = require("../src/lib/rollout");
 
 test("parseRolloutIncremental skips duplicate token_count records (unchanged total_token_usage)", async () => {
@@ -2085,6 +2086,104 @@ function buildOpencodeMessage({ modelID, model, modelId, created, completed, tok
       : undefined,
   };
 }
+
+test("parseKiroIncremental tracks JSONL fallback with a separate cursor", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "vibescore-kiro-"));
+  try {
+    const jsonlPath = path.join(tmp, "tokens_generated.jsonl");
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1, files: {}, updatedAt: null };
+
+    await fs.writeFile(
+      jsonlPath,
+      [
+        JSON.stringify({ model: "agent", provider: "kiro", promptTokens: 10, generatedTokens: 5 }),
+        JSON.stringify({ model: "agent", provider: "kiro", promptTokens: 4, generatedTokens: 1 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    const first = await parseKiroIncremental({ jsonlPath, cursors, queuePath });
+    assert.equal(first.recordsProcessed, 2);
+    assert.equal(first.eventsAggregated, 2);
+    assert.equal(first.bucketsQueued, 1);
+    assert.equal(cursors.kiro.lastDbId, 0);
+    assert.equal(cursors.kiro.jsonl.lastLine, 2);
+
+    const afterFirst = await readJsonLines(queuePath);
+    assert.equal(afterFirst.length, 1);
+    assert.equal(afterFirst[0].source, "kiro");
+    assert.equal(afterFirst[0].total_tokens, 20);
+
+    await fs.appendFile(
+      jsonlPath,
+      JSON.stringify({ model: "agent", provider: "kiro", promptTokens: 3, generatedTokens: 2 }) + "\n",
+      "utf8",
+    );
+
+    const second = await parseKiroIncremental({ jsonlPath, cursors, queuePath });
+    assert.equal(second.recordsProcessed, 1);
+    assert.equal(second.eventsAggregated, 1);
+    assert.equal(cursors.kiro.jsonl.lastLine, 3);
+
+    const afterSecond = await readJsonLines(queuePath);
+    assert.equal(afterSecond.length, 2);
+    assert.equal(afterSecond[1].total_tokens, 25);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("parseKiroIncremental ignores JSONL fallback after file truncation until new baseline is established", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "vibescore-kiro-"));
+  try {
+    const jsonlPath = path.join(tmp, "tokens_generated.jsonl");
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1, files: {}, updatedAt: null };
+
+    await fs.writeFile(
+      jsonlPath,
+      [
+        JSON.stringify({ model: "agent", provider: "kiro", promptTokens: 8, generatedTokens: 2 }),
+        JSON.stringify({ model: "agent", provider: "kiro", promptTokens: 1, generatedTokens: 1 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    await parseKiroIncremental({ jsonlPath, cursors, queuePath });
+
+    await fs.writeFile(
+      jsonlPath,
+      JSON.stringify({ model: "agent", provider: "kiro", promptTokens: 99, generatedTokens: 99 }) + "\n",
+      "utf8",
+    );
+
+    const truncated = await parseKiroIncremental({ jsonlPath, cursors, queuePath });
+    assert.equal(truncated.recordsProcessed, 0);
+    assert.equal(truncated.eventsAggregated, 0);
+    assert.equal(cursors.kiro.jsonl.lastLine, 1);
+
+    const queued = await readJsonLines(queuePath);
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].total_tokens, 12);
+
+    await fs.appendFile(
+      jsonlPath,
+      JSON.stringify({ model: "agent", provider: "kiro", promptTokens: 5, generatedTokens: 5 }) + "\n",
+      "utf8",
+    );
+
+    const resumed = await parseKiroIncremental({ jsonlPath, cursors, queuePath });
+    assert.equal(resumed.recordsProcessed, 1);
+    assert.equal(resumed.eventsAggregated, 1);
+
+    const afterResume = await readJsonLines(queuePath);
+    assert.equal(afterResume.length, 2);
+    assert.equal(afterResume[1].total_tokens, 22);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
 
 async function readJsonLines(filePath) {
   const text = await fs.readFile(filePath, "utf8").catch(() => "");

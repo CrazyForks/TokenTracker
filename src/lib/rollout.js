@@ -2604,7 +2604,7 @@ async function parseCursorApiIncremental({
 }
 
 // ---------------------------------------------------------------------------
-// Kiro token tracking (reads from devdata.sqlite)
+// Kiro token tracking (reads from devdata.sqlite or tokens_generated.jsonl)
 // ---------------------------------------------------------------------------
 
 function resolveKiroBasePath() {
@@ -2622,6 +2622,10 @@ function resolveKiroBasePath() {
 
 function resolveKiroDbPath() {
   return path.join(resolveKiroBasePath(), "dev_data", "devdata.sqlite");
+}
+
+function resolveKiroJsonlPath() {
+  return path.join(resolveKiroBasePath(), "dev_data", "tokens_generated.jsonl");
 }
 
 function readKiroDbTokens(dbPath, sinceId) {
@@ -2646,6 +2650,53 @@ function readKiroDbTokens(dbPath, sinceId) {
     return [];
   }
   return Array.isArray(rows) ? rows : [];
+}
+
+// Read Kiro token data from JSONL fallback (tokens_generated.jsonl).
+// Each line: {"model":"agent","provider":"kiro","promptTokens":N,"generatedTokens":N}
+// The fallback file does not include per-row timestamps, so newly appended rows are
+// bucketed using the file mtime observed during this sync. We track a separate JSONL
+// cursor so it never shares state with the SQLite path.
+function readKiroJsonlTokens(jsonlPath, sinceLineIndex) {
+  if (!jsonlPath || !fssync.existsSync(jsonlPath)) {
+    return { rows: [], lineCount: 0, reset: false };
+  }
+  const startLine = Number.isFinite(sinceLineIndex) && sinceLineIndex > 0 ? sinceLineIndex : 0;
+  let raw;
+  try {
+    raw = fssync.readFileSync(jsonlPath, "utf8");
+  } catch (_e) {
+    return { rows: [], lineCount: 0, reset: false };
+  }
+  const lines = raw.split("\n").filter((l) => l.trim());
+  const lineCount = lines.length;
+  if (startLine > lineCount) {
+    return { rows: [], lineCount, reset: true };
+  }
+  let mtime;
+  try {
+    mtime = fssync.statSync(jsonlPath).mtime.toISOString();
+  } catch (_e) {
+    mtime = new Date().toISOString();
+  }
+  const timestamp = mtime.replace("T", " ").replace("Z", "").slice(0, 19);
+  const rows = [];
+  for (let i = startLine; i < lines.length; i++) {
+    try {
+      const obj = JSON.parse(lines[i]);
+      rows.push({
+        id: i + 1,
+        model: obj.model || "agent",
+        provider: obj.provider || "kiro",
+        tokens_prompt: obj.promptTokens || 0,
+        tokens_generated: obj.generatedTokens || 0,
+        timestamp,
+      });
+    } catch (_e) {
+      // skip malformed lines
+    }
+  }
+  return { rows, lineCount, reset: false };
 }
 
 // Build a sorted timeline of model usage from Kiro .chat metadata files
@@ -2730,14 +2781,49 @@ function normalizeKiroModelName(raw) {
   return name || null;
 }
 
-async function parseKiroIncremental({ dbPath, cursors, queuePath, onProgress }) {
+async function parseKiroIncremental({ dbPath, jsonlPath, cursors, queuePath, onProgress }) {
   await ensureDir(path.dirname(queuePath));
   const kiroState = cursors.kiro && typeof cursors.kiro === "object" ? cursors.kiro : {};
-  const lastId = typeof kiroState.lastId === "number" ? kiroState.lastId : 0;
+  const lastDbId = typeof kiroState.lastDbId === "number"
+    ? kiroState.lastDbId
+    : (typeof kiroState.lastId === "number" ? kiroState.lastId : 0);
+  const jsonlState = kiroState.jsonl && typeof kiroState.jsonl === "object" ? kiroState.jsonl : {};
+  const lastJsonlLine = typeof jsonlState.lastLine === "number" ? jsonlState.lastLine : 0;
 
   const resolvedDbPath = dbPath || resolveKiroDbPath();
-  const rows = readKiroDbTokens(resolvedDbPath, lastId);
+  const resolvedJsonlPath = jsonlPath || resolveKiroJsonlPath();
+
+  // Try SQLite first, fall back to JSONL.
+  let rows = [];
+  let nextDbId = lastDbId;
+  let nextJsonlLine = lastJsonlLine;
+  let usingDb = false;
+  if (fssync.existsSync(resolvedDbPath)) {
+    rows = readKiroDbTokens(resolvedDbPath, lastDbId);
+    usingDb = true;
+  } else if (fssync.existsSync(resolvedJsonlPath)) {
+    const jsonlResult = readKiroJsonlTokens(resolvedJsonlPath, lastJsonlLine);
+    rows = jsonlResult.rows;
+    nextJsonlLine = jsonlResult.lineCount;
+    if (jsonlResult.reset) {
+      cursors.kiro = {
+        ...kiroState,
+        lastDbId,
+        jsonl: { lastLine: jsonlResult.lineCount, updatedAt: new Date().toISOString() },
+        updatedAt: new Date().toISOString(),
+      };
+      return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+    }
+  } else {
+    return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+  }
   if (rows.length === 0) {
+    cursors.kiro = {
+      ...kiroState,
+      lastDbId,
+      jsonl: { lastLine: nextJsonlLine, updatedAt: new Date().toISOString() },
+      updatedAt: new Date().toISOString(),
+    };
     return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
   }
 
@@ -2749,7 +2835,7 @@ async function parseKiroIncremental({ dbPath, cursors, queuePath, onProgress }) 
   const touchedBuckets = new Set();
   const cb = typeof onProgress === "function" ? onProgress : null;
   let eventsAggregated = 0;
-  let maxId = lastId;
+  let maxId = lastDbId;
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
@@ -2780,7 +2866,7 @@ async function parseKiroIncremental({ dbPath, cursors, queuePath, onProgress }) 
     touchedBuckets.add(bucketKey("kiro", model, bucketStart));
     eventsAggregated++;
 
-    if (row.id && row.id > maxId) maxId = row.id;
+    if (usingDb && row.id && row.id > maxId) maxId = row.id;
 
     if (cb) {
       cb({
@@ -2794,9 +2880,16 @@ async function parseKiroIncremental({ dbPath, cursors, queuePath, onProgress }) 
   }
 
   const bucketsQueued = await enqueueTouchedBuckets({ queuePath, hourlyState, touchedBuckets });
-  hourlyState.updatedAt = new Date().toISOString();
+  const updatedAt = new Date().toISOString();
+  hourlyState.updatedAt = updatedAt;
   cursors.hourly = hourlyState;
-  cursors.kiro = { lastId: maxId, updatedAt: new Date().toISOString() };
+  cursors.kiro = {
+    ...kiroState,
+    lastId: maxId,
+    lastDbId: maxId,
+    jsonl: { lastLine: nextJsonlLine, updatedAt },
+    updatedAt,
+  };
 
   return { recordsProcessed: rows.length, eventsAggregated, bucketsQueued };
 }
@@ -2808,6 +2901,7 @@ module.exports = {
   listOpencodeMessageFiles,
   readOpencodeDbMessages,
   resolveKiroDbPath,
+  resolveKiroJsonlPath,
   parseRolloutIncremental,
   parseClaudeIncremental,
   parseGeminiIncremental,
