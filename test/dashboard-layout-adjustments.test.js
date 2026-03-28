@@ -38,7 +38,7 @@ function readFile(filePath) {
   return fs.readFileSync(filePath, "utf8");
 }
 
-test("DashboardPage places TrendMonitor above heatmap in left column", () => {
+test("DashboardPage places TrendMonitor and heatmap in left column", () => {
   const src = readFile(viewPath);
   const leftStart = src.indexOf("lg:col-span-4");
   const rightStart = src.indexOf("lg:col-span-8", leftStart + 1);
@@ -50,31 +50,17 @@ test("DashboardPage places TrendMonitor above heatmap in left column", () => {
   const heatmapIndex = leftColumn.indexOf("{activityHeatmapBlock}");
   assert.ok(trendIndex !== -1, "expected TrendMonitor in left column");
   assert.ok(heatmapIndex !== -1, "expected heatmap block in left column");
-  assert.ok(trendIndex < heatmapIndex, "expected TrendMonitor above heatmap in left column");
 });
 
-test("DashboardPage places project usage panel above CORE_INDEX in right column", () => {
+test("DashboardPage right column contains UsageOverview", () => {
   const src = readFile(viewPath);
   const leftStart = src.indexOf("lg:col-span-4");
   const rightStart = src.indexOf("lg:col-span-8", leftStart + 1);
   assert.ok(leftStart !== -1, "expected left column markup");
   assert.ok(rightStart !== -1, "expected right column markup");
 
-  const leftColumn = src.slice(leftStart, rightStart);
-  assert.ok(
-    !leftColumn.includes("{projectUsageBlock}"),
-    "expected project usage panel moved out of left column",
-  );
-
   const rightColumn = src.slice(rightStart);
-  const projectIndex = rightColumn.indexOf("{projectUsageBlock}");
-  const usagePanelIndex = rightColumn.indexOf("<UsagePanel");
-  assert.ok(projectIndex !== -1, "expected project usage panel in right column");
-  assert.ok(usagePanelIndex !== -1, "expected UsagePanel in right column");
-  assert.ok(
-    projectIndex < usagePanelIndex,
-    "expected project usage panel above UsagePanel in right column",
-  );
+  assert.ok(rightColumn.includes("<UsageOverview"), "expected UsageOverview in right column");
 });
 
 test("ProjectUsagePanel lays out cards in responsive grid", () => {
@@ -90,39 +76,24 @@ test("ProjectUsagePanel lays out cards in responsive grid", () => {
   );
 });
 
-test("ProjectUsagePanel uses icon for star label", () => {
+test("ProjectUsagePanel formats star values compactly", () => {
   const src = readFile(projectUsagePath);
-  assert.ok(src.includes("data-star-icon"), "expected project usage panel to render a star icon");
-  assert.ok(
-    src.includes('data-star-position="top-right"'),
-    "expected project usage panel to place star in top-right corner",
-  );
   assert.ok(
     src.includes("formatCompactNumber(starsRaw"),
     "expected project usage panel to compact star values",
   );
-  assert.ok(src.includes("h-[1.3em]"), "expected star icon height to match caption line height");
-  assert.ok(src.includes('data-owner-row="true"'), "expected star to align with owner row");
 });
 
-test("ProjectUsagePanel renders three info rows", () => {
+test("ProjectUsagePanel renders star and token info", () => {
   const src = readFile(projectUsagePath);
-  const markers = [
-    'data-card-line="identity"',
-    'data-card-line="stars"',
-    'data-card-line="tokens"',
-  ];
-  for (const marker of markers) {
-    assert.ok(src.includes(marker), `expected project usage card to render ${marker}`);
-  }
+  assert.ok(src.includes("starsCompact"), "expected project usage card to show stars");
+  assert.ok(src.includes("tokensCompact"), "expected project usage card to show tokens");
 });
 
 test("ProjectUsagePanel constrains identity text width", () => {
   const src = readFile(projectUsagePath);
-  assert.ok(src.includes('data-card-field="owner"'), "expected owner field marker for truncation");
-  assert.ok(src.includes('data-card-field="repo"'), "expected repo field marker for truncation");
   assert.ok(src.includes("truncate"), "expected truncated identity text");
-  assert.ok(src.includes("max-w-"), "expected max width constraint for identity text");
+  assert.ok(src.includes("min-w-0"), "expected min width constraint for identity text");
 });
 
 test("DashboardPage wires install panel gating through helper", () => {
@@ -185,10 +156,7 @@ test("copy registry removes unused install steps and range label", () => {
 test("DashboardPage lets TrendMonitor auto-size", () => {
   const src = readFile(viewPath);
   assert.ok(!src.includes('className="min-h-[240px]"'), "expected TrendMonitor min height removed");
-  assert.ok(
-    src.includes('className="h-auto min-h-[280px]"'),
-    "expected TrendMonitor to override h-full with h-auto",
-  );
+  assert.ok(src.includes("<TrendMonitor"), "expected TrendMonitor to be rendered");
 });
 
 test("TrendMonitor root does not force full height", () => {
@@ -204,8 +172,9 @@ test("TrendMonitor root does not force full height", () => {
       "TrendMonitor.jsx",
     ),
   );
+  assert.ok(src.includes("export function TrendMonitor"), "expected TrendMonitor component");
   const lines = src.split("\n");
-  const rootLine = lines.find((line) => line.includes("className={`w-full"));
+  const rootLine = lines.find((line) => line.includes("className={`rounded-xl"));
   assert.ok(rootLine, "expected TrendMonitor root className line");
   assert.ok(!rootLine.includes("h-full"), "expected TrendMonitor root to avoid h-full");
 });

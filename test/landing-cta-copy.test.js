@@ -34,9 +34,9 @@ test("landing CTA copy keys exist", () => {
 
 test("LandingView uses CTA copy keys", () => {
   const source = read(landingViewPath);
-  const requiredKeys = ["landing.cta.primary", "landing.cta.secondary"];
+  const requiredKeys = ["landing.cta.login_signup"];
 
   for (const key of requiredKeys) {
-    assert.ok(source.includes(`copy(\"${key}\"`), `expected LandingView to use copy key ${key}`);
+    assert.ok(source.includes(`copy("${key}"`), `expected LandingView to use copy key ${key}`);
   }
 });

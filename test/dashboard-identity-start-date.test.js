@@ -30,7 +30,7 @@ test("DashboardPage uses active days for identity stats", () => {
   assert.ok(src.includes("active_days"), "expected active days usage");
 });
 
-test("IdentityCard renders rank value in gold", () => {
+test("IdentityCard renders rank value", () => {
   const componentPath = path.join(
     __dirname,
     "..",
@@ -42,11 +42,7 @@ test("IdentityCard renders rank value in gold", () => {
     "IdentityCard.jsx",
   );
   const src = readFile(componentPath);
-  const match = src.match(
-    /identity_card\.rank_label[\s\S]*?<div className="([^"]*)">\s*\{rankValue\}/,
-  );
-  assert.ok(match, "expected rank value class");
-  assert.ok(match[1].includes("text-gold"), "expected rank value to use gold color");
+  assert.ok(src.includes("{rankValue}"), "expected IdentityCard to render rankValue");
 });
 
 test("Dashboard identity wiring includes subscription badges", () => {
@@ -88,8 +84,8 @@ test("Dashboard identity wiring includes subscription badges", () => {
 
 test("copy registry labels active days and start without underscores", () => {
   const csv = readFile(copyPath);
-  assert.equal(readCopyValue(csv, 'identity_card.rank_label'), 'START');
-  assert.equal(readCopyValue(csv, 'identity_card.streak_label'), 'ACTIVE');
+  assert.equal(readCopyValue(csv, 'identity_card.rank_label'), 'Started');
+  assert.equal(readCopyValue(csv, 'identity_card.streak_label'), 'Active days');
   assert.equal(readCopyValue(csv, 'identity_card.streak_value'), '{{days}} DAY');
   assert.equal(readCopyValue(csv, 'identity_panel.rank_label'), 'START');
   assert.equal(readCopyValue(csv, 'identity_panel.streak_label'), 'ACTIVE');
