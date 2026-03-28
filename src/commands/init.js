@@ -42,12 +42,6 @@ const {
   installOpenclawSessionPlugin,
   probeOpenclawSessionPluginState,
 } = require("../lib/openclaw-session-plugin");
-const { beginBrowserAuth, openInBrowser } = require("../lib/browser-auth");
-const {
-  issueDeviceTokenWithPassword,
-  issueDeviceTokenWithAccessToken,
-  issueDeviceTokenWithLinkCode,
-} = require("../lib/insforge");
 const { resolveTrackerPaths } = require("../lib/tracker-paths");
 const { resolveRuntimeConfig } = require("../lib/runtime-config");
 const {
@@ -163,42 +157,7 @@ async function cmdInit(argv) {
 
   renderLocalReport({ summary: setup.summary, isDryRun: false });
 
-  let deviceToken = setup.deviceToken;
-  let deviceId = setup.deviceId;
-
-  // Cloud account linking — only when explicitly requested via env or flags
-  const wantCloudLink = setup.pendingBrowserAuth && (opts.linkCode || process.env.TOKENTRACKER_DEVICE_TOKEN || process.env.TOKENTRACKER_ACCESS_TOKEN);
-
-  if (wantCloudLink) {
-    const deviceName = opts.deviceName || os.hostname();
-    const flow = await beginBrowserAuth({
-      baseUrl,
-      dashboardUrl,
-      timeoutMs: 10 * 60_000,
-      open: false,
-    });
-    const canAutoOpen = !opts.noOpen;
-    renderAuthTransition({ authUrl: flow.authUrl, canAutoOpen });
-    if (canAutoOpen) {
-      if (isInteractive()) await sleep(250);
-      openInBrowser(flow.authUrl);
-    }
-    const callback = await flow.waitForCallback();
-    const issued = await issueDeviceTokenWithAccessToken({
-      baseUrl,
-      accessToken: callback.accessToken,
-      deviceName,
-    });
-    deviceToken = issued.token;
-    deviceId = issued.deviceId;
-    await writeJson(configPath, { baseUrl, deviceToken, deviceId, installedAt: setup.installedAt });
-    await chmod600IfPossible(configPath);
-    const resolvedDashboardUrl = dashboardUrl || null;
-    renderSuccessBox({ configPath, dashboardUrl: resolvedDashboardUrl });
-  } else {
-    // Local-only mode — show success without cloud linking
-    renderLocalSuccess();
-  }
+  renderLocalSuccess();
 
   try {
     spawnInitSync({ trackerBinPath, packageName: "tokentracker" });
@@ -296,53 +255,7 @@ async function runSetup({
 
   await installLocalTrackerApp({ appDir });
 
-  if (!deviceToken && opts.linkCode) {
-    const deviceName = opts.deviceName || os.hostname();
-    const platform = normalizePlatform(process.platform);
-    const linkCode = String(opts.linkCode);
-    const linkCodeHash = crypto.createHash("sha256").update(linkCode).digest("hex");
-    const existingLinkState = await readJson(linkCodeStatePath);
-    let requestId =
-      existingLinkState?.linkCodeHash === linkCodeHash && existingLinkState?.requestId
-        ? existingLinkState.requestId
-        : null;
-    if (!requestId) {
-      requestId = crypto.randomUUID();
-      await writeJson(linkCodeStatePath, {
-        linkCodeHash,
-        requestId,
-        createdAt: new Date().toISOString(),
-      });
-      await chmod600IfPossible(linkCodeStatePath);
-    }
-    const issued = await issueDeviceTokenWithLinkCode({
-      baseUrl,
-      linkCode,
-      requestId,
-      deviceName,
-      platform,
-    });
-    deviceToken = issued.token;
-    deviceId = issued.deviceId;
-    await fs.rm(linkCodeStatePath, { force: true });
-  } else if (!deviceToken && !opts.noAuth) {
-    const deviceName = opts.deviceName || os.hostname();
-
-    if (opts.email || opts.password) {
-      const email = opts.email || (await prompt("Email: "));
-      const password = opts.password || (await promptHidden("Password: "));
-      const issued = await issueDeviceTokenWithPassword({ baseUrl, email, password, deviceName });
-      deviceToken = issued.token;
-      deviceId = issued.deviceId;
-    } else {
-      pendingBrowserAuth = true;
-    }
-  }
-
   const config = {
-    baseUrl,
-    deviceToken,
-    deviceId,
     installedAt,
   };
 
@@ -351,7 +264,7 @@ async function runSetup({
 
   await writeFileAtomic(
     notifyPath,
-    buildNotifyHandler({ trackerDir, trackerBinPath, packageName: "vibeusage" }),
+    buildNotifyHandler({ trackerDir, trackerBinPath, packageName: "tokentracker-cli" }),
   );
   await fs.chmod(notifyPath, 0o755).catch(() => {});
 
@@ -492,7 +405,7 @@ async function applyIntegrationSetup({ home, trackerDir, notifyPath, notifyOrigi
   const openclawInstall = await installOpenclawSessionPlugin({
     home,
     trackerDir,
-    packageName: "vibeusage",
+    packageName: "tokentracker-cli",
     env: process.env,
   });
   if (openclawInstall?.skippedReason === "openclaw-cli-missing") {
@@ -740,7 +653,7 @@ function buildNotifyHandler({ trackerDir, packageName }) {
   // It must never block Codex; it spawns sync in the background and exits 0.
   const queueSignalPath = path.join(trackerDir, "notify.signal");
   const originalPath = path.join(trackerDir, "codex_notify_original.json");
-  const fallbackPkg = packageName || "vibeusage";
+  const fallbackPkg = packageName || "tokentracker-cli";
   const trackerBinPath = path.join(trackerDir, "app", "bin", "tracker.js");
 
   return `#!/usr/bin/env node
@@ -773,7 +686,7 @@ const signalPath = ${JSON.stringify(queueSignalPath)};
 const codexOriginalPath = ${JSON.stringify(originalPath)};
 const codeOriginalPath = ${JSON.stringify(path.join(trackerDir, "code_notify_original.json"))};
 const trackerBinPath = ${JSON.stringify(trackerBinPath)};
-  const depsMarkerPath = path.join(trackerDir, 'app', 'node_modules', '@insforge', 'sdk', 'package.json');
+  const depsMarkerPath = path.join(trackerDir, 'app', 'bin', 'tracker.js');
   const configPath = path.join(trackerDir, 'config.json');
 const fallbackPkg = ${JSON.stringify(fallbackPkg)};
 const selfPath = path.resolve(__filename);
@@ -910,7 +823,7 @@ async function isDir(p) {
 }
 
 async function installLocalTrackerApp({ appDir }) {
-  // Copy the current package's runtime (bin + src) into ~/.vibeusage so notify can run sync without npx.
+  // Copy the current package's runtime (bin + src) into ~/.tokentracker so notify can run sync without npx.
   const packageRoot = path.resolve(__dirname, "../..");
   const srcFrom = path.join(packageRoot, "src");
   const binFrom = path.join(packageRoot, "bin", "tracker.js");
@@ -952,7 +865,7 @@ async function safeRealpath(p) {
 }
 
 function spawnInitSync({ trackerBinPath, packageName }) {
-  const fallbackPkg = packageName || "vibeusage";
+  const fallbackPkg = packageName || "tokentracker-cli";
   const argv = ["sync", "--drain"];
   const hasLocalRuntime = typeof trackerBinPath === "string" && fssync.existsSync(trackerBinPath);
   const cmd = hasLocalRuntime
@@ -967,7 +880,7 @@ function spawnInitSync({ trackerBinPath, packageName }) {
     const msg = err && err.message ? err.message : "unknown error";
     const detail = isDebugEnabled() ? ` (${msg})` : "";
     process.stderr.write(`Minor issue: Background sync could not start${detail}.\n`);
-    process.stderr.write("Run: npx --yes vibeusage sync\n");
+    process.stderr.write("Run: npx --yes tokentracker-cli sync\n");
   });
   child.unref();
 }

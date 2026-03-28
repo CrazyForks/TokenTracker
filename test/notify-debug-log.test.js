@@ -57,12 +57,12 @@ async function setupInitEnv() {
     CODEX_HOME: codexHome,
     OPENCODE_CONFIG_DIR: path.join(tmp, ".config", "opencode"),
   };
-  delete env.VIBEUSAGE_DEVICE_TOKEN;
+  delete env.TOKENTRACKER_DEVICE_TOKEN;
 
   await runInit(env);
 
-  const notifyPath = path.join(tmp, ".vibeusage", "bin", "notify.cjs");
-  const trackerDir = path.join(tmp, ".vibeusage", "tracker");
+  const notifyPath = path.join(tmp, ".tokentracker", "bin", "notify.cjs");
+  const trackerDir = path.join(tmp, ".tokentracker", "tracker");
   const debugLogPath = path.join(trackerDir, "notify.debug.jsonl");
   await fs.mkdir(trackerDir, { recursive: true });
   await fs.writeFile(path.join(trackerDir, "config.json"), "{}", "utf8");
@@ -93,8 +93,8 @@ test("notify debug log is gated and capped by env settings", async () => {
   try {
     const env = {
       ...cappedContext.env,
-      VIBEUSAGE_NOTIFY_DEBUG: "1",
-      VIBEUSAGE_NOTIFY_DEBUG_MAX_BYTES: "64",
+      TOKENTRACKER_NOTIFY_DEBUG: "1",
+      TOKENTRACKER_NOTIFY_DEBUG_MAX_BYTES: "64",
     };
 
     await runNotify(cappedContext.notifyPath, env);

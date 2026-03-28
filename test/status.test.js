@@ -16,13 +16,13 @@ test("status prints last upload timestamps from upload.throttle.json", async () 
     process.env.HOME = tmp;
     process.env.CODEX_HOME = path.join(tmp, ".codex");
 
-    const trackerDir = path.join(tmp, ".vibeusage", "tracker");
+    const trackerDir = path.join(tmp, ".tokentracker", "tracker");
     await fs.mkdir(trackerDir, { recursive: true });
     await fs.mkdir(process.env.CODEX_HOME, { recursive: true });
 
     await fs.writeFile(
       path.join(process.env.CODEX_HOME, "config.toml"),
-      'notify = [\"/usr/bin/env\", \"node\", \"~/.vibeusage/bin/notify.cjs\"]\n',
+      'notify = [\"/usr/bin/env\", \"node\", \"~/.tokentracker/bin/notify.cjs\"]\n',
       "utf8",
     );
 
@@ -151,7 +151,7 @@ test("status does not migrate legacy tracker directory", async () => {
 
     assert.match(out, /- Base URL: unset/);
     assert.match(out, /- Last upload: never/);
-    const newTrackerDir = path.join(tmp, ".vibeusage", "tracker");
+    const newTrackerDir = path.join(tmp, ".tokentracker", "tracker");
     await assert.rejects(fs.stat(newTrackerDir));
     await fs.stat(legacyTrackerDir);
   } finally {

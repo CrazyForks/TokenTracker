@@ -6,7 +6,7 @@ const { DEFAULT_BASE_URL } = require("./runtime-config");
 
 async function beginBrowserAuth({ baseUrl, dashboardUrl, timeoutMs, open }) {
   const nonce = crypto.randomBytes(16).toString("hex");
-  const callbackPath = `/vibeusage/callback/${nonce}`;
+  const callbackPath = `/tokentracker/callback/${nonce}`;
   const authUrl = dashboardUrl ? new URL("/", dashboardUrl) : new URL("/auth/sign-up", baseUrl);
   const postAuthRedirect = resolvePostAuthRedirect({ dashboardUrl, authUrl });
   const { callbackUrl, waitForCallback } = await startLocalCallbackServer({

@@ -37,7 +37,7 @@ function resolveOpenclawSessionPluginPaths({
 async function installOpenclawSessionPlugin({
   home = os.homedir(),
   trackerDir,
-  packageName = "vibeusage",
+  packageName = "tokentracker-cli",
   env = process.env,
 } = {}) {
   const paths = resolveOpenclawSessionPluginPaths({ home, trackerDir, env });
@@ -84,7 +84,7 @@ async function installOpenclawSessionPlugin({
 async function ensureOpenclawSessionPluginFiles({
   pluginDir,
   trackerDir,
-  packageName = "vibeusage",
+  packageName = "tokentracker-cli",
   openclawHome,
 } = {}) {
   if (!pluginDir || !trackerDir) throw new Error("pluginDir and trackerDir are required");
@@ -307,7 +307,7 @@ function runOpenclawCli(args, env = process.env) {
 function buildSessionPluginPackageJson() {
   return `${JSON.stringify(
     {
-      name: "@vibeusage/openclaw-session-sync",
+      name: "@tokentracker/openclaw-session-sync",
       version: "0.0.0",
       private: true,
       type: "module",
@@ -325,7 +325,7 @@ function buildSessionPluginMeta() {
     {
       id: OPENCLAW_SESSION_PLUGIN_ID,
       name: "TokenTracker OpenClaw Session Sync",
-      description: "Trigger vibeusage sync on OpenClaw agent/session lifecycle events.",
+      description: "Trigger tokentracker sync on OpenClaw agent/session lifecycle events.",
       configSchema: {
         type: "object",
         additionalProperties: false,
@@ -337,9 +337,9 @@ function buildSessionPluginMeta() {
   )}\n`;
 }
 
-function buildSessionPluginIndex({ trackerDir, packageName = "vibeusage", openclawHome }) {
+function buildSessionPluginIndex({ trackerDir, packageName = "tokentracker-cli", openclawHome }) {
   const trackerBinPath = path.join(trackerDir, "app", "bin", "tracker.js");
-  const fallbackPkg = packageName || "vibeusage";
+  const fallbackPkg = packageName || "tokentracker-cli";
   const safeOpenclawHome = openclawHome || path.join(os.homedir(), ".openclaw");
 
   return (
@@ -351,7 +351,7 @@ function buildSessionPluginIndex({ trackerDir, packageName = "vibeusage", opencl
     `const trackerBinPath = ${JSON.stringify(trackerBinPath)};\n` +
     `const fallbackPkg = ${JSON.stringify(fallbackPkg)};\n` +
     `const openclawHome = ${JSON.stringify(safeOpenclawHome)};\n` +
-    `const depsMarkerPath = path.join(trackerDir, 'app', 'node_modules', '@insforge', 'sdk', 'package.json');\n` +
+    `const depsMarkerPath = path.join(trackerDir, 'app', 'bin', 'tracker.js');\n` +
     `const triggerStatePath = path.join(trackerDir, 'openclaw.session-sync.trigger-state.json');\n` +
     `const SESSION_TRIGGER_THROTTLE_MS = 15_000;\n` +
     `\n` +

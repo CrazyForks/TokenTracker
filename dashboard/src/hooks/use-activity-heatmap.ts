@@ -7,7 +7,7 @@ import {
 import { isAccessTokenReady, resolveAuthAccessToken } from "../lib/auth-token";
 import { isMockEnabled } from "../lib/mock-data";
 import { getTimeZoneCacheKey } from "../lib/timezone";
-import { getUsageDaily, getUsageHeatmap } from "../lib/vibeusage-api";
+import { getUsageDaily, getUsageHeatmap } from "../lib/api";
 
 export function useActivityHeatmap({
   baseUrl,
@@ -38,7 +38,7 @@ export function useActivityHeatmap({
   const storageKey = useMemo(() => {
     if (!cacheKey) return null;
     const tzKey = getTimeZoneCacheKey({ timeZone, offsetMinutes: tzOffsetMinutes });
-    return `vibeusage.heatmap.${cacheKey}.${weeks}.${weekStartsOn}.${tzKey}`;
+    return `tokentracker.heatmap.${cacheKey}.${weeks}.${weekStartsOn}.${tzKey}`;
   }, [cacheKey, timeZone, tzOffsetMinutes, weeks, weekStartsOn]);
 
   const readCache = useCallback(() => {

@@ -50,13 +50,13 @@
 
 ### 5.1 客户端本地状态（Source of truth）
 
-根目录：`~/.vibeusage/`
+根目录：`~/.tokentracker/`
 
-- `~/.vibeusage/tracker/config.json`：`baseUrl`、`deviceToken`、`deviceId`、`installedAt`
-- `~/.vibeusage/tracker/cursors.json`：解析游标（按文件）+ 上次 totals（用于 totals 差分）
-- `~/.vibeusage/tracker/queue.jsonl`：待上传半小时聚合桶（append-only）
-- `~/.vibeusage/tracker/queue.state.json`：已上传 offset（用于幂等、断点续传）
-- `~/.vibeusage/bin/notify.cjs`：notify handler（依赖 Node built-ins；快速返回）
+- `~/.tokentracker/tracker/config.json`：`baseUrl`、`deviceToken`、`deviceId`、`installedAt`
+- `~/.tokentracker/tracker/cursors.json`：解析游标（按文件）+ 上次 totals（用于 totals 差分）
+- `~/.tokentracker/tracker/queue.jsonl`：待上传半小时聚合桶（append-only）
+- `~/.tokentracker/tracker/queue.state.json`：已上传 offset（用于幂等、断点续传）
+- `~/.tokentracker/bin/notify.cjs`：notify handler（依赖 Node built-ins；快速返回）
 
 ### 5.2 半小时桶模型（白名单字段）
 
@@ -161,7 +161,7 @@
 
 - 需求用规范措辞表达（必要时可用英文关键词）：`SHALL` / `MUST` / `MUST NOT` / `SHOULD`
 - 每个关键需求至少给出一个可执行的场景（`WHEN/THEN`），并能落到验证命令或脚本
-- 文档中出现的命令、路径、环境变量、标识符一律用反引号包裹（例如 `tracker sync --auto`、`~/.vibeusage/tracker/queue.jsonl`）
+- 文档中出现的命令、路径、环境变量、标识符一律用反引号包裹（例如 `tracker sync --auto`、`~/.tokentracker/tracker/queue.jsonl`）
 
 ### 7.3 变更流程（提案 → 实现 → 归档）
 

@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useEffect, useMemo, useState } from "react";
 
-const THEME_STORAGE_KEY = "vibeusage-theme";
+const THEME_STORAGE_KEY = "tokentracker-theme";
 
 /**
  * @typedef {"light" | "dark" | "system"} Theme

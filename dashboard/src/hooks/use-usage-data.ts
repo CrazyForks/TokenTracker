@@ -3,7 +3,7 @@ import { isAccessTokenReady, resolveAuthAccessToken } from "../lib/auth-token";
 import { formatDateLocal, formatDateUTC } from "../lib/date-range";
 import { isMockEnabled } from "../lib/mock-data";
 import { getLocalDayKey, getTimeZoneCacheKey } from "../lib/timezone";
-import { getUsageDaily, getUsageSummary } from "../lib/vibeusage-api";
+import { getUsageDaily, getUsageSummary } from "../lib/api";
 
 export function useUsageData({
   baseUrl,
@@ -33,7 +33,7 @@ export function useUsageData({
     const host = safeHost(baseUrl) || "default";
     const dailyKey = includeDaily ? "daily" : "summary";
     const tzKey = getTimeZoneCacheKey({ timeZone, offsetMinutes: tzOffsetMinutes });
-    return `vibeusage.usage.${cacheKey}.${host}.${from}.${to}.${dailyKey}.${tzKey}`;
+    return `tokentracker.usage.${cacheKey}.${host}.${from}.${to}.${dailyKey}.${tzKey}`;
   })();
 
   const readCache = useCallback(() => {

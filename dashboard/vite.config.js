@@ -36,7 +36,7 @@ function loadAppVersion() {
     const parsed = JSON.parse(raw);
     return String(parsed?.version || "").trim() || null;
   } catch (error) {
-    console.warn("[vibeusage] Failed to read package.json version:", error.message);
+    console.warn("[tokentracker] Failed to read package.json version:", error.message);
     return null;
   }
 }
@@ -106,7 +106,7 @@ function loadCopyRegistry() {
   try {
     raw = fs.readFileSync(COPY_PATH, "utf8");
   } catch (error) {
-    console.warn("[vibeusage] Failed to read copy registry:", error.message);
+    console.warn("[tokentracker] Failed to read copy registry:", error.message);
     return new Map();
   }
 
@@ -117,7 +117,7 @@ function loadCopyRegistry() {
   const keyIndex = header.indexOf("key");
   const textIndex = header.indexOf("text");
   if (keyIndex === -1 || textIndex === -1) {
-    console.warn("[vibeusage] Copy registry missing key/text columns.");
+    console.warn("[tokentracker] Copy registry missing key/text columns.");
     return new Map();
   }
 
@@ -146,7 +146,7 @@ function buildMeta(prefix = "landing") {
 
   const missing = COPY_REQUIRED_KEYS.filter((key) => !map.has(key));
   if (missing.length) {
-    console.warn("[vibeusage] Copy registry missing keys:", missing.join(", "));
+    console.warn("[tokentracker] Copy registry missing keys:", missing.join(", "));
   }
 
   return {
@@ -170,18 +170,18 @@ function resolveMetaPrefix(ctx) {
 function injectRichMeta(html, prefix) {
   const meta = buildMeta(prefix);
   const replacements = {
-    __VIBEUSAGE_TITLE__: meta.title,
-    __VIBEUSAGE_DESCRIPTION__: meta.description,
-    __VIBEUSAGE_OG_SITE_NAME__: meta.ogSiteName,
-    __VIBEUSAGE_OG_TITLE__: meta.title,
-    __VIBEUSAGE_OG_DESCRIPTION__: meta.description,
-    __VIBEUSAGE_OG_IMAGE__: meta.ogImage,
-    __VIBEUSAGE_OG_TYPE__: meta.ogType,
-    __VIBEUSAGE_OG_URL__: meta.ogUrl,
-    __VIBEUSAGE_TWITTER_CARD__: meta.twitterCard,
-    __VIBEUSAGE_TWITTER_TITLE__: meta.title,
-    __VIBEUSAGE_TWITTER_DESCRIPTION__: meta.description,
-    __VIBEUSAGE_TWITTER_IMAGE__: meta.ogImage,
+    __TOKENTRACKER_TITLE__: meta.title,
+    __TOKENTRACKER_DESCRIPTION__: meta.description,
+    __TOKENTRACKER_OG_SITE_NAME__: meta.ogSiteName,
+    __TOKENTRACKER_OG_TITLE__: meta.title,
+    __TOKENTRACKER_OG_DESCRIPTION__: meta.description,
+    __TOKENTRACKER_OG_IMAGE__: meta.ogImage,
+    __TOKENTRACKER_OG_TYPE__: meta.ogType,
+    __TOKENTRACKER_OG_URL__: meta.ogUrl,
+    __TOKENTRACKER_TWITTER_CARD__: meta.twitterCard,
+    __TOKENTRACKER_TWITTER_TITLE__: meta.title,
+    __TOKENTRACKER_TWITTER_DESCRIPTION__: meta.description,
+    __TOKENTRACKER_TWITTER_IMAGE__: meta.ogImage,
   };
 
   let output = html;
@@ -193,7 +193,7 @@ function injectRichMeta(html, prefix) {
 
 function richLinkMetaPlugin() {
   return {
-    name: "vibeusage-rich-link-meta",
+    name: "tokentracker-rich-link-meta",
     transformIndexHtml(html, ctx) {
       return injectRichMeta(html, resolveMetaPrefix(ctx));
     },
@@ -210,7 +210,7 @@ function trimCommandOutput(value, maxLength = 4000) {
 
 async function runLocalSyncCommand() {
   return await new Promise((resolve, reject) => {
-    const child = spawn(process.platform === "win32" ? "npx.cmd" : "npx", ["vibeusage", "sync"], {
+    const child = spawn(process.platform === "win32" ? "npx.cmd" : "npx", ["tokentracker-cli", "sync"], {
       cwd: REPO_ROOT,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -868,7 +868,7 @@ async function handleLocalApi(req, res, url) {
 
 function localDataApiPlugin() {
   return {
-    name: "vibeusage-local-data-api",
+    name: "tokentracker-local-data-api",
     configureServer(server) {
       // 添加中间件到最前面，拦截所有请求
       server.middlewares.use((req, res, next) => {

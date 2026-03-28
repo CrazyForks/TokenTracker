@@ -36,14 +36,14 @@ test("init then uninstall restores original Codex notify (when pre-existing noti
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "vibeusage-init-uninstall-"));
   const prevHome = process.env.HOME;
   const prevCodexHome = process.env.CODEX_HOME;
-  const prevToken = process.env.VIBEUSAGE_DEVICE_TOKEN;
+  const prevToken = process.env.TOKENTRACKER_DEVICE_TOKEN;
   const prevOpencodeConfigDir = process.env.OPENCODE_CONFIG_DIR;
   const prevWrite = process.stdout.write;
 
   try {
     process.env.HOME = tmp;
     process.env.CODEX_HOME = path.join(tmp, ".codex-alt");
-    delete process.env.VIBEUSAGE_DEVICE_TOKEN;
+    delete process.env.TOKENTRACKER_DEVICE_TOKEN;
     process.env.OPENCODE_CONFIG_DIR = path.join(tmp, ".config", "opencode");
     await fs.mkdir(process.env.CODEX_HOME, { recursive: true });
 
@@ -58,7 +58,7 @@ test("init then uninstall restores original Codex notify (when pre-existing noti
     assert.match(installed, /^notify\s*=\s*\[.+\]\s*$/m);
     assert.ok(!installed.includes('["echo", "hello"]'), "expected init to override notify");
 
-    const cursorsPath = path.join(tmp, ".vibeusage", "tracker", "cursors.json");
+    const cursorsPath = path.join(tmp, ".tokentracker", "tracker", "cursors.json");
     const cursorsRaw = await waitForFile(cursorsPath);
     assert.ok(cursorsRaw, "expected init to trigger sync and write cursors");
     const cursors = JSON.parse(cursorsRaw);
@@ -72,7 +72,7 @@ test("init then uninstall restores original Codex notify (when pre-existing noti
       "expected uninstall to restore original notify",
     );
 
-    const notifyHandlerPath = path.join(tmp, ".vibeusage", "bin", "notify.cjs");
+    const notifyHandlerPath = path.join(tmp, ".tokentracker", "bin", "notify.cjs");
     await assert.rejects(fs.stat(notifyHandlerPath), /ENOENT/);
   } finally {
     process.stdout.write = prevWrite;
@@ -80,8 +80,8 @@ test("init then uninstall restores original Codex notify (when pre-existing noti
     else process.env.HOME = prevHome;
     if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = prevCodexHome;
-    if (prevToken === undefined) delete process.env.VIBEUSAGE_DEVICE_TOKEN;
-    else process.env.VIBEUSAGE_DEVICE_TOKEN = prevToken;
+    if (prevToken === undefined) delete process.env.TOKENTRACKER_DEVICE_TOKEN;
+    else process.env.TOKENTRACKER_DEVICE_TOKEN = prevToken;
     if (prevOpencodeConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
     else process.env.OPENCODE_CONFIG_DIR = prevOpencodeConfigDir;
     await fs.rm(tmp, { recursive: true, force: true });
@@ -97,21 +97,21 @@ test("opencode config exports plugin constants", () => {
   assert.equal(typeof PLUGIN_MARKER, "string");
   assert.ok(PLUGIN_MARKER.length > 0);
   assert.equal(DEFAULT_EVENT, "session.updated");
-  assert.equal(DEFAULT_PLUGIN_NAME, "vibeusage-tracker.js");
+  assert.equal(DEFAULT_PLUGIN_NAME, "tokentracker.js");
 });
 
 test("init then uninstall removes notify when none existed", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "vibeusage-init-uninstall-"));
   const prevHome = process.env.HOME;
   const prevCodexHome = process.env.CODEX_HOME;
-  const prevToken = process.env.VIBEUSAGE_DEVICE_TOKEN;
+  const prevToken = process.env.TOKENTRACKER_DEVICE_TOKEN;
   const prevOpencodeConfigDir = process.env.OPENCODE_CONFIG_DIR;
   const prevWrite = process.stdout.write;
 
   try {
     process.env.HOME = tmp;
     process.env.CODEX_HOME = path.join(tmp, ".codex");
-    delete process.env.VIBEUSAGE_DEVICE_TOKEN;
+    delete process.env.TOKENTRACKER_DEVICE_TOKEN;
     process.env.OPENCODE_CONFIG_DIR = path.join(tmp, ".config", "opencode");
     await fs.mkdir(process.env.CODEX_HOME, { recursive: true });
 
@@ -137,8 +137,8 @@ test("init then uninstall removes notify when none existed", async () => {
     else process.env.HOME = prevHome;
     if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = prevCodexHome;
-    if (prevToken === undefined) delete process.env.VIBEUSAGE_DEVICE_TOKEN;
-    else process.env.VIBEUSAGE_DEVICE_TOKEN = prevToken;
+    if (prevToken === undefined) delete process.env.TOKENTRACKER_DEVICE_TOKEN;
+    else process.env.TOKENTRACKER_DEVICE_TOKEN = prevToken;
     if (prevOpencodeConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
     else process.env.OPENCODE_CONFIG_DIR = prevOpencodeConfigDir;
     await fs.rm(tmp, { recursive: true, force: true });
@@ -149,7 +149,7 @@ test("init skips Codex notify when config is missing", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "vibeusage-init-uninstall-"));
   const prevHome = process.env.HOME;
   const prevCodexHome = process.env.CODEX_HOME;
-  const prevToken = process.env.VIBEUSAGE_DEVICE_TOKEN;
+  const prevToken = process.env.TOKENTRACKER_DEVICE_TOKEN;
   const prevOpencodeConfigDir = process.env.OPENCODE_CONFIG_DIR;
   const prevGeminiHome = process.env.GEMINI_HOME;
   const prevWrite = process.stdout.write;
@@ -158,7 +158,7 @@ test("init skips Codex notify when config is missing", async () => {
     process.env.HOME = tmp;
     process.env.CODEX_HOME = path.join(tmp, ".codex");
     process.env.GEMINI_HOME = path.join(tmp, ".gemini");
-    delete process.env.VIBEUSAGE_DEVICE_TOKEN;
+    delete process.env.TOKENTRACKER_DEVICE_TOKEN;
     process.env.OPENCODE_CONFIG_DIR = path.join(tmp, ".config", "opencode");
 
     process.stdout.write = () => true;
@@ -172,8 +172,8 @@ test("init skips Codex notify when config is missing", async () => {
     else process.env.HOME = prevHome;
     if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = prevCodexHome;
-    if (prevToken === undefined) delete process.env.VIBEUSAGE_DEVICE_TOKEN;
-    else process.env.VIBEUSAGE_DEVICE_TOKEN = prevToken;
+    if (prevToken === undefined) delete process.env.TOKENTRACKER_DEVICE_TOKEN;
+    else process.env.TOKENTRACKER_DEVICE_TOKEN = prevToken;
     if (prevOpencodeConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
     else process.env.OPENCODE_CONFIG_DIR = prevOpencodeConfigDir;
     if (prevGeminiHome === undefined) delete process.env.GEMINI_HOME;
@@ -187,7 +187,7 @@ test("init then uninstall restores original Every Code notify (when config exist
   const prevHome = process.env.HOME;
   const prevCodexHome = process.env.CODEX_HOME;
   const prevCodeHome = process.env.CODE_HOME;
-  const prevToken = process.env.VIBEUSAGE_DEVICE_TOKEN;
+  const prevToken = process.env.TOKENTRACKER_DEVICE_TOKEN;
   const prevOpencodeConfigDir = process.env.OPENCODE_CONFIG_DIR;
   const prevWrite = process.stdout.write;
 
@@ -195,7 +195,7 @@ test("init then uninstall restores original Every Code notify (when config exist
     process.env.HOME = tmp;
     process.env.CODEX_HOME = path.join(tmp, ".codex");
     process.env.CODE_HOME = path.join(tmp, ".code");
-    delete process.env.VIBEUSAGE_DEVICE_TOKEN;
+    delete process.env.TOKENTRACKER_DEVICE_TOKEN;
     process.env.OPENCODE_CONFIG_DIR = path.join(tmp, ".config", "opencode");
     await fs.mkdir(process.env.CODEX_HOME, { recursive: true });
     await fs.mkdir(process.env.CODE_HOME, { recursive: true });
@@ -232,8 +232,8 @@ test("init then uninstall restores original Every Code notify (when config exist
     else process.env.CODEX_HOME = prevCodexHome;
     if (prevCodeHome === undefined) delete process.env.CODE_HOME;
     else process.env.CODE_HOME = prevCodeHome;
-    if (prevToken === undefined) delete process.env.VIBEUSAGE_DEVICE_TOKEN;
-    else process.env.VIBEUSAGE_DEVICE_TOKEN = prevToken;
+    if (prevToken === undefined) delete process.env.TOKENTRACKER_DEVICE_TOKEN;
+    else process.env.TOKENTRACKER_DEVICE_TOKEN = prevToken;
     if (prevOpencodeConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
     else process.env.OPENCODE_CONFIG_DIR = prevOpencodeConfigDir;
     await fs.rm(tmp, { recursive: true, force: true });
@@ -245,7 +245,7 @@ test("init skips Every Code notify when config is missing", async () => {
   const prevHome = process.env.HOME;
   const prevCodexHome = process.env.CODEX_HOME;
   const prevCodeHome = process.env.CODE_HOME;
-  const prevToken = process.env.VIBEUSAGE_DEVICE_TOKEN;
+  const prevToken = process.env.TOKENTRACKER_DEVICE_TOKEN;
   const prevOpencodeConfigDir = process.env.OPENCODE_CONFIG_DIR;
   const prevWrite = process.stdout.write;
 
@@ -253,7 +253,7 @@ test("init skips Every Code notify when config is missing", async () => {
     process.env.HOME = tmp;
     process.env.CODEX_HOME = path.join(tmp, ".codex");
     process.env.CODE_HOME = path.join(tmp, ".code");
-    delete process.env.VIBEUSAGE_DEVICE_TOKEN;
+    delete process.env.TOKENTRACKER_DEVICE_TOKEN;
     process.env.OPENCODE_CONFIG_DIR = path.join(tmp, ".config", "opencode");
     await fs.mkdir(process.env.CODEX_HOME, { recursive: true });
     await fs.mkdir(process.env.CODE_HOME, { recursive: true });
@@ -274,8 +274,8 @@ test("init skips Every Code notify when config is missing", async () => {
     else process.env.CODEX_HOME = prevCodexHome;
     if (prevCodeHome === undefined) delete process.env.CODE_HOME;
     else process.env.CODE_HOME = prevCodeHome;
-    if (prevToken === undefined) delete process.env.VIBEUSAGE_DEVICE_TOKEN;
-    else process.env.VIBEUSAGE_DEVICE_TOKEN = prevToken;
+    if (prevToken === undefined) delete process.env.TOKENTRACKER_DEVICE_TOKEN;
+    else process.env.TOKENTRACKER_DEVICE_TOKEN = prevToken;
     if (prevOpencodeConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
     else process.env.OPENCODE_CONFIG_DIR = prevOpencodeConfigDir;
     await fs.rm(tmp, { recursive: true, force: true });
@@ -328,14 +328,14 @@ test("init then uninstall manages Claude hooks without removing existing hooks",
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "vibeusage-init-uninstall-"));
   const prevHome = process.env.HOME;
   const prevCodexHome = process.env.CODEX_HOME;
-  const prevToken = process.env.VIBEUSAGE_DEVICE_TOKEN;
+  const prevToken = process.env.TOKENTRACKER_DEVICE_TOKEN;
   const prevOpencodeConfigDir = process.env.OPENCODE_CONFIG_DIR;
   const prevWrite = process.stdout.write;
 
   try {
     process.env.HOME = tmp;
     process.env.CODEX_HOME = path.join(tmp, ".codex");
-    delete process.env.VIBEUSAGE_DEVICE_TOKEN;
+    delete process.env.TOKENTRACKER_DEVICE_TOKEN;
     process.env.OPENCODE_CONFIG_DIR = path.join(tmp, ".config", "opencode");
     await fs.mkdir(process.env.CODEX_HOME, { recursive: true });
 
@@ -363,7 +363,7 @@ test("init then uninstall manages Claude hooks without removing existing hooks",
 
     const installedRaw = await fs.readFile(settingsPath, "utf8");
     const installed = JSON.parse(installedRaw);
-    const hookCommand = buildClaudeHookCommand(path.join(tmp, ".vibeusage", "bin", "notify.cjs"));
+    const hookCommand = buildClaudeHookCommand(path.join(tmp, ".tokentracker", "bin", "notify.cjs"));
     const sessionEnd = installed?.hooks?.SessionEnd || [];
     const allCommands = sessionEnd
       .flatMap((entry) => (Array.isArray(entry?.hooks) ? entry.hooks : [entry]))
@@ -393,8 +393,8 @@ test("init then uninstall manages Claude hooks without removing existing hooks",
     else process.env.HOME = prevHome;
     if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = prevCodexHome;
-    if (prevToken === undefined) delete process.env.VIBEUSAGE_DEVICE_TOKEN;
-    else process.env.VIBEUSAGE_DEVICE_TOKEN = prevToken;
+    if (prevToken === undefined) delete process.env.TOKENTRACKER_DEVICE_TOKEN;
+    else process.env.TOKENTRACKER_DEVICE_TOKEN = prevToken;
     if (prevOpencodeConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
     else process.env.OPENCODE_CONFIG_DIR = prevOpencodeConfigDir;
     await fs.rm(tmp, { recursive: true, force: true });
@@ -405,7 +405,7 @@ test("init then uninstall manages Gemini hooks without removing existing hooks",
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "vibeusage-init-uninstall-"));
   const prevHome = process.env.HOME;
   const prevCodexHome = process.env.CODEX_HOME;
-  const prevToken = process.env.VIBEUSAGE_DEVICE_TOKEN;
+  const prevToken = process.env.TOKENTRACKER_DEVICE_TOKEN;
   const prevOpencodeConfigDir = process.env.OPENCODE_CONFIG_DIR;
   const prevGeminiHome = process.env.GEMINI_HOME;
   const prevWrite = process.stdout.write;
@@ -414,7 +414,7 @@ test("init then uninstall manages Gemini hooks without removing existing hooks",
     process.env.HOME = tmp;
     process.env.CODEX_HOME = path.join(tmp, ".codex");
     process.env.GEMINI_HOME = path.join(tmp, ".gemini");
-    delete process.env.VIBEUSAGE_DEVICE_TOKEN;
+    delete process.env.TOKENTRACKER_DEVICE_TOKEN;
     process.env.OPENCODE_CONFIG_DIR = path.join(tmp, ".config", "opencode");
     await fs.mkdir(process.env.CODEX_HOME, { recursive: true });
     await fs.mkdir(process.env.GEMINI_HOME, { recursive: true });
@@ -445,7 +445,7 @@ test("init then uninstall manages Gemini hooks without removing existing hooks",
     const installed = JSON.parse(installedRaw);
     assert.equal(installed?.tools?.enableHooks, true);
     assert.deepEqual(installed?.hooks?.disabled, ["existing-disabled"]);
-    const hookCommand = buildGeminiHookCommand(path.join(tmp, ".vibeusage", "bin", "notify.cjs"));
+    const hookCommand = buildGeminiHookCommand(path.join(tmp, ".tokentracker", "bin", "notify.cjs"));
     const sessionEnd = installed?.hooks?.SessionEnd || [];
     const hooks = flattenHookEntries(sessionEnd);
     const allCommands = hooks.map((h) => h?.command);
@@ -480,8 +480,8 @@ test("init then uninstall manages Gemini hooks without removing existing hooks",
     else process.env.HOME = prevHome;
     if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = prevCodexHome;
-    if (prevToken === undefined) delete process.env.VIBEUSAGE_DEVICE_TOKEN;
-    else process.env.VIBEUSAGE_DEVICE_TOKEN = prevToken;
+    if (prevToken === undefined) delete process.env.TOKENTRACKER_DEVICE_TOKEN;
+    else process.env.TOKENTRACKER_DEVICE_TOKEN = prevToken;
     if (prevOpencodeConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
     else process.env.OPENCODE_CONFIG_DIR = prevOpencodeConfigDir;
     if (prevGeminiHome === undefined) delete process.env.GEMINI_HOME;
@@ -494,7 +494,7 @@ test("init skips Gemini hooks when config directory is missing", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "vibeusage-init-uninstall-"));
   const prevHome = process.env.HOME;
   const prevCodexHome = process.env.CODEX_HOME;
-  const prevToken = process.env.VIBEUSAGE_DEVICE_TOKEN;
+  const prevToken = process.env.TOKENTRACKER_DEVICE_TOKEN;
   const prevOpencodeConfigDir = process.env.OPENCODE_CONFIG_DIR;
   const prevGeminiHome = process.env.GEMINI_HOME;
   const prevWrite = process.stdout.write;
@@ -503,7 +503,7 @@ test("init skips Gemini hooks when config directory is missing", async () => {
     process.env.HOME = tmp;
     process.env.CODEX_HOME = path.join(tmp, ".codex");
     process.env.GEMINI_HOME = path.join(tmp, ".gemini-missing");
-    delete process.env.VIBEUSAGE_DEVICE_TOKEN;
+    delete process.env.TOKENTRACKER_DEVICE_TOKEN;
     process.env.OPENCODE_CONFIG_DIR = path.join(tmp, ".config", "opencode");
     await fs.mkdir(process.env.CODEX_HOME, { recursive: true });
 
@@ -520,8 +520,8 @@ test("init skips Gemini hooks when config directory is missing", async () => {
     else process.env.HOME = prevHome;
     if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = prevCodexHome;
-    if (prevToken === undefined) delete process.env.VIBEUSAGE_DEVICE_TOKEN;
-    else process.env.VIBEUSAGE_DEVICE_TOKEN = prevToken;
+    if (prevToken === undefined) delete process.env.TOKENTRACKER_DEVICE_TOKEN;
+    else process.env.TOKENTRACKER_DEVICE_TOKEN = prevToken;
     if (prevOpencodeConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
     else process.env.OPENCODE_CONFIG_DIR = prevOpencodeConfigDir;
     if (prevGeminiHome === undefined) delete process.env.GEMINI_HOME;
@@ -534,7 +534,7 @@ test("init creates Gemini settings when directory exists but file is missing", a
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "vibeusage-init-uninstall-"));
   const prevHome = process.env.HOME;
   const prevCodexHome = process.env.CODEX_HOME;
-  const prevToken = process.env.VIBEUSAGE_DEVICE_TOKEN;
+  const prevToken = process.env.TOKENTRACKER_DEVICE_TOKEN;
   const prevOpencodeConfigDir = process.env.OPENCODE_CONFIG_DIR;
   const prevGeminiHome = process.env.GEMINI_HOME;
   const prevWrite = process.stdout.write;
@@ -543,7 +543,7 @@ test("init creates Gemini settings when directory exists but file is missing", a
     process.env.HOME = tmp;
     process.env.CODEX_HOME = path.join(tmp, ".codex");
     process.env.GEMINI_HOME = path.join(tmp, ".gemini");
-    delete process.env.VIBEUSAGE_DEVICE_TOKEN;
+    delete process.env.TOKENTRACKER_DEVICE_TOKEN;
     process.env.OPENCODE_CONFIG_DIR = path.join(tmp, ".config", "opencode");
     await fs.mkdir(process.env.CODEX_HOME, { recursive: true });
     await fs.mkdir(process.env.GEMINI_HOME, { recursive: true });
@@ -561,7 +561,7 @@ test("init creates Gemini settings when directory exists but file is missing", a
     assert.equal(created?.tools?.enableHooks, true);
     const sessionEnd = created?.hooks?.SessionEnd || [];
     const hooks = flattenHookEntries(sessionEnd);
-    const hookCommand = buildGeminiHookCommand(path.join(tmp, ".vibeusage", "bin", "notify.cjs"));
+    const hookCommand = buildGeminiHookCommand(path.join(tmp, ".tokentracker", "bin", "notify.cjs"));
     const hasTracker = hooks.some((hook) => hook?.command === hookCommand);
     assert.ok(hasTracker, "expected tracker Gemini hook to be created in settings.json");
   } finally {
@@ -570,8 +570,8 @@ test("init creates Gemini settings when directory exists but file is missing", a
     else process.env.HOME = prevHome;
     if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = prevCodexHome;
-    if (prevToken === undefined) delete process.env.VIBEUSAGE_DEVICE_TOKEN;
-    else process.env.VIBEUSAGE_DEVICE_TOKEN = prevToken;
+    if (prevToken === undefined) delete process.env.TOKENTRACKER_DEVICE_TOKEN;
+    else process.env.TOKENTRACKER_DEVICE_TOKEN = prevToken;
     if (prevOpencodeConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
     else process.env.OPENCODE_CONFIG_DIR = prevOpencodeConfigDir;
     if (prevGeminiHome === undefined) delete process.env.GEMINI_HOME;
@@ -584,14 +584,14 @@ test("init then uninstall manages Opencode plugin without removing other plugins
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "vibeusage-init-uninstall-"));
   const prevHome = process.env.HOME;
   const prevCodexHome = process.env.CODEX_HOME;
-  const prevToken = process.env.VIBEUSAGE_DEVICE_TOKEN;
+  const prevToken = process.env.TOKENTRACKER_DEVICE_TOKEN;
   const prevOpencodeConfigDir = process.env.OPENCODE_CONFIG_DIR;
   const prevWrite = process.stdout.write;
 
   try {
     process.env.HOME = tmp;
     process.env.CODEX_HOME = path.join(tmp, ".codex");
-    delete process.env.VIBEUSAGE_DEVICE_TOKEN;
+    delete process.env.TOKENTRACKER_DEVICE_TOKEN;
     process.env.OPENCODE_CONFIG_DIR = path.join(tmp, ".config", "opencode");
     await fs.mkdir(process.env.CODEX_HOME, { recursive: true });
 
@@ -607,9 +607,9 @@ test("init then uninstall manages Opencode plugin without removing other plugins
     process.stdout.write = () => true;
     await cmdInit(["--yes", "--no-auth", "--no-open", "--base-url", "https://example.invalid"]);
 
-    const pluginPath = path.join(pluginDir, "vibeusage-tracker.js");
+    const pluginPath = path.join(pluginDir, "tokentracker.js");
     const installed = await fs.readFile(pluginPath, "utf8");
-    assert.match(installed, /VIBEUSAGE_TRACKER_PLUGIN/);
+    assert.match(installed, /TOKENTRACKER_PLUGIN/);
 
     await cmdUninstall([]);
 
@@ -622,8 +622,8 @@ test("init then uninstall manages Opencode plugin without removing other plugins
     else process.env.HOME = prevHome;
     if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = prevCodexHome;
-    if (prevToken === undefined) delete process.env.VIBEUSAGE_DEVICE_TOKEN;
-    else process.env.VIBEUSAGE_DEVICE_TOKEN = prevToken;
+    if (prevToken === undefined) delete process.env.TOKENTRACKER_DEVICE_TOKEN;
+    else process.env.TOKENTRACKER_DEVICE_TOKEN = prevToken;
     if (prevOpencodeConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
     else process.env.OPENCODE_CONFIG_DIR = prevOpencodeConfigDir;
     await fs.rm(tmp, { recursive: true, force: true });
@@ -634,14 +634,14 @@ test("init installs Opencode plugin when config dir is missing", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "vibeusage-init-uninstall-"));
   const prevHome = process.env.HOME;
   const prevCodexHome = process.env.CODEX_HOME;
-  const prevToken = process.env.VIBEUSAGE_DEVICE_TOKEN;
+  const prevToken = process.env.TOKENTRACKER_DEVICE_TOKEN;
   const prevOpencodeConfigDir = process.env.OPENCODE_CONFIG_DIR;
   const prevWrite = process.stdout.write;
 
   try {
     process.env.HOME = tmp;
     process.env.CODEX_HOME = path.join(tmp, ".codex");
-    delete process.env.VIBEUSAGE_DEVICE_TOKEN;
+    delete process.env.TOKENTRACKER_DEVICE_TOKEN;
     process.env.OPENCODE_CONFIG_DIR = path.join(tmp, ".config", "opencode");
     await fs.mkdir(process.env.CODEX_HOME, { recursive: true });
 
@@ -651,17 +651,17 @@ test("init installs Opencode plugin when config dir is missing", async () => {
     process.stdout.write = () => true;
     await cmdInit(["--yes", "--no-auth", "--no-open", "--base-url", "https://example.invalid"]);
 
-    const pluginPath = path.join(process.env.OPENCODE_CONFIG_DIR, "plugin", "vibeusage-tracker.js");
+    const pluginPath = path.join(process.env.OPENCODE_CONFIG_DIR, "plugin", "tokentracker.js");
     const installed = await fs.readFile(pluginPath, "utf8");
-    assert.match(installed, /VIBEUSAGE_TRACKER_PLUGIN/);
+    assert.match(installed, /TOKENTRACKER_PLUGIN/);
   } finally {
     process.stdout.write = prevWrite;
     if (prevHome === undefined) delete process.env.HOME;
     else process.env.HOME = prevHome;
     if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = prevCodexHome;
-    if (prevToken === undefined) delete process.env.VIBEUSAGE_DEVICE_TOKEN;
-    else process.env.VIBEUSAGE_DEVICE_TOKEN = prevToken;
+    if (prevToken === undefined) delete process.env.TOKENTRACKER_DEVICE_TOKEN;
+    else process.env.TOKENTRACKER_DEVICE_TOKEN = prevToken;
     if (prevOpencodeConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
     else process.env.OPENCODE_CONFIG_DIR = prevOpencodeConfigDir;
     await fs.rm(tmp, { recursive: true, force: true });

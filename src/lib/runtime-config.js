@@ -1,4 +1,4 @@
-const DEFAULT_BASE_URL = "https://5tmappuk.us-east.insforge.app";
+const DEFAULT_BASE_URL = "";
 const DEFAULT_DASHBOARD_URL = "https://www.tokentracker.cc";
 const DEFAULT_HTTP_TIMEOUT_MS = 20_000;
 
@@ -32,14 +32,6 @@ function resolveRuntimeConfig({ cli = {}, config = {}, env = process.env, defaul
     DEFAULT_HTTP_TIMEOUT_MS,
   );
   const debug = pickBoolean(cli.debug, config.debug, env?.TOKENTRACKER_DEBUG, defaults.debug, false);
-  const insforgeAnonKey = pickString(
-    cli.insforgeAnonKey,
-    config.insforgeAnonKey,
-    env?.TOKENTRACKER_INSFORGE_ANON_KEY,
-    defaults.insforgeAnonKey,
-    "",
-  );
-  if (insforgeAnonKey.value == null) insforgeAnonKey.value = "";
   const autoRetryNoSpawn = pickBoolean(
     cli.autoRetryNoSpawn,
     config.autoRetryNoSpawn,
@@ -54,7 +46,6 @@ function resolveRuntimeConfig({ cli = {}, config = {}, env = process.env, defaul
     deviceToken: deviceToken.value,
     httpTimeoutMs: httpTimeoutMs.value,
     debug: debug.value,
-    insforgeAnonKey: insforgeAnonKey.value,
     autoRetryNoSpawn: autoRetryNoSpawn.value,
     sources: {
       baseUrl: baseUrl.source,
@@ -62,7 +53,6 @@ function resolveRuntimeConfig({ cli = {}, config = {}, env = process.env, defaul
       deviceToken: deviceToken.source,
       httpTimeoutMs: httpTimeoutMs.source,
       debug: debug.source,
-      insforgeAnonKey: insforgeAnonKey.source,
       autoRetryNoSpawn: autoRetryNoSpawn.source,
     },
   };

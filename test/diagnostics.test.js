@@ -17,7 +17,7 @@ test("diagnostics redacts device token and home paths", async () => {
     process.env.HOME = tmp;
     process.env.CODEX_HOME = path.join(tmp, ".codex");
 
-    const trackerDir = path.join(tmp, ".vibeusage", "tracker");
+    const trackerDir = path.join(tmp, ".tokentracker", "tracker");
     await fs.mkdir(trackerDir, { recursive: true });
     await fs.mkdir(process.env.CODEX_HOME, { recursive: true });
 
@@ -39,7 +39,7 @@ test("diagnostics redacts device token and home paths", async () => {
 
     await fs.writeFile(
       path.join(process.env.CODEX_HOME, "config.toml"),
-      `notify = ["/usr/bin/env", "node", "${path.join(tmp, ".vibeusage", "bin", "notify.cjs")}"]\n`,
+      `notify = ["/usr/bin/env", "node", "${path.join(tmp, ".tokentracker", "bin", "notify.cjs")}"]\n`,
       "utf8",
     );
 
@@ -107,5 +107,5 @@ test("diagnostics does not migrate legacy root", async () => {
   await collectTrackerDiagnostics({ home });
 
   await fs.stat(legacyRoot);
-  await assert.rejects(() => fs.stat(path.join(home, ".vibeusage")));
+  await assert.rejects(() => fs.stat(path.join(home, ".tokentracker")));
 });

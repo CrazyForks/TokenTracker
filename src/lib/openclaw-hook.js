@@ -4,7 +4,7 @@ const fs = require("node:fs/promises");
 const fssync = require("node:fs");
 const cp = require("node:child_process");
 
-const OPENCLAW_HOOK_NAME = "vibeusage-openclaw-sync";
+const OPENCLAW_HOOK_NAME = "tokentracker-openclaw-sync";
 const OPENCLAW_HOOK_DIRNAME = "openclaw-hook";
 
 function resolveOpenclawHookPaths({ home = os.homedir(), trackerDir, env = process.env } = {}) {
@@ -33,7 +33,7 @@ function resolveOpenclawHookPaths({ home = os.homedir(), trackerDir, env = proce
 async function installOpenclawHook({
   home = os.homedir(),
   trackerDir,
-  packageName = "vibeusage",
+  packageName = "tokentracker-cli",
   env = process.env,
 } = {}) {
   const paths = resolveOpenclawHookPaths({ home, trackerDir, env });
@@ -64,7 +64,7 @@ async function installOpenclawHook({
 async function ensureOpenclawHookFiles({
   hookDir,
   trackerDir,
-  packageName = "vibeusage",
+  packageName = "tokentracker-cli",
   openclawHome,
 } = {}) {
   if (!hookDir || !trackerDir) throw new Error("hookDir and trackerDir are required");
@@ -271,20 +271,20 @@ function runOpenclawCli(args, env = process.env) {
 function buildHookMarkdown() {
   return `---
 name: ${OPENCLAW_HOOK_NAME}
-description: "Trigger vibeusage sync when OpenClaw sessions roll over"
+description: "Trigger tokentracker sync when OpenClaw sessions roll over"
 metadata:
   { "openclaw": { "emoji": "📈", "events": ["command:new", "command:reset", "command:stop"], "requires": { "bins": ["node"] } } }
 ---
 
 # TokenTracker OpenClaw Sync Hook
 
-Triggers non-blocking 'vibeusage sync --auto --from-openclaw' runs when OpenClaw command events indicate session rollover/reset/stop.
+Triggers non-blocking 'tokentracker sync --auto --from-openclaw' runs when OpenClaw command events indicate session rollover/reset/stop.
 `;
 }
 
-function buildHookHandler({ trackerDir, packageName = "vibeusage", openclawHome }) {
+function buildHookHandler({ trackerDir, packageName = "tokentracker-cli", openclawHome }) {
   const trackerBinPath = path.join(trackerDir, "app", "bin", "tracker.js");
-  const fallbackPkg = packageName || "vibeusage";
+  const fallbackPkg = packageName || "tokentracker-cli";
   const safeOpenclawHome = openclawHome || path.join(os.homedir(), ".openclaw");
 
   return (
@@ -297,7 +297,7 @@ function buildHookHandler({ trackerDir, packageName = "vibeusage", openclawHome 
     `const fallbackPkg = ${JSON.stringify(fallbackPkg)};\n` +
     `const openclawHome = ${JSON.stringify(safeOpenclawHome)};\n` +
     `const throttlePath = path.join(trackerDir, 'openclaw.sync.throttle');\n` +
-    `const depsMarkerPath = path.join(trackerDir, 'app', 'node_modules', '@insforge', 'sdk', 'package.json');\n` +
+    `const depsMarkerPath = path.join(trackerDir, 'app', 'bin', 'tracker.js');\n` +
     `const THROTTLE_MS = 15_000;\n` +
     `\n` +
     `module.exports = async function handler(event) {\n` +

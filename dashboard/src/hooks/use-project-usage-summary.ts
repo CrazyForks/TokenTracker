@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { isAccessTokenReady, resolveAuthAccessToken } from "../lib/auth-token";
 import { isMockEnabled } from "../lib/mock-data";
-import { getProjectUsageSummary } from "../lib/vibeusage-api";
+import { getProjectUsageSummary } from "../lib/api";
 
 export function useProjectUsageSummary({
   baseUrl,

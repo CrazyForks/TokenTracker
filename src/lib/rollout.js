@@ -4,8 +4,8 @@ const path = require("node:path");
 const readline = require("node:readline");
 const cp = require("node:child_process");
 
+const crypto = require("node:crypto");
 const { ensureDir } = require("./fs");
-const { hashRepoRoot, resolveGitHubPublicStatus } = require("./vibeusage-public-repo");
 
 const DEFAULT_SOURCE = "codex";
 const DEFAULT_MODEL = "unknown";
@@ -1834,23 +1834,17 @@ async function resolveProjectMetaForPath(startDir, cache) {
   return null;
 }
 
-async function defaultPublicRepoResolver({ projectRef, repoRoot, cache }) {
-  if (!projectRef) {
-    return {
-      status: "blocked",
-      projectKey: null,
-      projectRef: null,
-      repoRootHash: repoRoot ? hashRepoRoot(repoRoot) : null,
-      reason: "missing_ref",
-    };
-  }
+function hashRepoRoot(repoRoot) {
+  return crypto.createHash("sha256").update(String(repoRoot)).digest("hex");
+}
 
-  const cached = cache && cache.has(projectRef) ? cache.get(projectRef) : null;
-  const base = cached || (await resolveGitHubPublicStatus(projectRef));
-  if (cache && !cached) cache.set(projectRef, base);
+async function defaultPublicRepoResolver({ projectRef, repoRoot }) {
   return {
-    ...base,
+    status: "blocked",
+    projectKey: null,
+    projectRef: projectRef || null,
     repoRootHash: repoRoot ? hashRepoRoot(repoRoot) : null,
+    reason: projectRef ? "local_only" : "missing_ref",
   };
 }
 

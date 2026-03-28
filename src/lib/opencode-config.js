@@ -4,7 +4,7 @@ const fs = require("node:fs/promises");
 
 const { ensureDir } = require("./fs");
 
-const DEFAULT_PLUGIN_NAME = "vibeusage-tracker.js";
+const DEFAULT_PLUGIN_NAME = "tokentracker.js";
 const PLUGIN_MARKER = "TOKENTRACKER_PLUGIN";
 const DEFAULT_EVENT = "session.updated";
 

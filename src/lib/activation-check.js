@@ -5,7 +5,7 @@ const { readJson } = require("./fs");
 
 /**
  * 跨 AI CLI 自动激活检测
- * 在 vibeusage 各种命令执行时顺带检测并完成配置
+ * 在 tokentracker 各种命令执行时顺带检测并完成配置
  */
 
 const AI_CLIS = [
@@ -84,7 +84,7 @@ async function checkAndActivate({ home = os.homedir(), silent = true, autoConfig
         });
         
         if (!silent) {
-          console.log(`⏳ 检测到 ${cli.displayName} 未配置，运行 'vibeusage init' 以配置`);
+          console.log(`⏳ 检测到 ${cli.displayName} 未配置，运行 'tokentracker init' 以配置`);
         }
       }
     } catch (err) {
@@ -115,7 +115,7 @@ async function checkCodexConfigured({ home }) {
   try {
     const content = await fs.readFile(configPath, "utf8");
     // 检查是否已配置 notify
-    return content.includes("vibeusage") || content.includes("notify");
+    return content.includes("tokentracker") || content.includes("notify");
   } catch {
     return false;
   }
@@ -125,9 +125,9 @@ async function configureCodex({ home, silent }) {
   try {
     // 使用现有的 codex-config 模块
     const { upsertCodexNotify } = require("./codex-config");
-    const notifyCmd = path.join(home, ".vibeusage", "bin", "notify.cjs");
+    const notifyCmd = path.join(home, ".tokentracker", "bin", "notify.cjs");
     const codexConfigPath = path.join(home, ".codex", "config.toml");
-    const notifyOriginalPath = path.join(home, ".vibeusage", "backups", "codex-notify-original.json");
+    const notifyOriginalPath = path.join(home, ".tokentracker", "backups", "codex-notify-original.json");
     
     await upsertCodexNotify({
       codexConfigPath,
@@ -157,10 +157,10 @@ async function checkClaudeCodeConfigured({ home }) {
   const settingsPath = path.join(home, ".claude", "settings.json");
   try {
     const settings = await readJson(settingsPath);
-    // 检查是否已有 vibeusage 相关的 hook
+    // 检查是否已有 tokentracker 相关的 hook
     const hooks = settings?.hooks?.SessionStart || [];
-    return hooks.some(h => 
-      h.hooks?.some(hook => hook.command?.includes("vibeusage"))
+    return hooks.some(h =>
+      h.hooks?.some(hook => hook.command?.includes("tokentracker"))
     );
   } catch {
     return false;
@@ -178,8 +178,8 @@ async function configureClaudeCode({ home, silent }) {
     
     // 检查是否已存在
     const exists = settings.hooks.SessionStart.some(h => 
-      h.matcher === "startup" && 
-      h.hooks?.some(hook => hook.command?.includes("vibeusage activate-if-needed"))
+      h.matcher === "startup" &&
+      h.hooks?.some(hook => hook.command?.includes("tokentracker activate-if-needed"))
     );
     
     if (!exists) {
@@ -187,7 +187,7 @@ async function configureClaudeCode({ home, silent }) {
         matcher: "startup",
         hooks: [{
           type: "command",
-          command: "vibeusage activate-if-needed --silent 2>/dev/null || true"
+          command: "tokentracker activate-if-needed --silent 2>/dev/null || true"
         }]
       });
       
@@ -216,7 +216,7 @@ async function checkOpencodeConfigured({ home }) {
   const pluginDir = path.join(home, ".config", "opencode", "plugins");
   try {
     const files = await fs.readdir(pluginDir);
-    return files.some(f => f.includes("vibeusage"));
+    return files.some(f => f.includes("tokentracker"));
   } catch {
     return false;
   }
@@ -227,11 +227,11 @@ async function configureOpencode({ home, silent }) {
     const pluginDir = path.join(home, ".config", "opencode", "plugins");
     await fs.mkdir(pluginDir, { recursive: true });
     
-    const pluginPath = path.join(pluginDir, "vibeusage-activation.js");
-    const pluginCode = `export const VibeusageActivation = async ({ $ }) => {
+    const pluginPath = path.join(pluginDir, "tokentracker-activation.js");
+    const pluginCode = `export const TokentrackerActivation = async ({ $ }) => {
   return {
     "session.created": async () => {
-      await $'vibeusage activate-if-needed --silent'.quiet().nothrow();
+      await $'tokentracker activate-if-needed --silent'.quiet().nothrow();
     }
   };
 };`;
@@ -260,7 +260,7 @@ async function checkEveryCodeConfigured({ home }) {
   const configPath = path.join(home, ".code", "config.toml");
   try {
     const content = await fs.readFile(configPath, "utf8");
-    return content.includes("vibeusage");
+    return content.includes("tokentracker");
   } catch {
     return false;
   }
@@ -277,11 +277,11 @@ async function configureEveryCode({ home, silent }) {
       content = "";
     }
     
-    const notifyCmd = path.join(home, ".vibeusage", "bin", "notify.cjs");
+    const notifyCmd = path.join(home, ".tokentracker", "bin", "notify.cjs");
     const notifyLine = `notify = ["/usr/bin/env", "node", "${notifyCmd}"]`;
-    
-    if (!content.includes("vibeusage")) {
-      content = content.trim() + "\n\n# vibeusage integration\n" + notifyLine + "\n";
+
+    if (!content.includes("tokentracker")) {
+      content = content.trim() + "\n\n# tokentracker integration\n" + notifyLine + "\n";
       await fs.writeFile(configPath, content, "utf8");
     }
     return true;
@@ -329,7 +329,7 @@ async function configureOpenclaw({ home, silent }) {
     const result = await installOpenclawSessionPlugin({
       home,
       trackerDir,
-      packageName: "vibeusage",
+      packageName: "tokentracker-cli",
       env: process.env,
     });
     

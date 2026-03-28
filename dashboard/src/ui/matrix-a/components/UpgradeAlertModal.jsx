@@ -7,7 +7,7 @@ import { safeGetItem, safeSetItem, safeWriteClipboard } from "../../../lib/safe-
 export function UpgradeAlertModal({ requiredVersion, installCommand, onClose }) {
   const normalizedRequired = typeof requiredVersion === "string" ? requiredVersion.trim() : "";
   const hasVersion = normalizedRequired.length > 0;
-  const unknownDismissKey = "vibeusage_upgrade_dismissed_unknown";
+  const unknownDismissKey = "tokentracker_upgrade_dismissed_unknown";
   const resolvedInstallCommand = installCommand ?? copy("dashboard.upgrade_alert.install_command");
   const sparkleLabel = copy("dashboard.upgrade_alert.sparkle");
   const titleLabel = copy("dashboard.upgrade_alert.title");
@@ -22,7 +22,7 @@ export function UpgradeAlertModal({ requiredVersion, installCommand, onClose }) 
   const ignoreLabel = copy("dashboard.upgrade_alert.ignore");
   const [copied, setCopied] = useState(false);
   const storageKey = useMemo(
-    () => (hasVersion ? `vibeusage_upgrade_dismissed_${normalizedRequired}` : unknownDismissKey),
+    () => (hasVersion ? `tokentracker_upgrade_dismissed_${normalizedRequired}` : unknownDismissKey),
     [hasVersion, normalizedRequired, unknownDismissKey],
   );
   const [isVisible, setIsVisible] = useState(() => {

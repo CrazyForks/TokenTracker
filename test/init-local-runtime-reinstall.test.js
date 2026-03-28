@@ -31,7 +31,7 @@ test("init can rerun from installed local runtime without self-deleting app sour
     CODEX_HOME: path.join(tmp, ".codex"),
     OPENCODE_CONFIG_DIR: path.join(tmp, ".config", "opencode"),
   };
-  delete env.VIBEUSAGE_DEVICE_TOKEN;
+  delete env.TOKENTRACKER_DEVICE_TOKEN;
 
   try {
     await fs.mkdir(env.CODEX_HOME, { recursive: true });
@@ -47,7 +47,7 @@ test("init can rerun from installed local runtime without self-deleting app sour
       `expected first init to succeed\nstdout:\n${firstInit.stdout}\nstderr:\n${firstInit.stderr}`,
     );
 
-    const trackerBinPath = path.join(tmp, ".vibeusage", "tracker", "app", "bin", "tracker.js");
+    const trackerBinPath = path.join(tmp, ".tokentracker", "tracker", "app", "bin", "tracker.js");
     await fs.stat(trackerBinPath);
 
     const secondInit = runLocalTracker(
@@ -61,7 +61,7 @@ test("init can rerun from installed local runtime without self-deleting app sour
       `expected local runtime init to succeed\nstdout:\n${secondInit.stdout}\nstderr:\n${secondInit.stderr}`,
     );
 
-    await fs.stat(path.join(tmp, ".vibeusage", "tracker", "app", "src", "commands", "init.js"));
+    await fs.stat(path.join(tmp, ".tokentracker", "tracker", "app", "src", "commands", "init.js"));
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }

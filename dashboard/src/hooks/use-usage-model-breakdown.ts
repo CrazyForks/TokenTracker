@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { isAccessTokenReady, resolveAuthAccessToken } from "../lib/auth-token";
 import { isMockEnabled } from "../lib/mock-data";
 import { getTimeZoneCacheKey } from "../lib/timezone";
-import { getUsageModelBreakdown } from "../lib/vibeusage-api";
+import { getUsageModelBreakdown } from "../lib/api";
 
 export function useUsageModelBreakdown({
   baseUrl,
@@ -26,7 +26,7 @@ export function useUsageModelBreakdown({
     if (!cacheKey) return null;
     const host = safeHost(baseUrl) || "default";
     const tzKey = getTimeZoneCacheKey({ timeZone, offsetMinutes: tzOffsetMinutes });
-    return `vibeusage.modelBreakdown.${cacheKey}.${host}.${from}.${to}.${tzKey}`;
+    return `tokentracker.modelBreakdown.${cacheKey}.${host}.${from}.${to}.${tzKey}`;
   }, [baseUrl, cacheKey, from, timeZone, to, tzOffsetMinutes]);
 
   const readCache = useCallback(() => {

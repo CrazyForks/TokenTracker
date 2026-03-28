@@ -1,5 +1,5 @@
-const REDIRECT_STORAGE_KEY = "vibeusage.dashboard.redirect.v1";
-const POST_AUTH_PATH_STORAGE_KEY = "vibeusage.dashboard.post_auth_path.v1";
+const REDIRECT_STORAGE_KEY = "tokentracker.dashboard.redirect.v1";
+const POST_AUTH_PATH_STORAGE_KEY = "tokentracker.dashboard.post_auth_path.v1";
 let memoryRedirect: string | null = null;
 let memoryPostAuthPath: string | null = null;
 
@@ -57,8 +57,8 @@ export function validateNextPath(value: any) {
   // Backslashes can be normalized differently across browsers.
   if (trimmed.includes("\\")) return null;
   try {
-    const url = new URL(trimmed, "https://vibeusage.local");
-    if (url.origin !== "https://vibeusage.local") return null;
+    const url = new URL(trimmed, "https://tokentracker.local");
+    if (url.origin !== "https://tokentracker.local") return null;
     return `${url.pathname}${url.search}${url.hash}`;
   } catch (_e) {
     return null;

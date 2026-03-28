@@ -52,7 +52,7 @@ test("upsertNotify replaces multi-line notify blocks without leaving trailing li
     "utf8",
   );
 
-  const newNotify = ["/usr/bin/env", "node", "/Users/victor/.vibeusage/bin/notify.cjs"];
+  const newNotify = ["/usr/bin/env", "node", "/Users/victor/.tokentracker/bin/notify.cjs"];
 
   const result = await upsertNotify({
     configPath,
@@ -65,7 +65,7 @@ test("upsertNotify replaces multi-line notify blocks without leaving trailing li
   const updated = fs.readFileSync(configPath, "utf8");
   assert.equal(
     updated.includes(
-      'notify = [\"/usr/bin/env\", \"node\", \"/Users/victor/.vibeusage/bin/notify.cjs\"]',
+      'notify = [\"/usr/bin/env\", \"node\", \"/Users/victor/.tokentracker/bin/notify.cjs\"]',
     ),
     true,
   );
@@ -101,13 +101,13 @@ test("restoreNotify restores from notifyOriginalPath even if config was updated"
     configPath,
     [
       'model = "gpt-5.3-codex"',
-      'notify = [\"/usr/bin/env\", \"node\", \"/Users/victor/.vibeusage/bin/notify.cjs\"]',
+      'notify = [\"/usr/bin/env\", \"node\", \"/Users/victor/.tokentracker/bin/notify.cjs\"]',
       'personality = "pragmatic"',
     ].join("\n"),
     "utf8",
   );
 
-  const expectedNotify = ["/usr/bin/env", "node", "/Users/victor/.vibeusage/bin/notify.cjs"];
+  const expectedNotify = ["/usr/bin/env", "node", "/Users/victor/.tokentracker/bin/notify.cjs"];
   const result = await restoreNotify({ configPath, notifyOriginalPath, expectedNotify });
   assert.equal(result.restored, true);
 

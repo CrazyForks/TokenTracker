@@ -88,7 +88,7 @@ test("hooks and core lib files are migrated to TS", async () => {
     "dashboard/src/hooks/use-usage-data.ts",
     "dashboard/src/hooks/use-trend-data.ts",
     "dashboard/src/hooks/use-usage-model-breakdown.ts",
-    "dashboard/src/lib/vibeusage-api.ts",
+    "dashboard/src/lib/api.ts",
     "dashboard/src/ui/matrix-a/components/MatrixConstants.ts",
   ]) {
     await fs.readFile(path.join(repoRoot, file));
@@ -103,12 +103,11 @@ test("lib layer is fully migrated to TS", async () => {
     "activity-heatmap",
     "usage-aggregate",
     "daily",
-    "insforge-client",
+    "api",
     "http-timeout",
     "timezone",
     "npm-version",
     "config",
-    "insforge-auth-client",
     "mock-data",
     "date-range",
     "copy",

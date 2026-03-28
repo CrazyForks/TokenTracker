@@ -29,7 +29,6 @@ const EXCLUDED_DIRS = new Set([
   ".worktrees",
   "worktrees",
   ".tmp",
-  "insforge-functions",
 ]);
 
 const CONFIG_FILES = [
@@ -42,7 +41,7 @@ const CONFIG_FILES = [
 ];
 
 const FRONT_DIR_HINTS = ["frontend", "client", "web", "dashboard", "ui"];
-const BACK_DIR_HINTS = ["backend", "server", "api", "services", "insforge", "src"];
+const BACK_DIR_HINTS = ["backend", "server", "api", "services", "src"];
 
 const ENABLE_AGGREGATION = false;
 const ENABLE_ISOLATED_GROUPING = false;
@@ -130,22 +129,6 @@ const CATEGORY_DEFINITIONS = [
     color: "3",
     match: (p, c) =>
       p.includes("/routes/") || p.includes("/api/") || /@app\.route|express\.Router/i.test(c || ""),
-  },
-  {
-    name: "edge-function",
-    description: "Edge function handler.",
-    group: "controller",
-    color: "3",
-    match: (p) => p.startsWith("insforge-src/functions/") || p.includes("/insforge-src/functions/"),
-  },
-  {
-    name: "controller",
-    description: "Request handling layer.",
-    group: "controller",
-    color: "3",
-    match: (p) =>
-      p.includes("/functions/") &&
-      (p.includes("/server/") || p.includes("/api/") || p.includes("/insforge-")),
   },
   {
     name: "controller",
@@ -241,7 +224,6 @@ const EXTERNAL_SERVICE_PATTERNS = [
   { name: "Kafka", regex: /\bkafka\b/i },
   { name: "RabbitMQ", regex: /\brabbitmq\b|\bamqp\b/i },
   { name: "Redis", regex: /\bredis\b/i },
-  { name: "InsForge", regex: /\binsforge\b/i },
 ];
 
 const SOFT_NODE_LIMIT = 300;

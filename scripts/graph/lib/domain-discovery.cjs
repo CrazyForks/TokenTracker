@@ -10,8 +10,6 @@ const DEFAULT_DOMAIN_ROOTS = [
   "dashboard",
   "bin",
   "scripts",
-  "insforge-src",
-  "insforge-functions",
 ];
 
 function discoverDomains({ rootDir, fs, path: pathMod = path }) {

@@ -10,14 +10,14 @@ test("sync --auto schedules retry when throttled and pending", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "vibeusage-auto-retry-"));
   const prevHome = process.env.HOME;
   const prevCodexHome = process.env.CODEX_HOME;
-  const prevNoSpawn = process.env.VIBEUSAGE_AUTO_RETRY_NO_SPAWN;
+  const prevNoSpawn = process.env.TOKENTRACKER_AUTO_RETRY_NO_SPAWN;
 
   try {
     process.env.HOME = tmp;
     process.env.CODEX_HOME = path.join(tmp, ".codex");
-    process.env.VIBEUSAGE_AUTO_RETRY_NO_SPAWN = "1";
+    process.env.TOKENTRACKER_AUTO_RETRY_NO_SPAWN = "1";
 
-    const trackerDir = path.join(tmp, ".vibeusage", "tracker");
+    const trackerDir = path.join(tmp, ".tokentracker", "tracker");
     await fs.mkdir(trackerDir, { recursive: true });
     await fs.mkdir(process.env.CODEX_HOME, { recursive: true });
 
@@ -74,8 +74,8 @@ test("sync --auto schedules retry when throttled and pending", async () => {
     else process.env.HOME = prevHome;
     if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = prevCodexHome;
-    if (prevNoSpawn === undefined) delete process.env.VIBEUSAGE_AUTO_RETRY_NO_SPAWN;
-    else process.env.VIBEUSAGE_AUTO_RETRY_NO_SPAWN = prevNoSpawn;
+    if (prevNoSpawn === undefined) delete process.env.TOKENTRACKER_AUTO_RETRY_NO_SPAWN;
+    else process.env.TOKENTRACKER_AUTO_RETRY_NO_SPAWN = prevNoSpawn;
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });

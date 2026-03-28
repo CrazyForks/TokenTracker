@@ -58,7 +58,7 @@ export function LandingPage({ signInUrl, signUpUrl }) {
     screenshotMode,
   });
   const effectsReady = useDeferredMount(250, deferMount);
-  const installEntryKey = "vibeusage.dashboard.from_landing.v1";
+  const installEntryKey = "tokentracker.dashboard.from_landing.v1";
 
   useEffect(() => {
     if (typeof window === "undefined") return;

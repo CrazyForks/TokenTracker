@@ -5,7 +5,7 @@ import { isAccessTokenReady, resolveAuthAccessToken } from "../lib/auth-token";
 import { copy } from "../lib/copy";
 import { toDisplayNumber } from "../lib/format";
 import { isMockEnabled } from "../lib/mock-data";
-import { getLeaderboardProfile } from "../lib/vibeusage-api";
+import { getLeaderboardProfile } from "../lib/api";
 import { AsciiBox } from "../ui/foundation/AsciiBox.jsx";
 import { MatrixButton } from "../ui/foundation/MatrixButton.jsx";
 import { MatrixShell } from "../ui/foundation/MatrixShell.jsx";

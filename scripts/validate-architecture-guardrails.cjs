@@ -10,24 +10,18 @@ const IGNORED_DIRS = new Set([
   "node_modules",
   ".git",
   ".code",
-  "insforge-functions",
   "dist",
   "build",
   ".tmp",
   "archive",
 ]);
 
-const CLIENT_IMPORT_PATTERNS = ["insforge-src", "insforge-functions"];
-const CLIENT_INTERNAL_PATTERNS = ["INSFORGE_INTERNAL_URL"];
-const SERVICE_ROLE_PATTERNS = ["SERVICE_ROLE_KEY", "INSFORGE_SERVICE_ROLE_KEY", "service_role_key"];
-const SDK_ALLOWLIST = new Set([
-  path.join("src", "lib", "insforge-client.js"),
-  path.join("src", "lib", "insforge-client.ts"),
-  path.join("dashboard", "src", "lib", "insforge-client.js"),
-  path.join("dashboard", "src", "lib", "insforge-client.ts"),
-]);
+const CLIENT_IMPORT_PATTERNS = [];
+const CLIENT_INTERNAL_PATTERNS = [];
+const SERVICE_ROLE_PATTERNS = ["SERVICE_ROLE_KEY", "service_role_key"];
+const SDK_ALLOWLIST = new Set([]);
 
-const SDK_PACKAGE = "@insforge/sdk";
+const SDK_PACKAGE = null;
 
 function isSdkAllowlisted(file, root) {
   const relativePath = path.normalize(path.relative(root, file));

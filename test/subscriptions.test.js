@@ -249,7 +249,7 @@ test("collectLocalSubscriptions includes OpenClaw when session plugin is configu
     const home = tmp;
     const pluginEntryDir = path.join(
       home,
-      ".vibeusage",
+      ".tokentracker",
       "tracker",
       "openclaw-plugin",
       "openclaw-session-sync",

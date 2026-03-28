@@ -15,7 +15,7 @@ import {
   getLeaderboard,
   getPublicVisibility,
   setPublicVisibility,
-} from "../lib/vibeusage-api";
+} from "../lib/api";
 import { AsciiBox } from "../ui/foundation/AsciiBox.jsx";
 import { MatrixButton } from "../ui/foundation/MatrixButton.jsx";
 import { MatrixShell } from "../ui/foundation/MatrixShell.jsx";

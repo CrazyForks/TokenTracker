@@ -3,7 +3,7 @@ const { test } = require("node:test");
 
 const { run } = require("../src/cli");
 
-test("help output uses VibeUsage identifiers", async () => {
+test("help output uses TokenTracker identifiers", async () => {
   const prevWrite = process.stdout.write;
   let out = "";
 
@@ -13,13 +13,12 @@ test("help output uses VibeUsage identifiers", async () => {
       return true;
     };
 
-    await run([]);
+    await run(["-h"]);
   } finally {
     process.stdout.write = prevWrite;
   }
 
-  assert.match(out, /vibeusage/);
+  assert.match(out, /tokentracker/);
   assert.ok(!out.includes("@vibescore/tracker"));
-  assert.match(out, /VIBEUSAGE_DASHBOARD_URL/);
   assert.match(out, /doctor/);
 });

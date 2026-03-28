@@ -8,7 +8,7 @@ test("resolveRuntimeConfig prefers CLI flags over config and env", () => {
   const result = resolveRuntimeConfig({
     cli: { baseUrl: "https://cli.example" },
     config,
-    env: { VIBEUSAGE_DEVICE_TOKEN: "env" },
+    env: { TOKENTRACKER_DEVICE_TOKEN: "env" },
   });
 
   assert.equal(result.baseUrl, "https://cli.example");
@@ -17,26 +17,24 @@ test("resolveRuntimeConfig prefers CLI flags over config and env", () => {
   assert.equal(result.sources.deviceToken, "config");
 });
 
-test("resolveRuntimeConfig ignores non-VIBEUSAGE env inputs", () => {
+test("resolveRuntimeConfig ignores non-TOKENTRACKER env inputs", () => {
   const result = resolveRuntimeConfig({
     env: {
-      VIBESCORE_INSFORGE_BASE_URL: "https://legacy.example",
+      VIBESCORE_BASE_URL: "https://legacy.example",
       VIBESCORE_DEVICE_TOKEN: "legacy",
-      INSFORGE_ANON_KEY: "legacy",
     },
   });
 
   assert.equal(result.deviceToken, null);
-  assert.equal(result.insforgeAnonKey, "");
   assert.equal(result.sources.deviceToken, "default");
 });
 
 test("resolveRuntimeConfig normalizes timeout and flags", () => {
   const result = resolveRuntimeConfig({
     env: {
-      VIBEUSAGE_HTTP_TIMEOUT_MS: "500",
-      VIBEUSAGE_DEBUG: "1",
-      VIBEUSAGE_AUTO_RETRY_NO_SPAWN: "1",
+      TOKENTRACKER_HTTP_TIMEOUT_MS: "500",
+      TOKENTRACKER_DEBUG: "1",
+      TOKENTRACKER_AUTO_RETRY_NO_SPAWN: "1",
     },
   });
 

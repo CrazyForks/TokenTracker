@@ -3,7 +3,7 @@ import { isAccessTokenReady, resolveAuthAccessToken } from "../lib/auth-token";
 import { formatDateLocal, formatDateUTC } from "../lib/date-range";
 import { isMockEnabled } from "../lib/mock-data";
 import { getLocalDayKey, getTimeZoneCacheKey } from "../lib/timezone";
-import { getUsageDaily, getUsageHourly, getUsageMonthly } from "../lib/vibeusage-api";
+import { getUsageDaily, getUsageHourly, getUsageMonthly } from "../lib/api";
 
 const DEFAULT_MONTHS = 24;
 type AnyRecord = Record<string, any>;
@@ -48,14 +48,14 @@ export function useTrendData({
     const tzKey = getTimeZoneCacheKey({ timeZone, offsetMinutes: tzOffsetMinutes });
     if (mode === "hourly") {
       const dayKey = to || from || "day";
-      return `vibeusage.trend.${cacheKey}.${host}.hourly.${dayKey}.${tzKey}`;
+      return `tokentracker.trend.${cacheKey}.${host}.hourly.${dayKey}.${tzKey}`;
     }
     if (mode === "monthly") {
       const toKey = to || "today";
-      return `vibeusage.trend.${cacheKey}.${host}.monthly.${months}.${toKey}.${tzKey}`;
+      return `tokentracker.trend.${cacheKey}.${host}.monthly.${months}.${toKey}.${tzKey}`;
     }
     const rangeKey = `${from || ""}.${to || ""}`;
-    return `vibeusage.trend.${cacheKey}.${host}.daily.${rangeKey}.${tzKey}`;
+    return `tokentracker.trend.${cacheKey}.${host}.daily.${rangeKey}.${tzKey}`;
   })();
 
   const readCache = useCallback(() => {

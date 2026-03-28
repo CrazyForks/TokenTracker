@@ -16,7 +16,7 @@ const {
 test("probeOpenclawHookState detects linked + enabled hook", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "vibeusage-openclaw-hook-"));
   const home = path.join(tmp, "home");
-  const trackerDir = path.join(home, ".vibeusage", "tracker");
+  const trackerDir = path.join(home, ".tokentracker", "tracker");
   await fs.mkdir(trackerDir, { recursive: true });
 
   const { hookDir, openclawConfigPath } = resolveOpenclawHookPaths({ home, trackerDir, env: {} });
@@ -55,7 +55,7 @@ test("probeOpenclawHookState detects linked + enabled hook", async () => {
 test("installOpenclawHook returns skipped when openclaw CLI is missing", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "vibeusage-openclaw-hook-"));
   const home = path.join(tmp, "home");
-  const trackerDir = path.join(home, ".vibeusage", "tracker");
+  const trackerDir = path.join(home, ".tokentracker", "tracker");
   await fs.mkdir(trackerDir, { recursive: true });
 
   const result = await installOpenclawHook({
@@ -74,7 +74,7 @@ test("installOpenclawHook returns skipped when openclaw CLI is missing", async (
 test("removeOpenclawHookConfig removes linked config and hook dir", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "vibeusage-openclaw-hook-"));
   const home = path.join(tmp, "home");
-  const trackerDir = path.join(home, ".vibeusage", "tracker");
+  const trackerDir = path.join(home, ".tokentracker", "tracker");
   await fs.mkdir(trackerDir, { recursive: true });
 
   const { hookDir, openclawConfigPath } = resolveOpenclawHookPaths({ home, trackerDir, env: {} });
@@ -138,7 +138,7 @@ test("removeOpenclawHookConfig removes linked config and hook dir", async () => 
 test("ensureOpenclawHookFiles keeps command-only trigger set and command guard", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "vibeusage-openclaw-hook-"));
   const home = path.join(tmp, "home");
-  const trackerDir = path.join(home, ".vibeusage", "tracker");
+  const trackerDir = path.join(home, ".tokentracker", "tracker");
   await fs.mkdir(trackerDir, { recursive: true });
 
   const { hookDir, hookEntryDir } = resolveOpenclawHookPaths({ home, trackerDir, env: {} });

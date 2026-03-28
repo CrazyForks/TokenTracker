@@ -22,16 +22,10 @@ const {
   parseCursorApiIncremental,
   parseKiroIncremental,
 } = require("../lib/rollout");
-const { drainQueueToCloud } = require("../lib/uploader");
-const { collectLocalSubscriptions } = require("../lib/subscriptions");
 const { createProgress, renderBar, formatNumber, formatBytes } = require("../lib/progress");
-const { syncHeartbeat } = require("../lib/vibeusage-api");
 const {
-  DEFAULTS: UPLOAD_DEFAULTS,
   normalizeState: normalizeUploadState,
   decideAutoUpload,
-  recordUploadSuccess,
-  recordUploadFailure,
 } = require("../lib/upload-throttle");
 const {
   isCursorInstalled,
@@ -347,119 +341,9 @@ async function cmdSync(argv) {
     progress?.stop();
 
     const runtime = resolveRuntimeConfig({ config: config || {}, env: process.env });
-    const deviceToken = runtime.deviceToken;
-    const baseUrl = runtime.baseUrl;
 
-    let uploadResult = null;
+    let uploadResult = { inserted: 0, skipped: 0 };
     let uploadAttempted = false;
-    if (deviceToken) {
-      const beforeState = (await readJson(queueStatePath)) || { offset: 0 };
-      const projectBeforeState = (await readJson(projectQueueStatePath)) || { offset: 0 };
-      const queueSize = await safeStatSize(queuePath);
-      const projectQueueSize = await safeStatSize(projectQueuePath);
-      const pendingBytes =
-        Math.max(0, queueSize - Number(beforeState.offset || 0)) +
-        Math.max(0, projectQueueSize - Number(projectBeforeState.offset || 0));
-      let maxBatches = opts.auto ? 3 : opts.drain ? 10_000 : 10;
-      let batchSize = UPLOAD_DEFAULTS.batchSize;
-      let allowUpload = pendingBytes > 0;
-      let autoDecision = null;
-
-      if (opts.auto) {
-        autoDecision = decideAutoUpload({
-          nowMs: Date.now(),
-          pendingBytes,
-          state: uploadThrottle,
-        });
-        allowUpload = allowUpload && autoDecision.allowed;
-        maxBatches = autoDecision.allowed ? autoDecision.maxBatches : 0;
-        batchSize = autoDecision.batchSize;
-        if (!autoDecision.allowed && pendingBytes > 0 && autoDecision.blockedUntilMs > 0) {
-          const reason = deriveAutoSkipReason({ decision: autoDecision, state: uploadThrottle });
-          await scheduleAutoRetry({
-            trackerDir,
-            retryAtMs: autoDecision.blockedUntilMs,
-            reason,
-            pendingBytes,
-            source: "auto-throttled",
-            autoRetryNoSpawn: runtime.autoRetryNoSpawn,
-          });
-        }
-      }
-
-      if (progress?.enabled && pendingBytes > 0 && allowUpload) {
-        const totalSize = queueSize + projectQueueSize;
-        const totalOffset =
-          Number(beforeState.offset || 0) + Number(projectBeforeState.offset || 0);
-        const pct = totalSize > 0 ? totalOffset / totalSize : 0;
-        progress.start(
-          `Uploading ${renderBar(pct)} ${formatBytes(totalOffset)}/${formatBytes(totalSize)} | inserted 0 skipped 0`,
-        );
-      }
-
-      if (allowUpload && maxBatches > 0) {
-        uploadAttempted = true;
-        const deviceSubscriptions = await collectLocalSubscriptions({
-          home,
-          env: process.env,
-          probeKeychain: true,
-          probeKeychainDetails: true,
-        });
-        try {
-          uploadResult = await drainQueueToCloud({
-            baseUrl,
-            deviceToken,
-            deviceSubscriptions,
-            queuePath,
-            queueStatePath,
-            projectQueuePath,
-            projectQueueStatePath,
-            maxBatches,
-            batchSize,
-            onProgress: (u) => {
-              if (!progress?.enabled) return;
-              const pct = u.queueSize > 0 ? u.offset / u.queueSize : 1;
-              progress.update(
-                `Uploading ${renderBar(pct)} ${formatBytes(u.offset)}/${formatBytes(u.queueSize)} | inserted ${formatNumber(
-                  u.inserted,
-                )} skipped ${formatNumber(u.skipped)}`,
-              );
-            },
-          });
-          if (uploadResult.attempted > 0) {
-            const next = recordUploadSuccess({ nowMs: Date.now(), state: uploadThrottleState });
-            uploadThrottleState = next;
-            await writeJson(uploadThrottlePath, next);
-          }
-        } catch (e) {
-          const next = recordUploadFailure({
-            nowMs: Date.now(),
-            state: uploadThrottleState,
-            error: e,
-          });
-          uploadThrottleState = next;
-          await writeJson(uploadThrottlePath, next);
-          if (opts.auto && pendingBytes > 0) {
-            const retryAtMs = Math.max(next.nextAllowedAtMs || 0, next.backoffUntilMs || 0);
-            if (retryAtMs > 0) {
-              await scheduleAutoRetry({
-                trackerDir,
-                retryAtMs,
-                reason: "backoff",
-                pendingBytes,
-                source: "auto-error",
-                autoRetryNoSpawn: runtime.autoRetryNoSpawn,
-              });
-            }
-          }
-          throw e;
-        }
-      } else {
-        uploadResult = { inserted: 0, skipped: 0 };
-      }
-
-      progress?.stop();
-    }
 
     const afterState = (await readJson(queueStatePath)) || { offset: 0 };
     const queueSize = await safeStatSize(queuePath);
@@ -484,14 +368,6 @@ async function cmdSync(argv) {
         });
       }
     }
-
-    await maybeSendHeartbeat({
-      baseUrl,
-      deviceToken,
-      trackerDir,
-      uploadResult,
-      pendingBytes,
-    });
 
     if (!opts.auto) {
       const totalParsed =
@@ -714,34 +590,6 @@ async function safeStatSize(p) {
   }
 }
 
-async function maybeSendHeartbeat({
-  baseUrl,
-  deviceToken,
-  trackerDir,
-  uploadResult,
-  pendingBytes,
-}) {
-  if (!deviceToken || !uploadResult) return;
-  if (pendingBytes > 0) return;
-  if (Number(uploadResult.inserted || 0) !== 0) return;
-
-  const heartbeatPath = path.join(trackerDir, "sync.heartbeat.json");
-  const heartbeatState = await readJson(heartbeatPath);
-  const lastPingAt = Date.parse(heartbeatState?.lastPingAt || "");
-  const nowMs = Date.now();
-  if (Number.isFinite(lastPingAt) && nowMs - lastPingAt < HEARTBEAT_MIN_INTERVAL_MS) return;
-
-  try {
-    await syncHeartbeat({ baseUrl, deviceToken });
-    await writeJson(heartbeatPath, {
-      lastPingAt: new Date(nowMs).toISOString(),
-      minIntervalMinutes: HEARTBEAT_MIN_INTERVAL_MINUTES,
-    });
-  } catch (_e) {
-    // best-effort heartbeat; ignore failures
-  }
-}
-
 function deriveAutoSkipReason({ decision, state }) {
   if (!decision || decision.reason !== "throttled") return decision?.reason || "unknown";
   const backoffUntilMs = Number(state?.backoffUntilMs || 0);
@@ -790,7 +638,7 @@ async function scheduleAutoRetry({
   spawnAutoRetryProcess({
     retryPath,
     trackerBinPath: path.join(trackerDir, "app", "bin", "tracker.js"),
-    fallbackPkg: "vibeusage",
+    fallbackPkg: "tokentracker-cli",
     delayMs,
   });
   return { scheduled: true, retryAtMs: retryMs };
@@ -856,7 +704,5 @@ async function writeOpenclawSignal(trackerDir) {
   }
 }
 
-const HEARTBEAT_MIN_INTERVAL_MINUTES = 30;
-const HEARTBEAT_MIN_INTERVAL_MS = HEARTBEAT_MIN_INTERVAL_MINUTES * 60 * 1000;
 const AUTO_RETRY_FILENAME = "auto.retry.json";
 const AUTO_RETRY_MAX_DELAY_MS = 2 * 60 * 60 * 1000;

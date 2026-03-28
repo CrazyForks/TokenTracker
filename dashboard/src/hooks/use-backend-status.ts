@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { AuthTokenProvider } from "../lib/auth-token";
 import { resolveAuthAccessToken } from "../lib/auth-token";
 import { createProbeCadence, DEFAULT_PROBE_INTERVAL_MS } from "../lib/backend-probe-scheduler";
-import { probeBackend } from "../lib/vibeusage-api";
+import { probeBackend } from "../lib/api";
 
 type UseBackendStatusOptions = {
   baseUrl?: string;

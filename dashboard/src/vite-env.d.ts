@@ -8,6 +8,15 @@ interface ImportMetaEnv {
   readonly VITE_VIBEUSAGE_MOCK_TODAY?: string;
   readonly VITE_VIBEUSAGE_MOCK_SEED?: string;
   readonly VITE_VIBEUSAGE_MOCK_MISSING?: string;
+  readonly VITE_TOKENTRACKER_MOCK?: string;
+  readonly VITE_TOKENTRACKER_MOCK_NOW?: string;
+  readonly VITE_TOKENTRACKER_MOCK_TODAY?: string;
+  readonly VITE_TOKENTRACKER_MOCK_SEED?: string;
+  readonly VITE_TOKENTRACKER_MOCK_MISSING?: string;
+  readonly VITE_TOKENTRACKER_BACKEND_BASE_URL?: string;
+  readonly VITE_BACKEND_BASE_URL?: string;
+  readonly VITE_TOKENTRACKER_BACKEND_ANON_KEY?: string;
+  readonly VITE_BACKEND_ANON_KEY?: string;
   readonly VITE_VIBEUSAGE_INSFORGE_BASE_URL?: string;
   readonly VITE_INSFORGE_BASE_URL?: string;
   readonly VITE_VIBEUSAGE_INSFORGE_ANON_KEY?: string;

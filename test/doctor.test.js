@@ -60,7 +60,7 @@ test("doctor reports runtime config status", async () => {
 
 test("doctor marks invalid config.json as critical", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "vibeusage-doctor-"));
-  const trackerDir = path.join(tmp, ".vibeusage", "tracker");
+  const trackerDir = path.join(tmp, ".tokentracker", "tracker");
   await fs.mkdir(trackerDir, { recursive: true });
   const configPath = path.join(trackerDir, "config.json");
   await fs.writeFile(configPath, "{bad", "utf8");
@@ -126,7 +126,7 @@ test("doctor sets exitCode on critical failures", async () => {
 
   try {
     process.env.HOME = tmp;
-    const trackerDir = path.join(tmp, ".vibeusage", "tracker");
+    const trackerDir = path.join(tmp, ".tokentracker", "tracker");
     await fs.mkdir(trackerDir, { recursive: true });
     await fs.writeFile(path.join(trackerDir, "config.json"), "{bad", "utf8");
     globalThis.fetch = async () => ({ status: 200 });
@@ -160,7 +160,7 @@ test("doctor supports CLI base-url override", async () => {
 
   try {
     process.env.HOME = tmp;
-    const trackerDir = path.join(tmp, ".vibeusage", "tracker");
+    const trackerDir = path.join(tmp, ".tokentracker", "tracker");
     await fs.mkdir(trackerDir, { recursive: true });
     await fs.writeFile(
       path.join(trackerDir, "config.json"),
@@ -200,7 +200,7 @@ test("doctor tolerates null config.json payload", async () => {
 
   try {
     process.env.HOME = tmp;
-    const trackerDir = path.join(tmp, ".vibeusage", "tracker");
+    const trackerDir = path.join(tmp, ".tokentracker", "tracker");
     await fs.mkdir(trackerDir, { recursive: true });
     await fs.writeFile(path.join(trackerDir, "config.json"), "null", "utf8");
     globalThis.fetch = async () => ({ status: 200 });

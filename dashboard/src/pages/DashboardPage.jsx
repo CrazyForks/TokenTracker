@@ -38,7 +38,7 @@ import {
   getPublicViewProfile,
   requestInstallLinkCode,
   triggerLocalSync,
-} from "../lib/vibeusage-api";
+} from "../lib/api";
 import { AsciiBox } from "../ui/foundation/AsciiBox.jsx";
 import { MatrixButton } from "../ui/foundation/MatrixButton.jsx";
 import { ActivityHeatmap } from "../ui/matrix-a/components/ActivityHeatmap.jsx";
