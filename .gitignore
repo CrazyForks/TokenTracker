@@ -44,3 +44,14 @@ TokenTrackerBar/EmbeddedServer/
 TokenTrackerBar/build/
 TokenTrackerBar/TokenTrackerBar.xcodeproj/
 TokenTrackerBar/icon_composer/
+
+# AI Agent folders
+.augment/
+.claude/
+.gstack/
+.kilocode/
+.qoder/
+.qwen/
+.roo/
+.trae/
+.windsurf/

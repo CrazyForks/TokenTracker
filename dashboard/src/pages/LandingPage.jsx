@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { copy } from "../lib/copy";
 import { safeWriteClipboard } from "../lib/safe-browser";
 import { isScreenshotModeEnabled } from "../lib/screenshot-mode";
-import { LandingView } from "../ui/matrix-a/views/LandingView.jsx";
+import { MarketingLanding } from "../ui/marketing/MarketingLanding.jsx";
 import { shouldDeferMount } from "./should-defer-mount.js";
 
 function usePrefersReducedMotion() {
@@ -95,18 +95,11 @@ export function LandingPage({ signInUrl, signUpUrl }) {
   };
 
   return (
-    <LandingView
+    <MarketingLanding
       copy={copy}
-      effectsReady={effectsReady}
+      reduceMotion={reduceMotion}
       signInUrl={signInUrl}
       signUpUrl={signUpUrl}
-      loginLabel={loginLabel}
-      signupLabel={signupLabel}
-      handle={handle}
-      onHandleChange={handleChange}
-      specialHandle={specialHandle}
-      handlePlaceholder={handlePlaceholder}
-      rankLabel={rankLabel}
       installCommand={installCommand}
       installCopied={installCopied}
       onCopyInstallCommand={handleCopyInstall}

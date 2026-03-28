@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { useTheme } from "../../../hooks/useTheme.js";
 import { ThemeToggle } from "../../foundation/ThemeToggle.jsx";
 import { shouldFetchGithubStars } from "../../matrix-a/util/should-fetch-github-stars.js";
@@ -8,7 +9,7 @@ import { shouldFetchGithubStars } from "../../matrix-a/util/should-fetch-github-
  */
 function BrandLogo() {
   return (
-    <div className="flex items-center gap-2.5">
+    <Link to="/landing" className="flex items-center gap-2.5 no-underline hover:opacity-80 transition-opacity">
       <img
         src="/app-icon.png"
         alt="Token Tracker"
@@ -19,7 +20,7 @@ function BrandLogo() {
       <span className="text-base font-semibold text-oai-black dark:text-oai-white leading-tight">
         Token Tracker
       </span>
-    </div>
+    </Link>
   );
 }
 

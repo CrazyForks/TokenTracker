@@ -60,9 +60,15 @@ export default function App() {
   const isLocalMode = typeof window !== "undefined" &&
     (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
 
-  const gate = isLocalMode || mockEnabled || screenshotMode ? "dashboard" : "landing";
-
   const normalizedPath = pathname.replace(/\/+$/, "") || "/";
+  let gate = isLocalMode || mockEnabled || screenshotMode ? "dashboard" : "landing";
+  if (normalizedPath === "/landing") {
+    gate = "landing";
+  }
+  if (normalizedPath === "/dashboard") {
+    gate = "dashboard";
+  }
+
   const leaderboardProfileMatch = normalizedPath.match(/^\/leaderboard\/u\/([^/]+)$/i);
   const leaderboardProfileUserId = leaderboardProfileMatch ? leaderboardProfileMatch[1] : null;
   const PageComponent = leaderboardProfileUserId

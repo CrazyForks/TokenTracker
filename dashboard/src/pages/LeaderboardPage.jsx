@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate, Link } from "react-router-dom";
 import { BackendStatus } from "../components/BackendStatus.jsx";
 import { isAccessTokenReady, resolveAuthAccessToken } from "../lib/auth-token";
 import { copy } from "../lib/copy";
 import { toDisplayNumber } from "../lib/format";
+import { cn } from "../lib/cn";
 import {
   buildPageItems,
   clampInt,
@@ -16,12 +17,26 @@ import {
   getPublicVisibility,
   setPublicVisibility,
 } from "../lib/api";
-import { AsciiBox } from "../ui/foundation/AsciiBox.jsx";
-import { MatrixButton } from "../ui/foundation/MatrixButton.jsx";
-import { MatrixShell } from "../ui/foundation/MatrixShell.jsx";
-import { GithubStar } from "../ui/matrix-a/components/GithubStar.jsx";
+import { HeaderGithubStar } from "../ui/openai/components/HeaderGithubStar.jsx";
 
 const PAGE_LIMIT = 20;
+
+function buttonClass(variant = "default", size = "md", className) {
+  const base =
+    "inline-flex items-center justify-center rounded font-medium transition-colors duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-oai-gray-950";
+  const variants = {
+    default:
+      "bg-oai-gray-900 text-white hover:bg-oai-gray-800 active:bg-oai-gray-950 dark:bg-white dark:text-oai-gray-900 dark:hover:bg-oai-gray-100 dark:active:bg-oai-gray-200",
+    ghost:
+      "text-oai-gray-600 hover:text-oai-gray-900 hover:bg-oai-gray-100 active:bg-oai-gray-200 dark:text-oai-gray-400 dark:hover:text-white dark:hover:bg-oai-gray-800 dark:active:bg-oai-gray-700",
+  };
+  const sizes = {
+    sm: "h-9 px-4 text-sm",
+    md: "h-11 px-6 text-sm",
+    lg: "h-12 px-8 text-base",
+  };
+  return cn(base, variants[variant], sizes[size], className);
+}
 
 function normalizePeriod(value) {
   if (typeof value !== "string") return null;
@@ -88,24 +103,6 @@ export function LeaderboardPage({
   if (authTokenAllowed && authTokenReady) {
     headerStatus = <BackendStatus baseUrl={baseUrl} accessToken={effectiveAuthToken} />;
   }
-
-  const headerRight = (
-    <div className="ml-auto flex w-max min-w-max items-center gap-2 sm:gap-3 md:gap-4">
-      <MatrixButton size="header" onClick={() => navigate("/")}>
-        {copy("leaderboard.nav.back")}
-      </MatrixButton>
-      <GithubStar isFixed={false} size="header" className="hidden sm:inline-flex" />
-      {signedIn ? (
-        <MatrixButton onClick={signOut} size="header">
-          {copy("dashboard.sign_out")}
-        </MatrixButton>
-      ) : (
-        <MatrixButton as="a" size="header" href={signInUrl}>
-          {copy("shared.button.sign_in")}
-        </MatrixButton>
-      )}
-    </div>
-  );
 
   const placeholder = copy("shared.placeholder.short");
   const [listPage, setListPage] = useState(1);
@@ -303,39 +300,39 @@ export function LeaderboardPage({
   let listBody = null;
   if (listState.loading) {
     listBody = (
-      <div className="px-4">
-        <p className="text-[10px] uppercase text-matrix-dim mt-0">{copy("leaderboard.loading")}</p>
+      <div className="px-6 py-12 text-center">
+        <p className="text-sm text-oai-gray-400">{copy("leaderboard.loading")}</p>
       </div>
     );
   } else if (listState.error) {
     listBody = (
-      <div className="px-4">
-        <p className="text-[10px] uppercase text-matrix-dim mt-0">{listState.error}</p>
+      <div className="px-6 py-12 text-center">
+        <p className="text-sm text-red-400">{listState.error}</p>
       </div>
     );
   } else if (hasEntries) {
     listBody = (
       <div className="w-full overflow-x-auto">
-        <table className="w-full table-fixed text-left text-[12px]">
+        <table className="w-full text-left text-sm whitespace-nowrap">
           <colgroup>
-            <col className="w-[72px]" />
+            <col className="w-[80px]" />
             <col />
-            <col className="w-[112px]" />
-            <col className="w-[112px]" />
-            <col className="w-[112px]" />
-            <col className="w-[112px]" />
+            <col className="w-[120px]" />
+            <col className="w-[120px]" />
+            <col className="w-[120px]" />
+            <col className="w-[120px]" />
           </colgroup>
-          <thead className="uppercase text-matrix-dim tracking-[0.25em] text-[10px]">
-            <tr className="border-b border-matrix-ghost">
-              <th className="px-4 py-3">{copy("leaderboard.column.rank")}</th>
-              <th className="px-4 py-3">{copy("leaderboard.column.user")}</th>
-              <th className="px-4 py-3">{copy("leaderboard.column.total")}</th>
-              <th className="px-4 py-3">{copy("leaderboard.column.gpt")}</th>
-              <th className="px-4 py-3">{copy("leaderboard.column.claude")}</th>
-              <th className="px-4 py-3">{copy("leaderboard.column.other")}</th>
+          <thead className="bg-oai-gray-900/50 border-b border-oai-gray-800">
+            <tr>
+              <th className="px-6 py-4 font-medium text-oai-gray-400">{copy("leaderboard.column.rank")}</th>
+              <th className="px-6 py-4 font-medium text-oai-gray-400">{copy("leaderboard.column.user")}</th>
+              <th className="px-6 py-4 font-medium text-oai-gray-400">{copy("leaderboard.column.total")}</th>
+              <th className="px-6 py-4 font-medium text-oai-gray-400">{copy("leaderboard.column.gpt")}</th>
+              <th className="px-6 py-4 font-medium text-oai-gray-400">{copy("leaderboard.column.claude")}</th>
+              <th className="px-6 py-4 font-medium text-oai-gray-400">{copy("leaderboard.column.other")}</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="divide-y divide-oai-gray-800/50">
             {displayEntries.map((entry) => {
               const isMe = Boolean(entry?.is_me);
               const profileUserId = typeof entry?.user_id === "string" ? entry.user_id : null;
@@ -348,45 +345,42 @@ export function LeaderboardPage({
                 ? buildPublicViewPath(profileUserId, periodSearch)
                 : null;
               const rowClickable = Boolean(publicViewPath);
+
               if (isMe) {
                 return (
                   <tr
                     key={`row-${entry?.rank}-${name}`}
-                    className="border-b border-matrix-ghost/40"
+                    className="bg-oai-brand-900/10 border-y border-oai-brand-500/30 transition-colors"
                   >
-                    <td colSpan={6} className="px-0 py-2">
-                      <div className="rounded-none ring-1 ring-inset ring-matrix-primary/40 bg-matrix-panelStrong/70 backdrop-blur-panel shadow-matrix-glow">
-                        <div className="grid grid-cols-[72px_minmax(0,1fr)_112px_112px_112px_112px] items-center text-[12px]">
-                          <div className="px-4 py-3 font-black text-matrix-ink-bright glow-text">
-                            {entry?.rank ?? placeholder}
-                          </div>
-                          <div className="px-4 py-3 font-black truncate text-matrix-ink-bright glow-text">
-                            {name}
-                          </div>
-                          <div className="px-4 py-3 font-bold">
-                            {toDisplayNumber(entry?.total_tokens)}
-                          </div>
-                          <div className="px-4 py-3 font-bold">
-                            {toDisplayNumber(entry?.gpt_tokens)}
-                          </div>
-                          <div className="px-4 py-3 font-bold">
-                            {toDisplayNumber(entry?.claude_tokens)}
-                          </div>
-                          <div className="px-4 py-3 font-bold">
-                            {toDisplayNumber(entry?.other_tokens)}
-                          </div>
-                        </div>
-                      </div>
+                    <td className="px-6 py-4 font-semibold text-oai-brand-400">
+                      {entry?.rank ?? placeholder}
+                    </td>
+                    <td className="px-6 py-4 font-semibold text-oai-white truncate max-w-[240px]">
+                      {name}
+                    </td>
+                    <td className="px-6 py-4 font-medium text-oai-white">
+                      {toDisplayNumber(entry?.total_tokens)}
+                    </td>
+                    <td className="px-6 py-4 text-oai-gray-300">
+                      {toDisplayNumber(entry?.gpt_tokens)}
+                    </td>
+                    <td className="px-6 py-4 text-oai-gray-300">
+                      {toDisplayNumber(entry?.claude_tokens)}
+                    </td>
+                    <td className="px-6 py-4 text-oai-gray-300">
+                      {toDisplayNumber(entry?.other_tokens)}
                     </td>
                   </tr>
                 );
               }
+
               return (
                 <tr
                   key={`row-${entry?.rank}-${name}`}
-                  className={`border-b border-matrix-ghost/40 bg-transparent ${
-                    rowClickable ? "cursor-pointer hover:bg-matrix-panel/40" : ""
-                  }`}
+                  className={cn(
+                    "transition-colors",
+                    rowClickable ? "cursor-pointer hover:bg-oai-gray-900/60" : ""
+                  )}
                   onClick={
                     rowClickable
                       ? () => {
@@ -416,12 +410,24 @@ export function LeaderboardPage({
                   tabIndex={rowClickable ? 0 : undefined}
                   aria-label={rowClickable ? `Open public dashboard for ${name}` : undefined}
                 >
-                  <td className="px-4 py-3 font-bold">{entry?.rank ?? placeholder}</td>
-                  <td className="px-4 py-3 font-bold truncate max-w-[240px]">{name}</td>
-                  <td className="px-4 py-3">{toDisplayNumber(entry?.total_tokens)}</td>
-                  <td className="px-4 py-3">{toDisplayNumber(entry?.gpt_tokens)}</td>
-                  <td className="px-4 py-3">{toDisplayNumber(entry?.claude_tokens)}</td>
-                  <td className="px-4 py-3">{toDisplayNumber(entry?.other_tokens)}</td>
+                  <td className="px-6 py-4 font-medium text-oai-gray-400">
+                    {entry?.rank ?? placeholder}
+                  </td>
+                  <td className="px-6 py-4 font-medium text-oai-gray-200 truncate max-w-[240px]">
+                    {name}
+                  </td>
+                  <td className="px-6 py-4 text-oai-gray-300">
+                    {toDisplayNumber(entry?.total_tokens)}
+                  </td>
+                  <td className="px-6 py-4 text-oai-gray-400">
+                    {toDisplayNumber(entry?.gpt_tokens)}
+                  </td>
+                  <td className="px-6 py-4 text-oai-gray-400">
+                    {toDisplayNumber(entry?.claude_tokens)}
+                  </td>
+                  <td className="px-6 py-4 text-oai-gray-400">
+                    {toDisplayNumber(entry?.other_tokens)}
+                  </td>
                 </tr>
               );
             })}
@@ -431,8 +437,8 @@ export function LeaderboardPage({
     );
   } else {
     listBody = (
-      <div className="px-4">
-        <p className="text-[10px] uppercase text-matrix-dim mt-0">{copy("leaderboard.empty")}</p>
+      <div className="px-6 py-12 text-center">
+        <p className="text-sm text-oai-gray-400">{copy("leaderboard.empty")}</p>
       </div>
     );
   }
@@ -444,160 +450,227 @@ export function LeaderboardPage({
         return (
           <span
             key={`ellipsis-${idx}`}
-            className="text-[10px] uppercase tracking-[0.25em] text-matrix-dim px-2"
+            className="px-2 text-oai-gray-500"
           >
             {copy("leaderboard.pagination.ellipsis")}
           </span>
         );
       }
       return (
-        <MatrixButton
+        <button
           key={`page-${p}`}
-          size="sm"
-          primary={p === currentPage}
+          className={cn(
+            "flex h-8 w-8 items-center justify-center rounded-md text-sm font-medium transition-colors",
+            p === currentPage
+              ? "bg-oai-gray-800 text-white"
+              : "text-oai-gray-400 hover:bg-oai-gray-800 hover:text-white"
+          )}
           onClick={() => setListPage(p)}
           disabled={listState.loading}
         >
           {String(p)}
-        </MatrixButton>
+        </button>
       );
     });
   } else {
     pageButtons = (
-      <span className="text-[10px] uppercase tracking-[0.25em] text-matrix-dim">
+      <span className="text-sm text-oai-gray-400">
         {copy("leaderboard.pagination.page_unknown", { page: String(currentPage) })}
       </span>
     );
   }
 
   return (
-    <MatrixShell headerStatus={headerStatus} headerRight={headerRight}>
-      <div className="max-w-6xl mx-auto flex flex-col gap-6">
-        <div className="flex flex-col gap-2">
-          <div className="flex flex-wrap items-baseline justify-between gap-3">
-            <h1 className="text-xl md:text-2xl font-black tracking-tight glow-text">
-              {copy("leaderboard.title")}
-            </h1>
-            <div className="text-[10px] uppercase tracking-[0.25em] text-matrix-muted">
-              {period === "total"
-                ? copy("leaderboard.range.total")
-                : from && to
-                  ? copy("leaderboard.range", { period: periodLabel, from, to })
-                  : copy("leaderboard.range_loading", { period: periodLabel })}
+    <div className="min-h-screen bg-oai-gray-950 text-oai-white font-oai antialiased dark">
+      <header className="sticky top-0 z-50 bg-oai-gray-950/80 backdrop-blur-md border-b border-oai-gray-900">
+        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
+          <div className="flex items-center gap-5">
+            <Link
+              to="/"
+              className="flex items-center gap-3 no-underline outline-none rounded focus-visible:ring-2 focus-visible:ring-oai-brand-500 focus-visible:ring-offset-2 dark:ring-offset-oai-gray-950 transition-opacity hover:opacity-80"
+            >
+              <img src="/app-icon.png" alt="" width={24} height={24} className="rounded-md" />
+              <span className="text-sm font-semibold tracking-wide text-white uppercase hidden sm:inline-block">
+                Token Tracker
+              </span>
+            </Link>
+            {headerStatus && <div className="hidden md:block">{headerStatus}</div>}
+          </div>
+          <div className="flex items-center gap-3 sm:gap-4">
+            <Link 
+              to="/" 
+              className="text-sm font-medium text-oai-gray-400 hover:text-white transition-colors mr-2 hidden sm:block"
+            >
+              {copy("leaderboard.nav.back")}
+            </Link>
+            <div className="hidden sm:block">
+              <HeaderGithubStar />
+            </div>
+            {signedIn ? (
+              <button
+                onClick={signOut}
+                className={cn(buttonClass("ghost", "sm"), "text-oai-gray-400 hover:text-white")}
+              >
+                {copy("dashboard.sign_out")}
+              </button>
+            ) : (
+              <a
+                href={signInUrl}
+                className={cn(
+                  buttonClass("default", "sm"),
+                  "no-underline px-5 rounded-full shadow-sm ring-1 ring-white/10 group"
+                )}
+              >
+                {copy("shared.button.sign_in")}
+                <span className="ml-2 inline-block transition-transform duration-200 group-hover:translate-x-0.5">
+                  &rarr;
+                </span>
+              </a>
+            )}
+          </div>
+        </div>
+      </header>
+
+      <main className="py-12 sm:py-16">
+        <div className="mx-auto max-w-5xl px-4 sm:px-6">
+          <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-10">
+            <div>
+              <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight text-white mb-3">
+                {copy("leaderboard.title")}
+              </h1>
+              <p className="text-oai-gray-400 text-sm sm:text-base">
+                {period === "total"
+                  ? copy("leaderboard.range.total")
+                  : from && to
+                    ? copy("leaderboard.range", { period: periodLabel, from, to })
+                    : copy("leaderboard.range_loading", { period: periodLabel })}
+                {generatedAt && (
+                  <span className="ml-2 pl-2 border-l border-oai-gray-800 inline-block text-oai-gray-500 text-xs">
+                    {copy("leaderboard.generated_at", { ts: generatedAt })}
+                  </span>
+                )}
+              </p>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <div className="inline-flex p-1 bg-[#0a0a0a] border border-oai-gray-800 rounded-lg shadow-inner">
+                {["week", "month", "total"].map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => handlePeriodChange(p)}
+                    disabled={listState.loading}
+                    className={cn(
+                      "px-4 py-1.5 text-sm font-medium rounded-md transition-colors",
+                      period === p
+                        ? "bg-oai-gray-800 text-white shadow"
+                        : "text-oai-gray-400 hover:text-oai-gray-200 hover:bg-oai-gray-900/50"
+                    )}
+                  >
+                    {p === "week" ? weekLabel : p === "month" ? monthLabel : totalLabel}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
-          {generatedAt ? (
-            <div className="text-[10px] uppercase text-matrix-dim">
-              {copy("leaderboard.generated_at", { ts: generatedAt })}
-            </div>
-          ) : null}
-        </div>
 
-        <AsciiBox
-          title={copy("leaderboard.table.title")}
-          subtitle={copy("leaderboard.table.subtitle")}
-          className=""
-          bodyClassName="px-0"
-        >
-          <div className="px-4 pb-3 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <MatrixButton
-                size="sm"
-                primary={period === "week"}
-                onClick={() => handlePeriodChange("week")}
-                disabled={listState.loading}
-              >
-                {weekLabel}
-              </MatrixButton>
-              <MatrixButton
-                size="sm"
-                primary={period === "month"}
-                onClick={() => handlePeriodChange("month")}
-                disabled={listState.loading}
-              >
-                {monthLabel}
-              </MatrixButton>
-              <MatrixButton
-                size="sm"
-                primary={period === "total"}
-                onClick={() => handlePeriodChange("total")}
-                disabled={listState.loading}
-              >
-                {totalLabel}
-              </MatrixButton>
-            </div>
+          <div className="rounded-xl border border-oai-gray-800 bg-[#0a0a0a]/50 backdrop-blur-md shadow-2xl shadow-black/50 overflow-hidden">
+            <div className="px-6 py-4 border-b border-oai-gray-800 bg-oai-gray-900/20 flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h2 className="text-base font-medium text-white">{copy("leaderboard.table.title")}</h2>
+                <p className="text-xs text-oai-gray-500 mt-1">{copy("leaderboard.table.subtitle")}</p>
+              </div>
 
-            {authTokenAllowed && authTokenReady ? (
-              <div className="flex items-center justify-end gap-3">
-                {profileState.error ? (
-                  <span className="text-[10px] uppercase tracking-[0.25em] text-matrix-dim">
-                    {profileState.error}
-                  </span>
-                ) : null}
+              {authTokenAllowed && authTokenReady && (
                 <div className="flex items-center gap-3">
-                  <span className="text-[10px] uppercase tracking-[0.25em] text-matrix-dim">
+                  {profileState.error && (
+                    <span className="text-xs text-red-400 mr-2">
+                      {profileState.error}
+                    </span>
+                  )}
+                  <span className="text-sm font-medium text-oai-gray-400">
                     {publicProfileLabel}
                   </span>
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={publicProfileEnabled}
-                      aria-label={publicProfileLabel}
-                      title={publicProfileLabel}
-                      onClick={handleTogglePublicProfile}
-                      disabled={publicProfileBusy}
-                      className={`relative inline-flex h-6 w-11 items-center border px-[3px] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-matrix-primary/70 disabled:opacity-60 disabled:cursor-not-allowed ${
-                        publicProfileEnabled
-                          ? "border-matrix-primary bg-matrix-primary/10"
-                          : "border-matrix-ghost/60 bg-matrix-panelStrong/40"
-                      }`}
-                    >
-                      <span
-                        aria-hidden="true"
-                        className={`inline-block h-3.5 w-3.5 bg-matrix-primary transition-transform ${
-                          publicProfileEnabled
-                            ? "translate-x-[18px] shadow-matrix-glow"
-                            : "translate-x-0"
-                        }`}
-                      />
-                    </button>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={publicProfileEnabled}
+                    onClick={handleTogglePublicProfile}
+                    disabled={publicProfileBusy}
+                    className={cn(
+                      "relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-oai-gray-950 disabled:opacity-50 disabled:cursor-not-allowed",
+                      publicProfileEnabled ? "bg-oai-brand-500" : "bg-oai-gray-700"
+                    )}
+                  >
                     <span
-                      className={`text-[10px] uppercase tracking-[0.2em] ${
-                        publicProfileEnabled ? "text-matrix-primary/80" : "text-matrix-dim"
-                      }`}
-                    >
-                      {publicProfileStatusLabel}
-                    </span>
-                  </div>
+                      className={cn(
+                        "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+                        publicProfileEnabled ? "translate-x-6" : "translate-x-1"
+                      )}
+                    />
+                  </button>
+                  <span className="text-xs text-oai-gray-500 min-w-[60px]">
+                    {publicProfileStatusLabel}
+                  </span>
                 </div>
-              </div>
-            ) : null}
-          </div>
-
-          {listBody}
-
-          <div className="px-4 py-4 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <MatrixButton
-                size="sm"
-                onClick={() => setListPage((p) => Math.max(1, p - 1))}
-                disabled={!canPrev || listState.loading}
-              >
-                {copy("leaderboard.pagination.prev")}
-              </MatrixButton>
-              <MatrixButton
-                size="sm"
-                onClick={() => setListPage((p) => p + 1)}
-                disabled={!canNext || listState.loading}
-              >
-                {copy("leaderboard.pagination.next")}
-              </MatrixButton>
+              )}
             </div>
-            <div className="flex flex-wrap items-center gap-2">{pageButtons}</div>
+
+            {listBody}
+
+            <div className="px-6 py-4 border-t border-oai-gray-800 bg-oai-gray-900/20 flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-2">
+                <button
+                  className={cn(
+                    "px-3 py-1.5 text-sm font-medium text-oai-gray-400 rounded-md border border-oai-gray-800 transition-colors",
+                    canPrev && !listState.loading
+                      ? "hover:bg-oai-gray-800 hover:text-white"
+                      : "opacity-50 cursor-not-allowed"
+                  )}
+                  onClick={() => setListPage((p) => Math.max(1, p - 1))}
+                  disabled={!canPrev || listState.loading}
+                >
+                  {copy("leaderboard.pagination.prev")}
+                </button>
+                <button
+                  className={cn(
+                    "px-3 py-1.5 text-sm font-medium text-oai-gray-400 rounded-md border border-oai-gray-800 transition-colors",
+                    canNext && !listState.loading
+                      ? "hover:bg-oai-gray-800 hover:text-white"
+                      : "opacity-50 cursor-not-allowed"
+                  )}
+                  onClick={() => setListPage((p) => p + 1)}
+                  disabled={!canNext || listState.loading}
+                >
+                  {copy("leaderboard.pagination.next")}
+                </button>
+              </div>
+              <div className="flex flex-wrap items-center gap-1">{pageButtons}</div>
+            </div>
           </div>
-        </AsciiBox>
-      </div>
-    </MatrixShell>
+        </div>
+      </main>
+      
+      <footer className="border-t border-oai-gray-900 bg-oai-gray-950 py-12">
+        <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-6 px-4 sm:px-6 text-sm text-oai-gray-400 sm:flex-row">
+          <p>{copy("landing.v2.footer.line")}</p>
+          <div className="flex items-center gap-6">
+            <a
+              href="https://github.com/mm7894215/tokentracker"
+              className="font-medium text-oai-gray-400 hover:text-white transition-colors"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {copy("landing.v2.nav.github")}
+            </a>
+            <Link
+              to="/"
+              className="font-medium text-oai-brand-500 hover:text-oai-brand-400 transition-colors"
+            >
+              {copy("leaderboard.nav.back")} &rarr;
+            </Link>
+          </div>
+        </div>
+      </footer>
+    </div>
   );
 }

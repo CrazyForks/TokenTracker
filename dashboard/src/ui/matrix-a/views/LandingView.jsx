@@ -202,7 +202,7 @@ export function LandingView({
         <MatrixCard className="w-full max-w-4xl" header="Dashboard Preview">
           <div className="relative overflow-hidden border border-[#00FF41]/35 bg-black/60">
             <img
-              src="/landing-dashboard.jpg"
+              src="/dashboard-dark.png"
               alt={copy("landing.screenshot.alt")}
               className="block w-full h-auto"
               loading="lazy"

@@ -162,3 +162,6 @@ Clawd character design belongs to Anthropic. This is a community project with no
   <b>Token Tracker</b> — Quantify your AI output.<br/>
   Made by developers, for developers.
 </div>
+
+## Recent UI Updates
+- **Leaderboard Redesign**: The leaderboard page and profile page have been entirely overhauled to follow the new modern "oai" design language used by the landing page, migrating away from the old matrix-terminal style.

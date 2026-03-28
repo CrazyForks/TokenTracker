@@ -11,6 +11,7 @@
 - [Leave blank - user populates]
 
 ## Components
+- Marketing landing header primary CTA uses `copy("landing.v2.cta.primary")`, links via `getDashboardEntryPath()` (`/` on loopback, `/dashboard` on public host). `App.jsx` sets `gate` to dashboard when `normalizedPath === "/dashboard"`.
 - `TokenTrackerBar/TokenTrackerBar/TokenTrackerBarApp.swift`: native macOS menu bar entrypoint that renders the dashboard window and uses `MenuBarIcon` for the status item.
 - `TokenTrackerBar/TokenTrackerBar/Services/StatusBarController.swift`: owns the `NSStatusItem`, popover/menu wiring, and now renders the optional menu bar stats as a single composite `NSImage` so the Clawd icon and two text columns stay pixel-aligned.
 - `TokenTrackerBar/TokenTrackerBar/Services/MenuBarAnimator.swift`: owns the raw animated Clawd icon frames and exposes the current frame for `StatusBarController` to compose into the stats image without losing sync/blink animation.

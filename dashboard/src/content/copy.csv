@@ -19,16 +19,16 @@ error.boundary.action.reload,shared,*,ErrorBoundary,action_reload,"RELOAD",,acti
 
 landing.handle.default,landing,LandingPage,LandingPage,handle_default,"VIBE_USER",,active
 landing.handle.special,landing,LandingPage,LandingPage,handle_special,"VOLT",,active
-landing.hero.title_primary,landing,LandingPage,LandingPage,hero_title_primary,"MORE_TOKENS.",,active
-landing.hero.title_secondary,landing,LandingPage,LandingPage,hero_title_secondary,"MORE_VIBE.",,active
-landing.hero.tagline,landing,LandingPage,LandingPage,hero_tagline,"AI AGENT TOKEN TRACKER",,active
-landing.hero.subtagline,landing,LandingPage,LandingPage,hero_subtagline,"Track Codex, Claude Code, OpenCode, Gemini, and OpenClaw with minimal data collection and auditable metrics.",,active
+landing.hero.title_primary,landing,LandingPage,LandingPage,hero_title_primary,"TRACK YOUR",,active
+landing.hero.title_secondary,landing,LandingPage,LandingPage,hero_title_secondary,"AI TOKENS.",,active
+landing.hero.tagline,landing,LandingPage,LandingPage,hero_tagline,"UNIFIED USAGE DASHBOARD",,active
+landing.hero.subtagline,landing,LandingPage,LandingPage,hero_subtagline,"Automatically monitor token usage across Claude Code, Cursor, Codex, and more. Local-first, privacy-focused, and zero manual configuration.",,active
 landing.screenshot.alt,landing,LandingPage,LandingPage,screenshot_alt,"TokenTracker dashboard screenshot",,active
 landing.nav.login,landing,LandingPage,LandingPage,nav_login,"LOGIN",,active
 landing.nav.signup,landing,LandingPage,LandingPage,nav_signup,"SIGN UP",,active
 landing.nav.login_signup,landing,LandingPage,LandingPage,nav_login_signup,"SIGN IN / SIGN UP",,active
 landing.seo.title,landing,LandingPage,LandingPage,seo_title,"Secure Token Usage Tracking for AI Agent Clients",,active
-landing.seo.summary,landing,LandingPage,LandingPage,seo_summary,"TokenTracker tracks token usage across AI agent clients (Codex, Claude Code, OpenCode, Gemini, OpenClaw) with minimal data collection and auditable metrics.",,active
+landing.seo.summary,landing,LandingPage,LandingPage,seo_summary,"Automatically monitor token usage across Claude Code, Cursor, Codex, and more. Local-first, privacy-focused, and zero manual configuration.",,active
 landing.install.title,landing,LandingPage,LandingPage,install_title,"INSTALL IN ONE COMMAND",,active
 landing.install.prompt,landing,LandingPage,LandingPage,install_prompt,"Run this in your terminal:",,active
 landing.install.command,landing,LandingPage,LandingPage,install_command,"npx --yes tokentracker-cli init",,active
@@ -42,7 +42,7 @@ landing.ai_agent.copy_label,landing,LandingPage,LandingPage,ai_agent_copy_label,
 landing.ai_agent.helper,landing,LandingPage,LandingPage,ai_agent_helper,"Or click to open the guide and copy manually.",,active
 landing.ai_agent.guide_url,landing,LandingPage,LandingPage,ai_agent_guide_url,"https://github.com/mm7894215/TokenTracker/blob/main/docs/AI_AGENT_INSTALL.md",,active
 landing.meta.title,landing,LandingPage,Meta,title,"Token Tracker — Token Usage Tracker for AI Agent CLIs",,active
-landing.meta.description,landing,LandingPage,Meta,description,"Track token usage across AI agent clients: Codex, Claude Code, OpenCode, Gemini, and OpenClaw.",,active
+landing.meta.description,landing,LandingPage,Meta,description,"Automatically monitor token usage across Claude Code, Cursor, Codex, and more. Local-first, privacy-focused, and zero manual configuration.",,active
 landing.meta.og_site_name,landing,LandingPage,Meta,og_site_name,"Token Tracker",,active
 landing.meta.og_type,landing,LandingPage,Meta,og_type,"website",,active
 landing.meta.og_image,landing,LandingPage,Meta,og_image,"https://www.tokentracker.cc/og-image.jpg",,active
@@ -66,11 +66,11 @@ landing.handle.placeholder,landing,LandingPage,LandingPage,handle_placeholder,"T
 landing.rank.expectation,landing,LandingPage,LandingPage,rank_expectation,"RANK_EXPECTATION: {{rank}}",,active
 landing.rank.singularity,landing,LandingPage,LandingPage,rank_singularity,"APEX",,active
 landing.rank.unranked,landing,LandingPage,LandingPage,rank_unranked,"UNRANKED",,active
-landing.cta.initialize,landing,LandingPage,LandingPage,cta_primary,">> INITIALIZE_LINK <<",,active
-landing.cta.subtext,landing,LandingPage,LandingPage,cta_subtext,"Connect with GitHub // Enter the System",,active
-landing.cta.primary,landing,LandingPage,LandingPage,cta_primary,">> INITIALIZE_LINK <<",,active
-landing.cta.secondary,landing,LandingPage,LandingPage,cta_secondary,"Connect with GitHub // Enter the System",,active
-landing.cta.login_signup,landing,LandingPage,LandingPage,cta_login_signup,">> ENTER SYSTEM <<",,active
+landing.cta.initialize,landing,LandingPage,LandingPage,cta_primary,"View Dashboard",,active
+landing.cta.subtext,landing,LandingPage,LandingPage,cta_subtext,"Connect with GitHub",,active
+landing.cta.primary,landing,LandingPage,LandingPage,cta_primary,"View Dashboard",,active
+landing.cta.secondary,landing,LandingPage,LandingPage,cta_secondary,"GITHUB SOURCE",,active
+landing.cta.login_signup,landing,LandingPage,LandingPage,cta_login_signup,"Open Dashboard",,active
 landing.footer.link.manifesto,landing,LandingPage,LandingPage,footer_link_manifesto,"Manifesto",,active
 landing.footer.link.docs,landing,LandingPage,LandingPage,footer_link_docs,"Docs",,active
 landing.footer.link.security,landing,LandingPage,LandingPage,footer_link_security,"Security",,active
@@ -98,6 +98,35 @@ boot.ascii_art,ui,BootScreen,BootScreen,ascii,"Loading...",,active
 boot.prompt,ui,BootScreen,BootScreen,prompt,"INITIALIZING DASHBOARD...",,active
 boot.skip_hint,ui,BootScreen,BootScreen,skip_hint,"Click to skip",,active
 boot.skip_aria,ui,BootScreen,BootScreen,aria_label,"Skip boot screen",,active
+
+landing.v2.hero.title_line1,landing,LandingPage,MarketingLanding,hero_title_1,"TRACK ALL YOUR",,active
+landing.v2.hero.title_line2,landing,LandingPage,MarketingLanding,hero_title_2,"AI TOKENS.",,active
+landing.v2.hero.subtitle,landing,LandingPage,MarketingLanding,hero_subtitle,"UNIFIED USAGE DASHBOARD",,active
+landing.v2.install.btn_copy,landing,LandingPage,MarketingLanding,install_btn_copy,"COPY COMMAND",,active
+landing.v2.install.mac_cta,landing,LandingPage,MarketingLanding,mac_cta,"MAC APP (DMG)",,active
+landing.v2.models.title,landing,LandingPage,MarketingLanding,models_title,"SUPPORTED AI CLI TOOLS",,active
+landing.v2.compare.kicker,landing,LandingPage,MarketingLanding,compare_kicker,"SEAMLESS TRACKING",,active
+landing.v2.compare.title,landing,LandingPage,MarketingLanding,compare_title,"Stop guessing your AI usage.",,active
+landing.v2.compare.subtitle,landing,LandingPage,MarketingLanding,compare_subtitle,"AI CLI tools hide your usage data in obscure local files. TokenTracker aggregates them into a single, beautiful dashboard in real-time.",,active
+landing.v2.distill.body,landing,LandingPage,MarketingLanding,distill_body,"100% local processing. No prompts or code are ever collected.",,active
+landing.v2.compare.with.title,landing,LandingPage,MarketingLanding,with_title,"WITH TOKEN TRACKER",,active
+landing.v2.compare.with.p1,landing,LandingPage,MarketingLanding,with_p1,"Centralized usage dashboard",,active
+landing.v2.compare.with.p2,landing,LandingPage,MarketingLanding,with_p2,"Real-time token metrics",,active
+landing.v2.compare.with.p3,landing,LandingPage,MarketingLanding,with_p3,"100% local, privacy-guaranteed",,active
+landing.v2.compare.without.title,landing,LandingPage,MarketingLanding,without_title,"WITHOUT IT",,active
+landing.v2.compare.without.p1,landing,LandingPage,MarketingLanding,without_p1,"Scattered JSON log files",,active
+landing.v2.compare.without.p2,landing,LandingPage,MarketingLanding,without_p2,"Blind to token consumption",,active
+landing.v2.compare.without.p3,landing,LandingPage,MarketingLanding,without_p3,"Unexpected API bills",,active
+landing.v2.footer.line,landing,LandingPage,MarketingLanding,footer_line,"Token Tracker — Made by developers, for developers.",,active
+landing.v2.nav.github,landing,LandingPage,MarketingLanding,nav_github,"GITHUB",,active
+landing.v2.models.agent.codex,landing,LandingPage,MarketingLanding,agent_codex,"CODEX",,active
+landing.v2.models.agent.claude_code,landing,LandingPage,MarketingLanding,agent_claude_code,"CLAUDE CODE",,active
+landing.v2.models.agent.cursor,landing,LandingPage,MarketingLanding,agent_cursor,"CURSOR",,active
+landing.v2.models.agent.gemini,landing,LandingPage,MarketingLanding,agent_gemini,"GEMINI",,active
+landing.v2.models.agent.opencode,landing,LandingPage,MarketingLanding,agent_opencode,"OPENCODE",,active
+landing.v2.models.agent.openclaw,landing,LandingPage,MarketingLanding,agent_openclaw,"OPENCLAW",,active
+landing.v2.cta.primary,landing,LandingPage,MarketingLanding,cta_primary,"Open Dashboard",,active
+landing.v2.hero.subtagline,landing,LandingPage,MarketingLanding,hero_subtagline,"Automatically monitor token usage across Claude Code, Cursor, Codex, and more. Local-first, privacy-focused, and zero manual configuration.",,active
 
 system.header.title_default,ui,SystemHeader,SystemHeader,title_default,"VIBE_OS_v9.0",,active
 
