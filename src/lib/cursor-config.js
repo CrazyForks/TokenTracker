@@ -149,6 +149,33 @@ function fetchCursorUsageCsv({ cookie, timeoutMs = 30000 }) {
   });
 }
 
+/**
+ * Fetch Cursor usage summary JSON.
+ * Returns parsed JSON body or throws on error.
+ */
+function fetchCursorUsageSummary({ cookie, timeoutMs = 30000, fetchImpl = fetch }) {
+  return fetchImpl(CURSOR_SUMMARY_URL, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      Cookie: cookie,
+      Referer: "https://www.cursor.com/settings",
+      "User-Agent":
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    },
+    redirect: "follow",
+    signal: AbortSignal.timeout(timeoutMs),
+  }).then(async (res) => {
+    if (res.status === 401 || res.status === 403) {
+      throw new Error("session_expired");
+    }
+    if (!res.ok) {
+      throw new Error(`Cursor API returned ${res.status}`);
+    }
+    return res.json();
+  });
+}
+
 function fetchUrlRaw({ urlStr, cookie, timeoutMs }) {
   return new Promise((resolve, reject) => {
     const url = new URL(urlStr);
@@ -323,6 +350,7 @@ module.exports = {
   isCursorInstalled,
   extractCursorSessionToken,
   fetchCursorUsageCsv,
+  fetchCursorUsageSummary,
   parseCursorCsv,
   normalizeCursorUsage,
 };

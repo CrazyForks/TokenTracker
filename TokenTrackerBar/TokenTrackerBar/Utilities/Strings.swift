@@ -30,6 +30,10 @@ enum Strings {
     static let serverStartingHint = "This usually takes a few seconds."
     static let serverOfflineHint = "Check that tokentracker-cli is installed and try again."
 
+    // Usage Limits
+    static let usageLimitsTitle = "Limits"
+    static let sessionExpired = "Session expired"
+
     // Menu items
     static let menuSyncNow = "Sync Now"
     static let menuCheckForUpdates = "Check for Updates…"

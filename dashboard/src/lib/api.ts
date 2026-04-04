@@ -24,6 +24,7 @@ const PATHS = {
   projectUsageSummary: "tokentracker-project-usage-summary",
   userStatus: "tokentracker-user-status",
   localSync: "tokentracker-local-sync",
+  usageLimits: "tokentracker-usage-limits",
 };
 
 async function fetchLocalJson(slug: string, params?: AnyRecord, options?: AnyRecord) {
@@ -326,6 +327,10 @@ export async function getUsageMonthly({
     ...filterParams,
     ...tzParams,
   });
+}
+
+export async function getUsageLimits(_opts: AnyRecord = {}) {
+  return fetchLocalJson(PATHS.usageLimits);
 }
 
 export async function getUsageHeatmap({

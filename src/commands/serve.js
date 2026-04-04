@@ -9,7 +9,7 @@ const { createLocalApiHandler, resolveQueuePath } = require("../lib/local-api");
 const { serveStaticFile } = require("../lib/static-server");
 const { openInBrowser } = require("../lib/browser-auth");
 
-const DEFAULT_PORT = 7890;
+const DEFAULT_PORT = 7680;
 
 async function cmdServe(argv) {
   const opts = parseArgs(argv);

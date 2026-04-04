@@ -67,6 +67,10 @@ actor APIClient {
 		]))
 	}
 
+    func fetchUsageLimits() async throws -> UsageLimitsResponse {
+        try await fetch("/functions/tokentracker-usage-limits")
+    }
+
     func triggerSync() async throws -> SyncResponse {
         try await post("/functions/tokentracker-local-sync")
     }

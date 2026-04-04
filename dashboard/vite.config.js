@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv } from "vite";
 import os from "node:os";
@@ -884,6 +885,26 @@ async function handleLocalApi(req, res, url) {
       generated_at: new Date().toISOString(),
       entries
     }));
+    return true;
+  }
+
+  // 处理 usage-limits
+  if (pathname === "/functions/tokentracker-usage-limits") {
+    try {
+      const esmRequire = createRequire(import.meta.url);
+      const { getUsageLimits } = esmRequire("../src/lib/usage-limits");
+      const data = await getUsageLimits({
+        home: os.homedir(),
+        env: process.env,
+        platform: process.platform,
+      });
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(data));
+    } catch (e) {
+      res.statusCode = 500;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ error: e?.message || "Unknown error" }));
+    }
     return true;
   }
 

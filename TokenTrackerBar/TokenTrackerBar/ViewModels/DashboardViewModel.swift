@@ -44,6 +44,7 @@ class DashboardViewModel: ObservableObject {
     @Published var heatmap: HeatmapResponse?
     @Published var modelBreakdown: ModelBreakdownResponse?
     @Published var projectUsage: ProjectUsageResponse?
+    @Published var usageLimits: UsageLimitsResponse?
 
     @Published var isLoading = false
     @Published var isSyncing = false
@@ -181,6 +182,14 @@ class DashboardViewModel: ObservableObject {
                 } catch {
                     errorCount += 1
                     if firstError == nil { firstError = error.localizedDescription }
+                }
+            }
+            // Usage limits (best-effort, non-fatal)
+            group.addTask { @MainActor in
+                do {
+                    self.usageLimits = try await APIClient.shared.fetchUsageLimits()
+                } catch {
+                    // Non-fatal: usage limits are best-effort, don't increment errorCount
                 }
             }
         }

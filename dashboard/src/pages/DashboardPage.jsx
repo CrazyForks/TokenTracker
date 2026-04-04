@@ -3,6 +3,7 @@ import { useActivityHeatmap } from "../hooks/use-activity-heatmap.js";
 import { useProjectUsageSummary } from "../hooks/use-project-usage-summary";
 import { useTrendData } from "../hooks/use-trend-data.js";
 import { useUsageData } from "../hooks/use-usage-data.js";
+import { useUsageLimits } from "../hooks/use-usage-limits.js";
 import { useUsageModelBreakdown } from "../hooks/use-usage-model-breakdown.js";
 import {
   isAccessTokenReady,
@@ -489,6 +490,11 @@ export function DashboardPage({
     now: mockNow,
   });
 
+  const {
+    data: usageLimits,
+    refresh: refreshUsageLimits,
+  } = useUsageLimits();
+
   const detailsDateKey = useMemo(() => {
     if (period === "day") return "hour";
     if (period === "total") return "month";
@@ -717,6 +723,7 @@ export function DashboardPage({
       refreshModelBreakdown(),
       refreshProjectUsage(),
       refreshDailyBreakdown(),
+      refreshUsageLimits(),
     ]);
   }, [
     refreshDailyBreakdown,
@@ -725,6 +732,7 @@ export function DashboardPage({
     refreshProjectUsage,
     refreshTrend,
     refreshUsage,
+    refreshUsageLimits,
   ]);
 
   const handleUsageRefresh = useCallback(async () => {
@@ -1251,6 +1259,7 @@ export function DashboardPage({
       setDetailsPage={setDetailsPage}
       costModalOpen={costModalOpen}
       closeCostModal={closeCostModal}
+      usageLimits={usageLimits}
     />
   );
 }

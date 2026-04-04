@@ -180,7 +180,7 @@ function renderWelcome() {
       "This tool will:",
       "  - Detect your AI CLI tools (Codex, Claude, Gemini, OpenCode, Cursor, OpenClaw)",
       "  - Set up lightweight hooks to track token usage",
-      "  - View your dashboard at http://localhost:7890",
+      "  - View your dashboard at http://localhost:7680",
       "",
       "(Nothing will be changed until you confirm below)",
       "",

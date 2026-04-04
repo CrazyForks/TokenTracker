@@ -33,6 +33,18 @@ extension Color {
         modelDotPalette[index % modelDotPalette.count]
     }
 
+    // MARK: - Usage Limit Bars
+
+    /// Track background for usage limit progress bars.
+    static let limitTrack = Color.gray.opacity(0.10)
+
+    /// Usage limit bar color by fraction (0.0–1.0).
+    static func limitBar(fraction: Double) -> Color {
+        if fraction >= 0.9 { return Color(.sRGB, red: 0.90, green: 0.30, blue: 0.30, opacity: 1.0) }
+        if fraction >= 0.7 { return Color(.sRGB, red: 0.85, green: 0.65, blue: 0.20, opacity: 1.0) }
+        return Color(.sRGB, red: 0.20, green: 0.72, blue: 0.40, opacity: 1.0)
+    }
+
     /// Returns a brand color for the given AI source/provider name.
     static func sourceColor(_ source: String) -> Color {
         switch source.lowercased() {

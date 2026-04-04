@@ -11,7 +11,9 @@ export function LeaderboardProviderColumnHeader({ iconSrc, label }) {
         alt=""
         width={16}
         height={16}
-        className="h-4 w-4 shrink-0 object-contain opacity-90"
+        className={`h-4 w-4 shrink-0 object-contain opacity-90 ${
+          iconSrc === "/brand-logos/cursor.svg" ? "dark:invert" : ""
+        }`}
       />
       <span className="whitespace-nowrap">{label}</span>
     </span>

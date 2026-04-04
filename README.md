@@ -38,7 +38,7 @@ Download `TokenTrackerBar.dmg` from the [latest release](https://github.com/mm78
 npx tokentracker-cli
 ```
 
-One command does everything: first-time setup → hook installation → data sync → open dashboard at `http://localhost:7890`.
+One command does everything: first-time setup → hook installation → data sync → open dashboard at `http://localhost:7680`.
 
 Install globally for shorter commands:
 
@@ -97,7 +97,7 @@ Token Tracker (local parsing + aggregation)
     │
     │  30-minute UTC buckets
     ▼
-Dashboard (Menu Bar App or localhost:7890)
+Dashboard (Menu Bar App or localhost:7680)
 ```
 
 1. AI CLI tools generate logs during usage

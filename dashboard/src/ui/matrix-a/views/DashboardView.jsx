@@ -8,6 +8,7 @@ import { UsageOverview } from "../components/UsageOverview.jsx";
 import { TrendMonitor } from "../components/TrendMonitor.jsx";
 import { FadeIn } from "../../foundation/FadeIn.jsx";
 import { MacAppBanner } from "../components/MacAppBanner.jsx";
+import { UsageLimitsPanel } from "../components/UsageLimitsPanel.jsx";
 
 export function DashboardView(props) {
   const {
@@ -87,6 +88,7 @@ export function DashboardView(props) {
     detailsPageCount,
     detailsPage,
     setDetailsPage,
+    usageLimits,
   } = props;
 
   // Header 和 Footer 已简化
@@ -129,6 +131,15 @@ export function DashboardView(props) {
                   periodConversations={summaryConversationsValue}
                   rolling={rollingUsage}
                   topModels={topModels}
+                />
+
+                <UsageLimitsPanel
+                  claude={usageLimits?.claude}
+                  codex={usageLimits?.codex}
+                  cursor={usageLimits?.cursor}
+                  gemini={usageLimits?.gemini}
+                  kiro={usageLimits?.kiro}
+                  antigravity={usageLimits?.antigravity}
                 />
 
                 {shouldShowInstall ? (

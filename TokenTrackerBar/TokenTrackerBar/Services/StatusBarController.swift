@@ -212,7 +212,7 @@ final class StatusBarController: NSObject {
 
     private func setupPopover() {
         let rootView = DashboardView(viewModel: viewModel, serverManager: serverManager)
-            .frame(width: 450, height: 640)
+            .frame(width: 450, height: 720)
 
         popover.contentViewController = NSHostingController(rootView: rootView)
         popover.behavior = .transient

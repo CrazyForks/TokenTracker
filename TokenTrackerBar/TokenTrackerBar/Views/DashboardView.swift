@@ -28,6 +28,7 @@ struct DashboardView: View {
                                 last30dTokens: viewModel.last30dTokens,
                                 last30dAvgPerDay: viewModel.last30dAvgPerDay
                             )
+                            UsageLimitsView(limits: viewModel.usageLimits)
                             ActivityHeatmapView(heatmap: viewModel.heatmap)
                             UsageTrendChart(
                                 daily: viewModel.daily,

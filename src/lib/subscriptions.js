@@ -314,6 +314,35 @@ async function detectOpenclawSessionIntegration({ home, env }) {
   };
 }
 
+function readClaudeCodeAccessToken({ platform, securityRunner } = {}) {
+  if (platform !== "darwin") return null;
+
+  for (const service of CLAUDE_CODE_KEYCHAIN_SERVICES) {
+    try {
+      const raw = readMacosKeychainPassword({ service, securityRunner });
+      if (!raw) continue;
+      const payload = JSON.parse(raw);
+      return normalizeString(payload?.claudeAiOauth?.accessToken);
+    } catch (_e) {
+      continue;
+    }
+  }
+  return null;
+}
+
+async function readCodexAccessToken({ home, env } = {}) {
+  try {
+    const codexHome = resolveCodexHome({ home, env });
+    const authPath = path.join(codexHome, "auth.json");
+    const auth = await readJson(authPath);
+    return normalizeString(auth?.tokens?.access_token);
+  } catch (_e) {
+    return null;
+  }
+}
+
 module.exports = {
   collectLocalSubscriptions,
+  readClaudeCodeAccessToken,
+  readCodexAccessToken,
 };

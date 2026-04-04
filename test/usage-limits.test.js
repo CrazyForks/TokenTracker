@@ -1,0 +1,215 @@
+const assert = require("node:assert/strict");
+const { describe, it } = require("node:test");
+
+const {
+  normalizeCursorUsageSummary,
+  normalizeGeminiQuotaResponse,
+  parseKiroUsageOutput,
+  normalizeAntigravityResponse,
+  parseListeningPorts,
+  detectAntigravityProcess,
+} = require("../src/lib/usage-limits");
+
+describe("normalizeCursorUsageSummary", () => {
+  it("maps total, auto, and api windows from usage-summary", () => {
+    const result = normalizeCursorUsageSummary({
+      billingCycleEnd: "2026-04-30T00:00:00.000Z",
+      membershipType: "pro",
+      individualUsage: {
+        plan: {
+          totalPercentUsed: 42.4,
+          autoPercentUsed: 31.2,
+          apiPercentUsed: 78.9,
+        },
+      },
+    });
+
+    assert.equal(result.membership_type, "pro");
+    assert.deepEqual(result.primary_window, {
+      used_percent: 42.4,
+      reset_at: "2026-04-30T00:00:00.000Z",
+    });
+    assert.deepEqual(result.secondary_window, {
+      used_percent: 31.2,
+      reset_at: "2026-04-30T00:00:00.000Z",
+    });
+    assert.deepEqual(result.tertiary_window, {
+      used_percent: 78.9,
+      reset_at: "2026-04-30T00:00:00.000Z",
+    });
+  });
+
+  it("falls back to used/limit when total percent is missing", () => {
+    const result = normalizeCursorUsageSummary({
+      billingCycleEnd: "2026-04-30T00:00:00.000Z",
+      individualUsage: {
+        plan: {
+          used: 250,
+          limit: 1000,
+        },
+      },
+    });
+
+    assert.equal(result.primary_window.used_percent, 25);
+    assert.equal(result.secondary_window, null);
+    assert.equal(result.tertiary_window, null);
+  });
+});
+
+describe("parseKiroUsageOutput", () => {
+  const now = new Date("2026-04-03T00:00:00.000Z");
+
+  it("parses legacy usage output with bonus credits", () => {
+    const output = `
+\u001b[32m┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\u001b[0m
+┃                                                          | KIRO FREE      ┃
+┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫
+┃ Monthly credits:                                                          ┃
+┃ ████████████████████████████████████████████████████████ 100% (resets on 01/01) ┃
+┃                              (0.00 of 50 covered in plan)                 ┃
+┃ Bonus credits:                                                            ┃
+┃ 0.00/100 credits used, expires in 88 days                                 ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛`;
+
+    const result = parseKiroUsageOutput(output, { now });
+
+    assert.equal(result.plan_name, "KIRO FREE");
+    assert.equal(result.primary_window.used_percent, 100);
+    assert.equal(result.primary_window.reset_at, "2027-01-01T00:00:00.000Z");
+    assert.equal(result.secondary_window.used_percent, 0);
+    assert.ok(result.secondary_window.reset_at.startsWith("2026-06-30T"));
+  });
+
+  it("parses managed plan output without usage metrics", () => {
+    const output = `
+Plan: Q Developer Pro
+Usage is managed by organization admin.
+`;
+
+    const result = parseKiroUsageOutput(output, { now });
+
+    assert.equal(result.plan_name, "Q Developer Pro");
+    assert.equal(result.primary_window.used_percent, 0);
+    assert.equal(result.primary_window.reset_at, null);
+    assert.equal(result.secondary_window, null);
+  });
+});
+
+describe("normalizeGeminiQuotaResponse", () => {
+  it("maps pro, flash, and flash-lite windows", () => {
+    const result = normalizeGeminiQuotaResponse({
+      email: "me@example.com",
+      tier: "standard-tier",
+      buckets: [
+        { modelId: "gemini-2.5-pro", remainingFraction: 0.4, resetTime: "2026-04-04T10:00:00Z" },
+        { modelId: "gemini-2.5-flash", remainingFraction: 0.8, resetTime: "2026-04-04T09:00:00Z" },
+        { modelId: "gemini-2.5-flash-lite", remainingFraction: 0.9, resetTime: "2026-04-04T08:00:00Z" },
+      ],
+    });
+
+    assert.equal(result.account_email, "me@example.com");
+    assert.equal(result.account_plan, "Paid");
+    assert.equal(result.primary_window.used_percent, 60);
+    assert.equal(result.secondary_window.used_percent, 20);
+    assert.equal(result.tertiary_window.used_percent, 10);
+  });
+});
+
+describe("normalizeAntigravityResponse", () => {
+  it("maps Claude, Gemini Pro, and Gemini Flash windows from GetUserStatus", () => {
+    const result = normalizeAntigravityResponse({
+      code: 0,
+      userStatus: {
+        email: "agent@example.com",
+        planStatus: {
+          planInfo: {
+            planDisplayName: "Antigravity Pro",
+          },
+        },
+        cascadeModelConfigData: {
+          clientModelConfigs: [
+            {
+              label: "Claude Sonnet",
+              modelOrAlias: { model: "claude-sonnet-4" },
+              quotaInfo: {
+                remainingFraction: 0.25,
+                resetTime: "2026-04-04T10:00:00.000Z",
+              },
+            },
+            {
+              label: "Gemini Pro Low",
+              modelOrAlias: { model: "gemini-pro-low" },
+              quotaInfo: {
+                remainingFraction: 0.4,
+                resetTime: "2026-04-04T12:00:00.000Z",
+              },
+            },
+            {
+              label: "Gemini Flash",
+              modelOrAlias: { model: "gemini-flash" },
+              quotaInfo: {
+                remainingFraction: 0.8,
+                resetTime: "2026-04-04T14:00:00.000Z",
+              },
+            },
+          ],
+        },
+      },
+    });
+
+    assert.equal(result.account_email, "agent@example.com");
+    assert.equal(result.account_plan, "Antigravity Pro");
+    assert.equal(result.primary_window.used_percent, 75);
+    assert.equal(result.secondary_window.used_percent, 60);
+    assert.equal(result.tertiary_window.used_percent, 20);
+  });
+
+  it("supports GetCommandModelConfigs fallback payloads", () => {
+    const result = normalizeAntigravityResponse({
+      code: "ok",
+      clientModelConfigs: [
+        {
+          label: "Claude Sonnet",
+          modelOrAlias: { model: "claude-sonnet-4" },
+          quotaInfo: {
+            remainingFraction: 0.5,
+            resetTime: "1712311200",
+          },
+        },
+      ],
+    }, { fallbackToConfigs: true });
+
+    assert.equal(result.account_email, null);
+    assert.equal(result.account_plan, null);
+    assert.equal(result.primary_window.used_percent, 50);
+    assert.equal(result.primary_window.reset_at, "2024-04-05T10:00:00.000Z");
+  });
+});
+
+describe("Antigravity helpers", () => {
+  it("parses listening ports", () => {
+    const output = `
+COMMAND   PID USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+lang      123 me    22u  IPv4 0x123                0t0  TCP 127.0.0.1:51234 (LISTEN)
+lang      123 me    23u  IPv4 0x124                0t0  TCP 127.0.0.1:51235 (LISTEN)
+`;
+
+    assert.deepEqual(parseListeningPorts(output), [51234, 51235]);
+  });
+
+  it("detects antigravity process info from ps output", () => {
+    const commandRunner = () => ({
+      stdout: `
+123 /Applications/Antigravity.app/Contents/MacOS/language_server_macos --app_data_dir antigravity --csrf_token abc123 --extension_server_port 42427
+`,
+      status: 0,
+    });
+
+    const result = detectAntigravityProcess({ commandRunner });
+
+    assert.equal(result.configured, true);
+    assert.equal(result.pid, 123);
+    assert.equal(result.csrfToken, "abc123");
+    assert.equal(result.extensionPort, 42427);
+  });
+});

@@ -47,8 +47,8 @@ struct ClawdCompanionView: View {
             syncButton
         }
         .padding(.horizontal, 20)
-        .padding(.top, 24)
-        .padding(.bottom, 10)
+        .padding(.top, 16)
+        .padding(.bottom,-8)
         .onAppear {
             startBlinkLoop()
             startIdleVariantLoop()
@@ -106,6 +106,7 @@ struct ClawdCompanionView: View {
             if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
         }
         .disabled(viewModel.isSyncing)
+        .accessibilityLabel(viewModel.isSyncing ? "Syncing usage data" : "Sync usage data")
         .onChange(of: viewModel.isSyncing) { syncing in
             if syncing {
                 withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) { syncRotation = 360 }

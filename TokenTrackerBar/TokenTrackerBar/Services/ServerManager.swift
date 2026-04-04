@@ -48,7 +48,7 @@ final class ServerManager: ObservableObject {
             status = .running
             startHealthCheckLoop()
         } else {
-            status = .failed("Server started but not responding on port 7890.")
+            status = .failed("Server started but not responding on port \(Constants.serverPort).")
         }
     }
 
@@ -71,9 +71,9 @@ final class ServerManager: ObservableObject {
 
     // MARK: - Kill Stale Server
 
-    /// Kill any existing process listening on port 7890 so the embedded server can bind.
+    /// Kill any existing process listening on the server port so the embedded server can bind.
     private nonisolated func killExistingServerOnPort() async {
-        guard let output = shellOutput("/usr/sbin/lsof", args: ["-ti", "tcp:7890"]) else { return }
+        guard let output = shellOutput("/usr/sbin/lsof", args: ["-ti", "tcp:\(Constants.serverPort)"]) else { return }
         let pids = output
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .split(separator: "\n")

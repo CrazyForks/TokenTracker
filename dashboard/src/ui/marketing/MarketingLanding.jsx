@@ -371,7 +371,7 @@ export function MarketingLanding({
                       alt=""
                       width={20}
                       height={20}
-                      className="h-5 w-5 object-contain"
+                      className={`h-5 w-5 object-contain ${a.id === "cursor" ? "dark:invert" : ""}`}
                       loading="lazy"
                     />
                     <span className="text-sm font-medium text-oai-gray-300">

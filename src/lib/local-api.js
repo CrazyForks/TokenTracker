@@ -928,6 +928,22 @@ function createLocalApiHandler({ queuePath }) {
       return true;
     }
 
+    // --- usage-limits ---
+    if (p === "/functions/tokentracker-usage-limits") {
+      const { getUsageLimits } = require("./usage-limits");
+      try {
+        const data = await getUsageLimits({
+          home: os.homedir(),
+          env: process.env,
+          platform: process.platform,
+        });
+        json(res, data);
+      } catch (e) {
+        json(res, { error: e?.message || "Unknown error" }, 500);
+      }
+      return true;
+    }
+
     return false;
   };
 }
