@@ -66,6 +66,7 @@ jobs:
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
+            OTHER_SWIFT_FLAGS="\$(inherited) -Xfrontend -solver-expression-time-threshold=120" \
             clean build
 
       # 5. Create DMG
