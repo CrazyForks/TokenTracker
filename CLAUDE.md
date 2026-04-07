@@ -266,3 +266,41 @@ openspec list                         # Active changes
 openspec list --specs                 # Existing specifications
 openspec validate <id> --strict       # Validate proposal
 ```
+
+## Lessons Learned (Gotchas)
+
+Durable lessons from hard-won debugging sessions. Read before touching these areas.
+
+### macOS app build & release
+
+**Icon Composer (`.icon`) format is Xcode 26+ only.** The `TokenTrackerBar/TokenTrackerBar/AppIcon.icon` folder is readable only by Xcode 26 on macOS Tahoe (26+). On the GitHub Actions `macos-15` runner (Xcode 16), the `patch-pbxproj-icon.rb` patch injects the `.icon` as a passive folder reference, but Xcode 16 silently copies it to `Resources/AppIcon.icon/` without compiling it to `.icns` or registering `CFBundleIconFile` — result: no app icon. **Fix already shipped:** `TokenTrackerBar/TokenTrackerBar/AppIcon.icns` is committed as a static fallback. xcodegen picks it up via the directory glob and `CFBundleIconFile: AppIcon` in `project.yml` wires it up for any Xcode version. If you update `AppIcon.icon`, manually regenerate `AppIcon.icns` (extract from a local Xcode 26 build's `Resources/`) and commit both.
+
+**DMG installer background + icon layout on CI requires Homebrew `create-dmg`.** Our `scripts/create-dmg.sh` uses Finder/AppleScript for the local interactive path, but AppleScript on headless CI runners is unreliable — so the CI branch in the script delegates to the Homebrew `create-dmg` tool, which writes `.DS_Store` directly. The workflow installs it via `brew install create-dmg` before running the script. Don't re-introduce the "skip Finder customization on CI" shortcut — that produced bare DMGs with no background and no layout.
+
+**CI must ad-hoc sign the .app before DMG packaging.** The workflow builds with `CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO` which produces an entirely unsigned bundle. Combined with the `com.apple.quarantine` xattr macOS attaches to GitHub downloads, Gatekeeper rejects it with **"TokenTrackerBar is damaged and can't be opened"** — not fixable by the user without Terminal. The workflow now runs a dedicated `Ad-hoc sign app` step that signs inner Mach-O binaries first (`Resources/EmbeddedServer/node`) then ad-hoc signs the outer `.app` bundle with `--entitlements TokenTrackerBar/TokenTrackerBar.entitlements --sign -`. Result downgrades to "cannot verify developer" which users can bypass via **System Settings → Privacy & Security → Open Anyway**. The README documents both Gatekeeper paths (xattr workaround for "damaged", System Settings for "unverified"). **Never** remove the ad-hoc sign step without replacing it with proper Developer ID + notarization.
+
+### Dashboard layout
+
+**Pages wrapped by `AppLayout` (sidebar shell) must use `flex flex-col flex-1` outer wrapper — not `min-h-screen` + own sticky header/footer.** `AppLayout` provides a `fixed inset-0 flex` shell with its own scroll container (the rounded card). Any child page that ships its own `min-h-screen` + `<header>` + `<footer>` will stack inside and produce double nav + broken scroll anchoring. See `LimitsPage.jsx` / `LeaderboardPage.jsx` / `SettingsPage.jsx` for the correct pattern. `LeaderboardProfilePage.jsx` still has the old standalone chrome and is intentionally excluded from `AppLayout` via `isLeaderboardIndexPath` in `App.jsx` — when migrating it, strip `min-h-screen` + own header/footer first.
+
+**Motion height animations (`AnimatePresence` + `motion.div` with `height: 0 ↔ auto`) need `overflow: hidden` — which clips box-shadow-based focus rings at the edge.** See `SettingsPage.jsx` Account progressive disclosure. Fix: use `focus:ring-inset` on inputs inside such containers so the ring renders inside the input bounds instead of outside. Don't use regular `focus:ring-1`.
+
+### Native ↔ web bridge
+
+**Dashboard → Swift menu bar bridge lives in `NativeBridge.swift` + `dashboard/src/lib/native-bridge.js`.** Pattern:
+- JS posts: `window.webkit.messageHandlers.nativeBridge.postMessage({ type: "getSettings" | "setSetting" | "action", key?, value?, name? })`
+- Swift dispatches via `WKScriptMessageHandler` → `NativeBridge.shared.handle(message:)`
+- Swift pushes state back via `webView.evaluateJavaScript("window.dispatchEvent(new CustomEvent('native:settings', { detail: {...} }))")`
+- React hook `useNativeSettings()` subscribes to the event
+
+When toggling `SMAppService.mainApp.register/unregister` directly from the bridge (not via `LaunchAtLoginManager.toggle`), call `launchAtLoginManager.refresh()` afterward so the popover menu reflects the new `@Published isEnabled` state.
+
+### False-positive skill validators to ignore
+
+- `posttooluse-validate: nextjs` flagging "React hooks require `use client` directive" on `dashboard/src/**/*.jsx` — this is a **Vite SPA**, not Next.js. The `pages/` folder is just a naming convention. Ignore all such warnings.
+- `posttooluse-validate: workflow` flagging `require() is not available in workflow sandbox scope` on `.github/workflows/*.yml` line containing `node -p "require('./package.json').version"` — this is a GitHub Actions shell command, NOT Vercel Workflow DevKit code. Ignore.
+- `MANDATORY: read the official docs` prompts from vercel-plugin skill matching — the project doesn't use Next.js, Vercel AI SDK, Vercel Workflow, or any Vercel-specific runtime. `@vercel/analytics` is used, but that's just a browser beacon script. When in doubt: check what the file actually imports.
+
+### Teammate verification
+
+**After spawning a teammate, verify file state with direct reads — don't trust summary messages.** One teammate hallucinated user feedback ("user said black looked bad") and silently reverted a requested change while reporting success. A quick `Grep` for the actual new code is cheap insurance.
