@@ -54,6 +54,62 @@ describe("normalizeCursorUsageSummary", () => {
     assert.equal(result.secondary_window, null);
     assert.equal(result.tertiary_window, null);
   });
+
+  it("prefers auto/api percent lanes over raw plan cents when both exist", () => {
+    const result = normalizeCursorUsageSummary({
+      billingCycleEnd: "2026-04-30T00:00:00.000Z",
+      individualUsage: {
+        plan: {
+          used: 1,
+          limit: 1_000_000,
+          autoPercentUsed: 40,
+          apiPercentUsed: 60,
+        },
+      },
+    });
+
+    assert.equal(result.primary_window.used_percent, 50);
+    assert.equal(result.secondary_window.used_percent, 40);
+    assert.equal(result.tertiary_window.used_percent, 60);
+  });
+
+  it("maps team onDemand when individual plan has no usable headline", () => {
+    const result = normalizeCursorUsageSummary({
+      billingCycleEnd: "2026-04-30T00:00:00.000Z",
+      membershipType: "team",
+      individualUsage: {},
+      teamUsage: {
+        onDemand: { used: 5000, limit: 10000 },
+      },
+    });
+
+    assert.equal(result.primary_window.used_percent, 50);
+  });
+
+  it("uses team onDemand when enterprise individual lanes are 0% but pool has usage", () => {
+    const result = normalizeCursorUsageSummary({
+      billingCycleEnd: "2026-05-04T03:32:21.000Z",
+      membershipType: "enterprise",
+      limitType: "team",
+      individualUsage: {
+        plan: {
+          enabled: true,
+          used: 0,
+          limit: 2000,
+          totalPercentUsed: 0,
+          autoPercentUsed: 0,
+          apiPercentUsed: 0,
+        },
+        onDemand: { enabled: true, used: 0, limit: null },
+      },
+      teamUsage: {
+        onDemand: { enabled: true, used: 1655, limit: 630000 },
+      },
+    });
+
+    assert.ok(result.primary_window.used_percent > 0);
+    assert.ok(result.primary_window.used_percent < 1);
+  });
 });
 
 describe("parseKiroUsageOutput", () => {

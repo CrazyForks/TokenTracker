@@ -164,6 +164,30 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* TokenTrackerBar WKWebView: `native-app` on <html> (inline head script + Swift); NSVisualEffectView under transparent WKWebView. */
+html.native-app,
+html.native-app.dark {
+  background: transparent !important;
+}
+
+html.native-app body,
+html.native-app #root {
+  background: transparent !important;
+}
+
+html.native-app #root {
+  min-height: 100%;
+}
+
+/* Mac App：主内容卡圆角由 Swift 注入 --tt-main-card-radius（与窗口留白同心近似），见 DashboardChromeMetrics */
+html.native-app {
+  --tt-main-card-radius: 1rem;
+}
+
+html.native-app .tt-native-main-card {
+  border-radius: var(--tt-main-card-radius, 1rem);
+}
+
 @layer components {
   /* ========================================
      OpenAI Design System Components - Light Mode

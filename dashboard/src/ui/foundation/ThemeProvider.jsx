@@ -1,4 +1,5 @@
 import React, { createContext, useCallback, useEffect, useMemo, useState } from "react";
+import { syncNativeChromeAppearance } from "../../lib/native-bridge.js";
 
 const THEME_STORAGE_KEY = "tokentracker-theme";
 
@@ -63,6 +64,11 @@ export function ThemeProvider({ children }) {
   // Apply theme to DOM whenever resolvedTheme changes
   useEffect(() => {
     applyThemeToDOM(resolvedTheme);
+  }, [resolvedTheme]);
+
+  // macOS WKWebView：侧栏毛玻璃 / 标题栏跟仪表盘亮暗一致（NSWindow.appearance）
+  useEffect(() => {
+    syncNativeChromeAppearance(resolvedTheme);
   }, [resolvedTheme]);
 
   // Listen to system theme changes when in "system" mode

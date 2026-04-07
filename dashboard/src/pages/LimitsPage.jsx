@@ -4,10 +4,11 @@ import { Settings as SettingsIcon } from "lucide-react";
 import { useUsageLimits } from "../hooks/use-usage-limits.js";
 import { useLimitsDisplayPrefs } from "../hooks/use-limits-display-prefs.js";
 import { copy } from "../lib/copy";
+import { LimitsPageSkeleton } from "../components/LimitsPageSkeleton.jsx";
 import { UsageLimitsPanel } from "../ui/matrix-a/components/UsageLimitsPanel.jsx";
 
 export function LimitsPage() {
-  const { data: usageLimits } = useUsageLimits();
+  const { data: usageLimits, error, isLoading } = useUsageLimits({ initialRefresh: true });
   const prefs = useLimitsDisplayPrefs();
 
   return (
@@ -33,16 +34,27 @@ export function LimitsPage() {
             </Link>
           </div>
 
-          <UsageLimitsPanel
-            claude={usageLimits?.claude}
-            codex={usageLimits?.codex}
-            cursor={usageLimits?.cursor}
-            gemini={usageLimits?.gemini}
-            kiro={usageLimits?.kiro}
-            antigravity={usageLimits?.antigravity}
-            order={prefs.order}
-            visibility={prefs.visibility}
-          />
+          {isLoading ? (
+            <LimitsPageSkeleton />
+          ) : (
+            <>
+              {error ? (
+                <p className="mb-4 text-sm text-red-500 dark:text-red-400">
+                  {copy("shared.error.prefix", { error })}
+                </p>
+              ) : null}
+              <UsageLimitsPanel
+                claude={usageLimits?.claude}
+                codex={usageLimits?.codex}
+                cursor={usageLimits?.cursor}
+                gemini={usageLimits?.gemini}
+                kiro={usageLimits?.kiro}
+                antigravity={usageLimits?.antigravity}
+                order={prefs.order}
+                visibility={prefs.visibility}
+              />
+            </>
+          )}
         </div>
       </main>
     </div>

@@ -48,28 +48,46 @@ function decodeJwtPayload(token) {
   }
 }
 
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function fetchClaudeUsageLimits(accessToken, { fetchImpl = fetch } = {}) {
-  const res = await fetchImpl("https://api.anthropic.com/api/oauth/usage", {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "anthropic-beta": "oauth-2025-04-20",
-      Accept: "application/json",
-    },
-  });
-  if (res.status === 401) {
-    throw new Error("token_expired");
-  }
-  if (!res.ok) {
-    throw new Error(`Claude API returned ${res.status}`);
-  }
-  const body = await res.json();
-  return {
-    five_hour: body.five_hour ?? null,
-    seven_day: body.seven_day ?? null,
-    seven_day_opus: body.seven_day_opus ?? null,
-    extra_usage: body.extra_usage ?? null,
+  const url = "https://api.anthropic.com/api/oauth/usage";
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    "anthropic-beta": "oauth-2025-04-20",
+    Accept: "application/json",
   };
+  const maxAttempts = 3;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const res = await fetchImpl(url, { method: "GET", headers });
+    if (res.status === 401) {
+      throw new Error("token_expired");
+    }
+    if ((res.status === 429 || res.status === 503) && attempt < maxAttempts - 1) {
+      const ra = res.headers.get("retry-after");
+      const sec = ra ? Number.parseInt(ra, 10) : NaN;
+      const delayMs = Number.isFinite(sec) && sec > 0 ? Math.min(sec * 1000, 30_000) : 1500 * (attempt + 1);
+      await sleepMs(delayMs);
+      continue;
+    }
+    if (!res.ok) {
+      if (res.status === 429) {
+        throw new Error(
+          "Claude API rate limited (429). Too many usage checks — wait ~1 minute and refresh.",
+        );
+      }
+      throw new Error(`Claude API returned ${res.status}`);
+    }
+    const body = await res.json();
+    return {
+      five_hour: body.five_hour ?? null,
+      seven_day: body.seven_day ?? null,
+      seven_day_opus: body.seven_day_opus ?? null,
+      extra_usage: body.extra_usage ?? null,
+    };
+  }
 }
 
 async function fetchCodexUsageLimits(accessToken, { fetchImpl = fetch } = {}) {
@@ -91,24 +109,65 @@ async function fetchCodexUsageLimits(accessToken, { fetchImpl = fetch } = {}) {
   };
 }
 
+function cursorPercentFromCentsUsedLimit(usedRaw, limitRaw) {
+  const used = Number(usedRaw);
+  const limit = Number(limitRaw);
+  if (!Number.isFinite(used) || !Number.isFinite(limit) || limit <= 0) return null;
+  return clampPercent((used / limit) * 100);
+}
+
 function normalizeCursorUsageSummary(body) {
   const plan = body?.individualUsage?.plan || null;
+  const indOnDemand = body?.individualUsage?.onDemand || null;
+  const teamOnDemand = body?.teamUsage?.onDemand || null;
   const billingCycleEnd = typeof body?.billingCycleEnd === "string" ? body.billingCycleEnd : null;
   const autoPercent = clampPercent(plan?.autoPercentUsed);
   const apiPercent = clampPercent(plan?.apiPercentUsed);
 
+  // Prefer totalPercentUsed, then Auto/API lanes (aligned with CodexBar): raw plan used/limit
+  // are often cents where limit can be price/cap semantics — do not prefer that over percent lanes.
   let planPercent = clampPercent(plan?.totalPercentUsed);
   if (planPercent === null) {
-    const used = Number(plan?.used);
-    const limit = Number(plan?.limit);
-    if (Number.isFinite(used) && Number.isFinite(limit) && limit > 0) {
-      planPercent = clampPercent((used / limit) * 100);
-    } else if (autoPercent !== null && apiPercent !== null) {
+    if (autoPercent !== null && apiPercent !== null) {
       planPercent = clampPercent((autoPercent + apiPercent) / 2);
-    } else if (autoPercent !== null) {
-      planPercent = autoPercent;
     } else if (apiPercent !== null) {
       planPercent = apiPercent;
+    } else if (autoPercent !== null) {
+      planPercent = autoPercent;
+    } else {
+      const fromPlanCents = cursorPercentFromCentsUsedLimit(plan?.used, plan?.limit);
+      if (fromPlanCents !== null) planPercent = fromPlanCents;
+    }
+  }
+  if (planPercent === null) {
+    const fromInd = cursorPercentFromCentsUsedLimit(indOnDemand?.used, indOnDemand?.limit);
+    if (fromInd !== null) planPercent = fromInd;
+  }
+  if (planPercent === null) {
+    const fromTeam = cursorPercentFromCentsUsedLimit(teamOnDemand?.used, teamOnDemand?.limit);
+    if (fromTeam !== null) planPercent = fromTeam;
+  }
+  // Enterprise / team: individualUsage.plan often stays at 0% while pooled usage is on teamUsage.onDemand.
+  if (planPercent === 0) {
+    const fromInd = cursorPercentFromCentsUsedLimit(indOnDemand?.used, indOnDemand?.limit);
+    if (fromInd !== null && fromInd > 0) planPercent = fromInd;
+  }
+  if (planPercent === 0) {
+    const fromTeam = cursorPercentFromCentsUsedLimit(teamOnDemand?.used, teamOnDemand?.limit);
+    if (fromTeam !== null && fromTeam > 0) planPercent = fromTeam;
+  }
+
+  // Team / enterprise: headline usage is the pooled quota (teamUsage.onDemand), not individual lanes.
+  const limitType = typeof body?.limitType === "string" ? body.limitType : "";
+  const membershipTypeStr = typeof body?.membershipType === "string" ? body.membershipType : "";
+  const preferTeamPool =
+    limitType === "team" ||
+    membershipTypeStr === "enterprise" ||
+    membershipTypeStr === "team";
+  if (preferTeamPool) {
+    const teamHeadline = cursorPercentFromCentsUsedLimit(teamOnDemand?.used, teamOnDemand?.limit);
+    if (teamHeadline !== null && (planPercent === null || planPercent === 0)) {
+      planPercent = teamHeadline;
     }
   }
 

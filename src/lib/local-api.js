@@ -657,6 +657,12 @@ function createLocalApiHandler({ queuePath }) {
           extraEnv.TOKENTRACKER_INSFORGE_BASE_URL = body.insforgeBaseUrl.trim();
         }
         const result = await runSyncCommand(extraEnv);
+        try {
+          const { resetUsageLimitsCache } = require("./usage-limits");
+          resetUsageLimitsCache();
+        } catch (_e) {
+          // ignore if module load fails
+        }
         json(res, { ok: true, ...result });
       } catch (e) {
         json(res, { ok: false, error: e?.message, code: e?.code ?? null, stdout: e?.stdout || "", stderr: e?.stderr || "" }, 500);
@@ -930,8 +936,12 @@ function createLocalApiHandler({ queuePath }) {
 
     // --- usage-limits ---
     if (p === "/functions/tokentracker-usage-limits") {
-      const { getUsageLimits } = require("./usage-limits");
+      const { getUsageLimits, resetUsageLimitsCache } = require("./usage-limits");
       try {
+        const forceRefresh = url.searchParams.get("refresh");
+        if (forceRefresh === "1" || forceRefresh === "true") {
+          resetUsageLimitsCache();
+        }
         const data = await getUsageLimits({
           home: os.homedir(),
           env: process.env,

@@ -22,18 +22,23 @@ function barColor(pct) {
 }
 
 function LimitBar({ label, pct, reset }) {
-  const v = Math.max(0, Math.min(100, Math.round(pct)));
+  const raw = Math.max(0, Math.min(100, Number(pct) || 0));
+  const rounded = Math.round(raw);
+  // Sub-1% usage still matters (e.g. team pool); keep bar/text from collapsing to 0%.
+  const widthPct = raw > 0 && rounded === 0 ? Math.max(raw, 0.35) : raw;
+  const labelPct =
+    raw > 0 && rounded === 0 ? "<1" : String(rounded);
   return (
     <div className="flex items-center gap-2">
       <span className="text-[11px] text-oai-gray-500 dark:text-oai-gray-400 w-12 shrink-0">{label}</span>
       <div className="flex-1 bg-oai-gray-100 dark:bg-oai-gray-700/50 rounded-full h-1.5 overflow-hidden">
         <div
-          className={`${barColor(v)} rounded-full h-full transition-[width] duration-500 ease-out`}
-          style={{ width: `${v}%`, minWidth: v > 0 ? "3px" : 0 }}
+          className={`${barColor(rounded)} rounded-full h-full transition-[width] duration-500 ease-out`}
+          style={{ width: `${widthPct}%`, minWidth: raw > 0 ? "3px" : 0 }}
         />
       </div>
       <span className="text-[11px] tabular-nums text-oai-gray-500 dark:text-oai-gray-400 w-[30px] text-right shrink-0">
-        {v}%
+        {labelPct}%
       </span>
       {reset ? (
         <span className="text-[10px] text-oai-gray-400 dark:text-oai-gray-500 w-6 text-right shrink-0">

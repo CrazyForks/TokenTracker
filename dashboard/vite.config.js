@@ -464,6 +464,13 @@ async function handleLocalApi(req, res, url) {
         extraEnv.TOKENTRACKER_INSFORGE_BASE_URL = body.insforgeBaseUrl.trim();
       }
       const result = await runLocalSyncCommand(extraEnv);
+      try {
+        const esmRequire = createRequire(import.meta.url);
+        const { resetUsageLimitsCache } = esmRequire("../src/lib/usage-limits");
+        resetUsageLimitsCache();
+      } catch (_e) {
+        // ignore
+      }
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ ok: true, ...result }));
     } catch (error) {
@@ -892,7 +899,11 @@ async function handleLocalApi(req, res, url) {
   if (pathname === "/functions/tokentracker-usage-limits") {
     try {
       const esmRequire = createRequire(import.meta.url);
-      const { getUsageLimits } = esmRequire("../src/lib/usage-limits");
+      const { getUsageLimits, resetUsageLimitsCache } = esmRequire("../src/lib/usage-limits");
+      const forceRefresh = url.searchParams.get("refresh");
+      if (forceRefresh === "1" || forceRefresh === "true") {
+        resetUsageLimitsCache();
+      }
       const data = await getUsageLimits({
         home: os.homedir(),
         env: process.env,

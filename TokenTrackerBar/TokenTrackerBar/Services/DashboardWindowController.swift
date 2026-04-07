@@ -4,6 +4,16 @@ import WebKit
 @MainActor
 final class DashboardWindowController: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
 
+    /// 与 `dashboard` 里 `AppLayout` 主内容区 `lg:pr-3 lg:pb-3`（12pt）一致，用于主卡圆角与窗口圆角同心近似。
+    private enum DashboardChromeMetrics {
+        /// 系统未公开窗口外圆角；取 28pt 使「28 − 12pt 留白 = 16px」与原先 `rounded-2xl` 一致（同心圆角近似）。
+        static let approxWindowOuterCornerRadius: CGFloat = 28
+        static let mainGutterPoints: CGFloat = 12
+        static var mainCardCornerRadiusPixels: Int {
+            Int(max(8, approxWindowOuterCornerRadius - mainGutterPoints))
+        }
+    }
+
     static let shared = DashboardWindowController()
 
     private var window: NSWindow?
@@ -33,6 +43,8 @@ final class DashboardWindowController: NSObject, NSWindowDelegate, WKNavigationD
             NSApp.setActivationPolicy(.regular)
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            syncChromeAppearanceFromWebView()
+            injectMainCardCornerRadius()
             return
         }
 
@@ -40,6 +52,21 @@ final class DashboardWindowController: NSObject, NSWindowDelegate, WKNavigationD
         let contentController = WKUserContentController()
         contentController.add(self, name: "nativeOAuth")
         contentController.add(self, name: "nativeBridge")
+        // Earliest paint: transparent root so NSVisualEffectView is visible (index.html also sets native-app via nativeBridge).
+        let transparencyBootstrap = """
+        (function(){
+          document.documentElement.classList.add('native-app');
+          var s=document.createElement('style');
+          s.textContent='html,html.dark{background:transparent!important}body{background:transparent!important}';
+          (document.head||document.documentElement).appendChild(s);
+        })();
+        """
+        let bootstrapScript = WKUserScript(
+            source: transparencyBootstrap,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        contentController.addUserScript(bootstrapScript)
         let webConfig = WKWebViewConfiguration()
         webConfig.userContentController = contentController
         webConfig.processPool = Self.sharedProcessPool
@@ -51,11 +78,27 @@ final class DashboardWindowController: NSObject, NSWindowDelegate, WKNavigationD
         webView.setValue(false, forKey: "drawsBackground")
         self.webView = webView
 
-        // Container view holds webView + drag bar + loading overlay
+        // Container: native vibrancy under a transparent WKWebView (sidebar + chrome see through; HTML paints the main card only).
         let container = NSView()
         container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor.clear.cgColor
+
+        let visualEffectBackground = NSVisualEffectView()
+        visualEffectBackground.translatesAutoresizingMaskIntoConstraints = false
+        visualEffectBackground.material = .sidebar
+        visualEffectBackground.blendingMode = .withinWindow
+        visualEffectBackground.state = .active
+        container.addSubview(visualEffectBackground)
+
         webView.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(webView)
+
+        NSLayoutConstraint.activate([
+            visualEffectBackground.topAnchor.constraint(equalTo: container.topAnchor),
+            visualEffectBackground.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            visualEffectBackground.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            visualEffectBackground.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ])
 
         // Titlebar drag area — transparent, sits above webView so window is draggable
         let dragBar = TitlebarDragView()
@@ -103,8 +146,9 @@ final class DashboardWindowController: NSObject, NSWindowDelegate, WKNavigationD
         window.isReleasedWhenClosed = false
         window.setFrameAutosaveName("DashboardWindow")
         window.center()
-        // Match system appearance for loading background
-        window.backgroundColor = NSColor.windowBackgroundColor
+        // Clear window so NSVisualEffectView + transparent WKWebView show material (not an opaque gray sheet).
+        window.isOpaque = false
+        window.backgroundColor = .clear
         self.window = window
 
         // Wire bridge so SettingsPage can read/write menu-bar prefs
@@ -125,6 +169,25 @@ final class DashboardWindowController: NSObject, NSWindowDelegate, WKNavigationD
     func reload() {
         retryCount = 0
         webView?.reload()
+    }
+
+    /// Match dashboard light/dark so `NSVisualEffectView` + window chrome use dark materials when the web UI is dark.
+    func applyChromeAppearance(isDark: Bool) {
+        window?.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
+    }
+
+    private func syncChromeAppearanceFromWebView() {
+        webView?.evaluateJavaScript("document.documentElement.classList.contains('dark')") { [weak self] result, _ in
+            guard let self, let isDark = result as? Bool else { return }
+            applyChromeAppearance(isDark: isDark)
+        }
+    }
+
+    /// 主内容白卡圆角：与窗口可视圆角同心近似（外圆角 − 与窗口边的留白），写入 `--tt-main-card-radius`。
+    private func injectMainCardCornerRadius() {
+        let px = DashboardChromeMetrics.mainCardCornerRadiusPixels
+        let js = "document.documentElement.style.setProperty('--tt-main-card-radius', '\(px)px');"
+        webView?.evaluateJavaScript(js, completionHandler: nil)
     }
 
     // MARK: - Loading Overlay
@@ -158,8 +221,7 @@ final class DashboardWindowController: NSObject, NSWindowDelegate, WKNavigationD
 
     private func dismissLoadingOverlay() {
         guard let overlay = loadingOverlay else { return }
-        // Enable webview background BEFORE fade so it's already painting
-        webView?.setValue(true, forKey: "drawsBackground")
+        // Keep drawsBackground false so NSVisualEffectView shows through non-painted areas (sidebar + window chrome).
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.3
             overlay.animator().alphaValue = 0
@@ -287,6 +349,8 @@ final class DashboardWindowController: NSObject, NSWindowDelegate, WKNavigationD
         let waitForPaint = "new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))).then(() => 'ready')"
         webView.evaluateJavaScript(waitForPaint) { [weak self] _, _ in
             DispatchQueue.main.async {
+                self?.syncChromeAppearanceFromWebView()
+                self?.injectMainCardCornerRadius()
                 self?.dismissLoadingOverlay()
             }
         }

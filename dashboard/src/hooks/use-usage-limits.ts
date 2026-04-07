@@ -11,13 +11,15 @@ interface UsageLimitsData {
   antigravity: { configured: boolean; error?: string | null; account_email?: string | null; account_plan?: string | null; primary_window?: { used_percent: number; reset_at?: string | null } | null; secondary_window?: { used_percent: number; reset_at?: string | null } | null; tertiary_window?: { used_percent: number; reset_at?: string | null } | null };
 }
 
-export function useUsageLimits() {
+export function useUsageLimits(options?: { initialRefresh?: boolean }) {
   const [data, setData] = useState<UsageLimitsData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const initialRefresh = Boolean(options?.initialRefresh);
 
   const refresh = useCallback(async () => {
     try {
-      const res = await getUsageLimits();
+      const res = await getUsageLimits({ refresh: true });
       setData(res && typeof res === "object" ? res as UsageLimitsData : null);
       setError(null);
     } catch (err) {
@@ -26,8 +28,24 @@ export function useUsageLimits() {
   }, []);
 
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await getUsageLimits(initialRefresh ? { refresh: true } : {});
+        if (cancelled) return;
+        setData(res && typeof res === "object" ? res as UsageLimitsData : null);
+        setError(null);
+      } catch (err) {
+        if (cancelled) return;
+        setError((err as Error)?.message || String(err));
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [initialRefresh]);
 
-  return { data, error, refresh };
+  return { data, error, isLoading, refresh };
 }

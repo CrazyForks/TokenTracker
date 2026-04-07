@@ -18,28 +18,9 @@ import { cn } from "../../../lib/cn";
 import { useTheme } from "../../../hooks/useTheme.js";
 import { shouldFetchGithubStars } from "../../matrix-a/util/should-fetch-github-stars.js";
 import { InsforgeUserHeaderControls } from "../../../components/InsforgeUserHeaderControls.jsx";
+import { isNativeApp, isNativeEmbed } from "../../../lib/native-bridge.js";
 
 const STORAGE_KEY = "tt.sidebarCollapsed";
-
-/**
- * Detect running inside the macOS native app (WKWebView with ?app=1 or persistent localStorage flag).
- * The Swift side sets titlebarAppearsTransparent=true, so the webview content starts under the traffic
- * lights. We need to push the entire layout down to avoid overlap.
- */
-const NATIVE_APP_KEY = "tokentracker_native_app";
-const isNativeApp = (() => {
-  if (typeof window === "undefined") return false;
-  try {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("app") === "1") {
-      try { window.localStorage.setItem(NATIVE_APP_KEY, "1"); } catch { /* ignore */ }
-      return true;
-    }
-    return window.localStorage.getItem(NATIVE_APP_KEY) === "1";
-  } catch {
-    return false;
-  }
-})();
 
 function getNavGroups() {
   // copy() must be called at render time so locale switches apply.
@@ -179,8 +160,9 @@ function IconButton({ as = "button", title, onClick, href, children, className: 
 
 /**
  * Refined GitHub Star pill — Linear "Free plan" style: bordered, tight, with text + count.
+ * `glassChrome`: Mac 侧栏毛玻璃上：gray-500 描边 — 亮色 /20 更淡，暗色 dark:/30 保持可见。
  */
-function StarPill({ repo = "mm7894215/TokenTracker" }) {
+function StarPill({ repo = "mm7894215/TokenTracker", glassChrome = false }) {
   const [stars, setStars] = useState(null);
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -202,7 +184,12 @@ function StarPill({ repo = "mm7894215/TokenTracker" }) {
       target="_blank"
       rel="noopener noreferrer"
       aria-label={stars !== null ? `Star on GitHub (${stars})` : "Star on GitHub"}
-      className="inline-flex h-7 items-center gap-1.5 rounded-full border border-oai-gray-200 dark:border-oai-gray-700 px-2.5 text-xs font-medium text-oai-gray-600 dark:text-oai-gray-400 hover:bg-oai-gray-200/60 dark:hover:bg-oai-gray-800 hover:text-oai-black dark:hover:text-white hover:border-oai-gray-300 dark:hover:border-oai-gray-600 transition-colors no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500"
+      className={cn(
+        "inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium transition-colors no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500",
+        glassChrome
+          ? "border border-gray-500/20 dark:border-gray-500/30 bg-gray-500/[0.04] dark:bg-gray-500/[0.06] backdrop-blur-[2px] text-oai-gray-700 dark:text-oai-gray-300 hover:bg-gray-500/10 dark:hover:bg-gray-500/12 hover:border-gray-500/30 dark:hover:border-gray-500/40 hover:text-oai-black dark:hover:text-white"
+          : "border border-oai-gray-200 dark:border-oai-gray-700 text-oai-gray-600 dark:text-oai-gray-400 hover:bg-oai-gray-200/60 dark:hover:bg-oai-gray-800 hover:text-oai-black dark:hover:text-white hover:border-oai-gray-300 dark:hover:border-oai-gray-600",
+      )}
     >
       <svg height="12" viewBox="0 0 16 16" width="12" className="shrink-0 fill-current">
         <path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z" />
@@ -227,7 +214,7 @@ const THEME_OPTIONS = [
   { value: "system", label: "System", Icon: Monitor },
 ];
 
-function ThemePill({ theme, resolvedTheme, onSetTheme }) {
+function ThemePill({ theme, resolvedTheme, onSetTheme, glassChrome = false }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
   const ActiveIcon = resolvedTheme === "dark" ? Moon : Sun;
@@ -255,7 +242,12 @@ function ThemePill({ theme, resolvedTheme, onSetTheme }) {
         aria-haspopup="menu"
         title="Theme"
         onClick={() => setOpen((o) => !o)}
-        className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-oai-gray-200 dark:border-oai-gray-700 text-oai-gray-600 dark:text-oai-gray-400 hover:bg-oai-gray-200/60 dark:hover:bg-oai-gray-800 hover:text-oai-black dark:hover:text-white hover:border-oai-gray-300 dark:hover:border-oai-gray-600 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500"
+        className={cn(
+          "inline-flex h-7 w-7 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-oai-brand-500",
+          glassChrome
+            ? "border border-gray-500/20 dark:border-gray-500/30 bg-gray-500/[0.04] dark:bg-gray-500/[0.06] backdrop-blur-[2px] text-oai-gray-700 dark:text-oai-gray-300 hover:bg-gray-500/10 dark:hover:bg-gray-500/12 hover:border-gray-500/30 dark:hover:border-gray-500/40 hover:text-oai-black dark:hover:text-white"
+            : "border border-oai-gray-200 dark:border-oai-gray-700 text-oai-gray-600 dark:text-oai-gray-400 hover:bg-oai-gray-200/60 dark:hover:bg-oai-gray-800 hover:text-oai-black dark:hover:text-white hover:border-oai-gray-300 dark:hover:border-oai-gray-600",
+        )}
       >
         <ActiveIcon className="h-3.5 w-3.5" aria-hidden />
       </button>
@@ -299,7 +291,7 @@ function ThemePill({ theme, resolvedTheme, onSetTheme }) {
  * @param {boolean} showCloseButton - show X close button instead of collapse toggle (mobile)
  * @param {() => void} onClose - close handler for mobile drawer
  */
-function SidebarBody({ collapsed, onToggleCollapsed, onItemClick, showCloseButton = false, onClose }) {
+function SidebarBody({ collapsed, onToggleCollapsed, onItemClick, showCloseButton = false, onClose, glassChrome = false }) {
   const location = useLocation();
   const pathname = location?.pathname || "/";
   const { theme, resolvedTheme, setTheme } = useTheme();
@@ -367,9 +359,9 @@ function SidebarBody({ collapsed, onToggleCollapsed, onItemClick, showCloseButto
           collapsed ? "flex-col justify-center gap-2" : "justify-between gap-2",
         )}
       >
-        <ThemePill theme={theme} resolvedTheme={resolvedTheme} onSetTheme={setTheme} />
+        <ThemePill theme={theme} resolvedTheme={resolvedTheme} onSetTheme={setTheme} glassChrome={glassChrome} />
         <div className="flex items-center gap-1.5">
-          {!collapsed && <StarPill />}
+          {!collapsed && <StarPill glassChrome={glassChrome} />}
           {/* TEMP: collapse button hidden — restore when ready
           {!showCloseButton && (
             <button
@@ -398,6 +390,11 @@ function SidebarBody({ collapsed, onToggleCollapsed, onItemClick, showCloseButto
  * already bounded by AppLayout's fixed-viewport flex container).
  */
 export function Sidebar({ collapsed, onToggleCollapsed }) {
+  const nativeGlass = useMemo(() => {
+    if (typeof window === "undefined") return false;
+    return isNativeEmbed() || isNativeApp();
+  }, []);
+
   return (
     <aside
       aria-label={copy("nav.aside_label")}
@@ -406,7 +403,7 @@ export function Sidebar({ collapsed, onToggleCollapsed }) {
         collapsed ? "w-[72px]" : "w-[220px]",
       )}
     >
-      <SidebarBody collapsed={collapsed} onToggleCollapsed={onToggleCollapsed} />
+      <SidebarBody collapsed={collapsed} onToggleCollapsed={onToggleCollapsed} glassChrome={nativeGlass} />
     </aside>
   );
 }
@@ -495,9 +492,20 @@ export function AppLayout({ children }) {
   const openDrawer = useCallback(() => setDrawerOpen(true), []);
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
 
+  /** macOS WKWebView：底层由 NSVisualEffectView 提供模糊，Web 根布局透明，侧栏浮在背景上；浏览器仍用灰色底。 */
+  const nativeEmbed = useMemo(() => {
+    if (typeof window === "undefined") return false;
+    return isNativeEmbed() || isNativeApp();
+  }, []);
+
   return (
-    <div className="fixed inset-0 flex flex-col bg-oai-gray-100 dark:bg-oai-gray-950 text-oai-black dark:text-oai-white font-sans overflow-hidden">
-      {isNativeApp && (
+    <div
+      className={cn(
+        "fixed inset-0 flex flex-col text-oai-black dark:text-oai-white font-sans overflow-hidden",
+        nativeEmbed ? "bg-transparent" : "bg-oai-gray-100 dark:bg-oai-gray-950",
+      )}
+    >
+      {nativeEmbed && (
         <div
           className="h-7 shrink-0"
           style={{ WebkitAppRegion: "drag" }}
@@ -507,8 +515,16 @@ export function AppLayout({ children }) {
       <div className="flex-1 min-h-0 flex">
         <Sidebar collapsed={collapsed} onToggleCollapsed={toggle} />
         <MobileDrawer open={drawerOpen} onClose={closeDrawer} />
-        <div className="flex-1 min-w-0 min-h-0 p-2 lg:pl-0 flex flex-col">
-          <div className="flex-1 min-h-0 flex flex-col bg-oai-white dark:bg-oai-gray-900 rounded-2xl border border-oai-gray-200 dark:border-oai-gray-800 overflow-hidden shadow-sm">
+        {/* lg：与侧栏内容区对齐 — 侧栏底部按钮区为 px-2 py-3；主卡右侧/底侧用 pr-3 pb-3 与 py-3 视觉一致，避免仅靠 p-2 显得贴边 */}
+        {/* Mac App：`lg:pr-3 lg:pb-3` (12pt) 须与 Swift `DashboardChromeMetrics.mainGutterPoints` 一致，主卡圆角由 `--tt-main-card-radius` 注入 */}
+        <div className="flex-1 min-w-0 min-h-0 p-2 lg:pl-0 lg:pr-3 lg:pb-3 flex flex-col">
+          <div
+            className={cn(
+              "flex-1 min-h-0 flex flex-col bg-oai-white dark:bg-oai-gray-900 border border-oai-gray-200 dark:border-oai-gray-800 overflow-hidden",
+              nativeEmbed ? "tt-native-main-card" : "rounded-2xl",
+              !nativeEmbed && "shadow-sm",
+            )}
+          >
             <MobileTopBar onOpenDrawer={openDrawer} />
             <div className="flex-1 min-h-0 overflow-y-auto">
               {children}

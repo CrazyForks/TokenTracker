@@ -22,6 +22,12 @@ export function isNativeApp() {
   }
 }
 
+/** True when running inside TokenTrackerBar WKWebView (bridge is always present). */
+export function isNativeEmbed() {
+  if (typeof window === "undefined") return false;
+  return Boolean(window.webkit?.messageHandlers?.nativeBridge);
+}
+
 function getHandler() {
   if (typeof window === "undefined") return null;
   return window.webkit?.messageHandlers?.nativeBridge ?? null;
@@ -53,6 +59,13 @@ export function setNativeSetting(key, value) {
 
 export function nativeAction(name) {
   return post({ type: "action", name });
+}
+
+/** macOS Dashboard 窗口：与 Web 的 resolvedTheme 同步 NSWindow.appearance，侧栏 NSVisualEffectView 才能跟暗色一致。 */
+export function syncNativeChromeAppearance(resolvedTheme) {
+  if (!isNativeEmbed()) return;
+  const isDark = resolvedTheme === "dark";
+  post({ type: "setChromeAppearance", isDark });
 }
 
 /**

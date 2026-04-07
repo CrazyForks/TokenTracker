@@ -329,8 +329,9 @@ export async function getUsageMonthly({
   });
 }
 
-export async function getUsageLimits(_opts: AnyRecord = {}) {
-  return fetchLocalJson(PATHS.usageLimits);
+export async function getUsageLimits(opts: { refresh?: boolean } = {}) {
+  const params = opts?.refresh ? { refresh: "1" } : undefined;
+  return fetchLocalJson(PATHS.usageLimits, params);
 }
 
 export async function getUsageHeatmap({
