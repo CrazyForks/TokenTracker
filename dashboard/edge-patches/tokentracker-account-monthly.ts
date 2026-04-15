@@ -17,18 +17,43 @@ function json(data: unknown, status = 200) {
   });
 }
 
-function decodeJwtUserId(authHeader: string | null): string | null {
+async function sha256Hex(s: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Resolve user_id from an Authorization header. Accepts either:
+ *   1. End-user JWT (dashboard path) — user_id from sub claim
+ *   2. Device token (CLI / menubar path) — lookup in tokentracker_device_tokens
+ */
+async function resolveUserId(
+  authHeader: string | null,
+  client: ReturnType<typeof createClient>,
+): Promise<string | null> {
   if (!authHeader) return null;
   const token = authHeader.replace(/^Bearer\s+/i, "").trim();
   if (!token) return null;
   const parts = token.split(".");
-  if (parts.length < 2) return null;
+  if (parts.length === 3) {
+    try {
+      const payloadRaw = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+      const padded = payloadRaw + "=".repeat((4 - (payloadRaw.length % 4)) % 4);
+      const payload = JSON.parse(atob(padded)) as Record<string, unknown>;
+      const sub = (payload.sub ?? payload.user_id) as string | undefined;
+      if (typeof sub === "string" && sub.length > 0) return sub;
+    } catch { /* fall through */ }
+  }
   try {
-    const payloadRaw = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-    const padded = payloadRaw + "=".repeat((4 - (payloadRaw.length % 4)) % 4);
-    const payload = JSON.parse(atob(padded)) as Record<string, unknown>;
-    const sub = (payload.sub ?? payload.user_id) as string | undefined;
-    return typeof sub === "string" && sub.length > 0 ? sub : null;
+    const tokenHash = await sha256Hex(token);
+    const { data } = await client.database
+      .from("tokentracker_device_tokens")
+      .select("user_id")
+      .eq("token_hash", tokenHash)
+      .is("revoked_at", null)
+      .maybeSingle();
+    const row = data as { user_id?: string } | null;
+    return row?.user_id || null;
   } catch {
     return null;
   }
@@ -49,9 +74,6 @@ export default async function (req: Request): Promise<Response> {
   if (req.method === "OPTIONS")
     return new Response(null, { status: 204, headers: corsHeaders });
   if (req.method !== "GET") return json({ error: "Method not allowed" }, 405);
-
-  const userId = decodeJwtUserId(req.headers.get("Authorization"));
-  if (!userId) return json({ error: "Unauthorized" }, 401);
 
   const url = new URL(req.url);
   let from = url.searchParams.get("from") || "";
@@ -81,6 +103,9 @@ export default async function (req: Request): Promise<Response> {
     anonKey,
     ...(anonKey ? { headers: { apikey: anonKey } } : {}),
   });
+
+  const userId = await resolveUserId(req.headers.get("Authorization"), client);
+  if (!userId) return json({ error: "Unauthorized" }, 401);
 
   const rangeStart = `${from}T00:00:00Z`;
   const nextDay = new Date(`${to}T00:00:00Z`);

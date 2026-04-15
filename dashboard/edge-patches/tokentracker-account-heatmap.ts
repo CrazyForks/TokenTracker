@@ -44,18 +44,43 @@ function zonedDayKey(hourStart: string, tz: string | null, offsetMinutes: number
   return hourStart.slice(0, 10);
 }
 
-function decodeJwtUserId(authHeader: string | null): string | null {
+async function sha256Hex(s: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Resolve user_id from an Authorization header. Accepts either:
+ *   1. End-user JWT (dashboard path) — user_id from sub claim
+ *   2. Device token (CLI / menubar path) — lookup in tokentracker_device_tokens
+ */
+async function resolveUserId(
+  authHeader: string | null,
+  client: ReturnType<typeof createClient>,
+): Promise<string | null> {
   if (!authHeader) return null;
   const token = authHeader.replace(/^Bearer\s+/i, "").trim();
   if (!token) return null;
   const parts = token.split(".");
-  if (parts.length < 2) return null;
+  if (parts.length === 3) {
+    try {
+      const payloadRaw = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+      const padded = payloadRaw + "=".repeat((4 - (payloadRaw.length % 4)) % 4);
+      const payload = JSON.parse(atob(padded)) as Record<string, unknown>;
+      const sub = (payload.sub ?? payload.user_id) as string | undefined;
+      if (typeof sub === "string" && sub.length > 0) return sub;
+    } catch { /* fall through */ }
+  }
   try {
-    const payloadRaw = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-    const padded = payloadRaw + "=".repeat((4 - (payloadRaw.length % 4)) % 4);
-    const payload = JSON.parse(atob(padded)) as Record<string, unknown>;
-    const sub = (payload.sub ?? payload.user_id) as string | undefined;
-    return typeof sub === "string" && sub.length > 0 ? sub : null;
+    const tokenHash = await sha256Hex(token);
+    const { data } = await client.database
+      .from("tokentracker_device_tokens")
+      .select("user_id")
+      .eq("token_hash", tokenHash)
+      .is("revoked_at", null)
+      .maybeSingle();
+    const row = data as { user_id?: string } | null;
+    return row?.user_id || null;
   } catch {
     return null;
   }
@@ -64,15 +89,17 @@ function decodeJwtUserId(authHeader: string | null): string | null {
 interface HourlyRow {
   hour_start: string;
   total_tokens: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_input_tokens: number | null;
+  cache_creation_input_tokens: number | null;
+  reasoning_output_tokens: number | null;
 }
 
 export default async function (req: Request): Promise<Response> {
   if (req.method === "OPTIONS")
     return new Response(null, { status: 204, headers: corsHeaders });
   if (req.method !== "GET") return json({ error: "Method not allowed" }, 405);
-
-  const userId = decodeJwtUserId(req.headers.get("Authorization"));
-  if (!userId) return json({ error: "Unauthorized" }, 401);
 
   const url = new URL(req.url);
   const weeks = parseInt(url.searchParams.get("weeks") || "52", 10);
@@ -98,6 +125,9 @@ export default async function (req: Request): Promise<Response> {
     ...(anonKey ? { headers: { apikey: anonKey } } : {}),
   });
 
+  const userId = await resolveUserId(req.headers.get("Authorization"), client);
+  if (!userId) return json({ error: "Unauthorized" }, 401);
+
   // End anchor: caller-supplied `to` in their local day, else local today.
   const toStr = toParam || zonedDayKey(new Date().toISOString(), tz, tzOffsetMinutes);
   const end = new Date(`${toStr}T00:00:00Z`);
@@ -120,7 +150,7 @@ export default async function (req: Request): Promise<Response> {
   while (true) {
     const { data, error } = await client.database
       .from("tokentracker_hourly")
-      .select("hour_start, total_tokens")
+      .select("hour_start, total_tokens, input_tokens, output_tokens, cached_input_tokens, cache_creation_input_tokens, reasoning_output_tokens")
       .eq("user_id", userId)
       .gte("hour_start", rangeStart)
       .lt("hour_start", rangeEnd)

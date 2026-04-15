@@ -676,12 +676,22 @@ async function parseOpenclawSessionFile({
 
     const model = normalizeModelInput(msg.model) || DEFAULT_MODEL;
 
+    // OpenClaw wraps Codex, so it follows the same OpenAI convention where
+    // `input` INCLUDES cached reads. Normalize by subtracting cached from
+    // input so `input_tokens` is pure non-cached (matches CLAUDE.md spec
+    // and prevents downstream double-counting).
+    const openclawRawInput = Number(usage.input || 0);
+    const openclawCached = Number(usage.cacheRead || 0);
+    const openclawCacheWrite = Number(usage.cacheWrite || 0);
+    const openclawOutput = Number(usage.output || 0);
+    const openclawInput = Math.max(0, openclawRawInput - openclawCached);
     const delta = {
-      input_tokens: Number(usage.input || 0),
-      cached_input_tokens: Number((usage.cacheRead || 0) + (usage.cacheWrite || 0)),
-      output_tokens: Number(usage.output || 0),
+      input_tokens: openclawInput,
+      cached_input_tokens: openclawCached,
+      cache_creation_input_tokens: openclawCacheWrite,
+      output_tokens: openclawOutput,
       reasoning_output_tokens: 0,
-      total_tokens: Number(usage.totalTokens || 0),
+      total_tokens: Number(usage.totalTokens || 0) || (openclawInput + openclawCached + openclawCacheWrite + openclawOutput),
       conversation_count: 1,
     };
 
@@ -2184,6 +2194,15 @@ function normalizeUsage(u) {
   ]) {
     const n = Number(u[k] || 0);
     out[k] = Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+  }
+  // OpenAI / Codex convention: `input_tokens` INCLUDES `cached_input_tokens`
+  // (cached is a subset of input), and `total_tokens = input + output`.
+  // Our storage convention (per CLAUDE.md) is `input_tokens` = pure
+  // non-cached input, so downstream sums match. Subtract cached from input
+  // to normalize. Leave total_tokens alone — raw OpenAI total is correct
+  // (it equals input + output = non_cached + cached + output).
+  if (out.input_tokens >= out.cached_input_tokens) {
+    out.input_tokens = out.input_tokens - out.cached_input_tokens;
   }
   return out;
 }

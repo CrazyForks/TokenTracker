@@ -186,6 +186,14 @@ function AccountSection() {
     if (typeof window !== "undefined") {
       window.dispatchEvent(new Event("tt.cloudSyncChanged"));
     }
+    // Mirror toggle to embedded server so menu bar / widgets match.
+    try {
+      await fetch("/api/account-view", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: next }),
+      });
+    } catch { /* best-effort */ }
     if (next) {
       try {
         await runCloudUsageSyncNow(() => getAccessToken());
