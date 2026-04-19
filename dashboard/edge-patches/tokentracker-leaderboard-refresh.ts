@@ -152,18 +152,17 @@ function computeDateRange(period: Period): DateRange {
       .slice(0, 10);
     return { from_day, to_day };
   }
-  // total — capped to a rolling 90-day window so we don't re-scan the entire
-  // hourly table on every refresh (Egress dominates with the unbounded range).
+  // total — full lifetime. `from_day` is a static epoch sentinel so snapshot
+  // rows always have identical (period, from_day, to_day) and upsert cleanly.
   const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  const start = new Date(end);
-  start.setUTCDate(end.getUTCDate() - 89);
-  return { from_day: start.toISOString().slice(0, 10), to_day: end.toISOString().slice(0, 10) };
+  return { from_day: "1970-01-01", to_day: end.toISOString().slice(0, 10) };
 }
 
 interface HourlyRow {
   user_id: string;
   source: string;
   model: string;
+  hour_start: string;
   total_tokens: number;
   input_tokens: number;
   output_tokens: number;
@@ -266,8 +265,13 @@ export default async function (req: Request): Promise<Response> {
     nextDay.setUTCDate(nextDay.getUTCDate() + 1);
     const rangeEnd = nextDay.toISOString();
 
-    // Paginate through all hourly rows (1000 per page)
-    const aggMap = new Map<string, UserAgg>();
+    // Paginate through all hourly rows (1000 per page).
+    // Dedupe by (user_id, source, model, hour_start) keeping the MAX
+    // total_tokens across devices — the same logical bucket can be recorded
+    // under multiple device_id rows (cloud-sync issues a new device per
+    // session; cumulative queue replays upsert under whichever device ran
+    // the sync). SUM across devices would double-count the same usage.
+    const bucketMap = new Map<string, HourlyRow>();
     let offset = 0;
     const PAGE_SIZE = 1000;
     let hasMore = true;
@@ -275,7 +279,7 @@ export default async function (req: Request): Promise<Response> {
     while (hasMore) {
       const { data: rows, error } = await client.database
         .from("tokentracker_hourly")
-        .select("user_id, source, model, total_tokens, input_tokens, output_tokens, cached_input_tokens, cache_creation_input_tokens, reasoning_output_tokens")
+        .select("user_id, source, model, hour_start, total_tokens, input_tokens, output_tokens, cached_input_tokens, cache_creation_input_tokens, reasoning_output_tokens")
         .gte("hour_start", rangeStart)
         .lt("hour_start", rangeEnd)
         .order("hour_start", { ascending: true })
@@ -285,20 +289,30 @@ export default async function (req: Request): Promise<Response> {
       if (!rows || rows.length === 0) break;
 
       for (const row of rows as HourlyRow[]) {
-        let agg = aggMap.get(row.user_id);
-        if (!agg) {
-          agg = newUserAgg();
-          aggMap.set(row.user_id, agg);
+        const key = `${row.user_id}|${row.source}|${row.model}|${row.hour_start}`;
+        const existing = bucketMap.get(key);
+        const incoming = Number(row.total_tokens) || 0;
+        if (!existing || incoming > (Number(existing.total_tokens) || 0)) {
+          bucketMap.set(key, row);
         }
-        const tokens = Number(row.total_tokens) || 0;
-        const col = SOURCE_COLUMN_MAP[row.source] ?? "other_tokens";
-        (agg as unknown as Record<string, number>)[col] += tokens;
-        agg.total_tokens += tokens;
-        agg.estimated_cost_usd += computeRowCost(row);
       }
 
       hasMore = rows.length === PAGE_SIZE;
       offset += PAGE_SIZE;
+    }
+
+    const aggMap = new Map<string, UserAgg>();
+    for (const row of bucketMap.values()) {
+      let agg = aggMap.get(row.user_id);
+      if (!agg) {
+        agg = newUserAgg();
+        aggMap.set(row.user_id, agg);
+      }
+      const tokens = Number(row.total_tokens) || 0;
+      const col = SOURCE_COLUMN_MAP[row.source] ?? "other_tokens";
+      (agg as unknown as Record<string, number>)[col] += tokens;
+      agg.total_tokens += tokens;
+      agg.estimated_cost_usd += computeRowCost(row);
     }
 
     if (aggMap.size === 0) {

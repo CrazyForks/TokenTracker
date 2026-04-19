@@ -146,24 +146,43 @@ export default async function (req: Request): Promise<Response> {
     32,
   );
 
-  const deviceId = crypto.randomUUID();
+  // Reuse an existing active device for the same (user, platform, device_name)
+  // instead of minting a fresh one on every issue. Client localStorage is
+  // isolated across Safari / Chrome / WKWebView, so the client asks for a new
+  // token on every environment — if we created a fresh device_id each time,
+  // `tokentracker_hourly` ends up with the same logical bucket written under
+  // many device_ids, and leaderboard SUM double-counts. Keeping a single
+  // device_id per logical device means every sync upserts onto the same row.
+  const { data: existingDevice } = await dbClient.database
+    .from("tokentracker_devices")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("platform", platform)
+    .eq("device_name", deviceName)
+    .is("revoked_at", null)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  const deviceId = (existingDevice as { id?: string } | null)?.id ?? crypto.randomUUID();
   const tokenId = crypto.randomUUID();
   const token =
     crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
   const tokenHash = await sha256Hex(token);
   const createdAt = new Date().toISOString();
 
-  const { error: deviceErr } = await dbClient.database.from("tokentracker_devices").insert([
-    {
-      id: deviceId,
-      user_id: userId,
-      device_name: deviceName,
-      platform,
-    },
-  ]);
-
-  if (deviceErr) {
-    return json({ error: "Failed to issue device token", detail: deviceErr.message }, 500);
+  if (!existingDevice) {
+    const { error: deviceErr } = await dbClient.database.from("tokentracker_devices").insert([
+      {
+        id: deviceId,
+        user_id: userId,
+        device_name: deviceName,
+        platform,
+      },
+    ]);
+    if (deviceErr) {
+      return json({ error: "Failed to issue device token", detail: deviceErr.message }, 500);
+    }
   }
 
   const { error: tokenErr } = await dbClient.database.from("tokentracker_device_tokens").insert([
