@@ -256,7 +256,6 @@ export function LeaderboardPage({
 
   const [cloudSyncOn, setCloudSyncOn] = useState(() => getCloudSyncEnabled());
   const [syncing, setSyncing] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
 
   const period = useMemo(() => {
     const params = new URLSearchParams(location?.search || "");
@@ -360,28 +359,12 @@ export function LeaderboardPage({
       setCloudSyncOn(true);
       await runCloudUsageSyncNow(() => resolveAuthAccessTokenWithRetry(effectiveAuthToken));
       const token = await resolveAuthAccessTokenWithRetry(effectiveAuthToken);
-      if (token) await refreshLeaderboard({ accessToken: token });
+      if (token) await refreshLeaderboard({ accessToken: token, period, source: "leaderboard-enable-sync" });
       setListReloadToken((v) => v + 1);
     } catch (e) {
       console.warn("[tokentracker] sync:", e);
     } finally {
       setSyncing(false);
-    }
-  };
-
-  const handleRefresh = async () => {
-    setRefreshing(true);
-    try {
-      const token = await resolveAuthAccessTokenWithRetry(effectiveAuthToken);
-      if (cloudSyncOn && token) {
-        await runCloudUsageSyncNow(() => Promise.resolve(token));
-      }
-      if (token) await refreshLeaderboard({ accessToken: token });
-      setListReloadToken((v) => v + 1);
-    } catch (e) {
-      console.warn("[tokentracker] refresh:", e);
-    } finally {
-      setRefreshing(false);
     }
   };
 
@@ -581,32 +564,6 @@ export function LeaderboardPage({
             </div>
 
             <div className="flex items-center gap-2">
-              {authTokenAllowed && authTokenReady && (
-                <div className="inline-flex p-1 border border-oai-gray-200 dark:border-oai-gray-800 rounded-lg">
-                  <button
-                    onClick={handleRefresh}
-                    disabled={refreshing || listState.loading}
-                    className="px-3 py-1.5 text-sm font-medium rounded-md transition-colors text-oai-gray-600 dark:text-oai-gray-300 hover:bg-oai-gray-100 dark:hover:bg-oai-gray-900 hover:text-oai-black dark:hover:text-white disabled:opacity-50 inline-flex items-center gap-1.5"
-                  >
-                    <svg
-                      className={cn("w-4 h-4", refreshing && "animate-spin")}
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      aria-hidden="true"
-                    >
-                      <path d="M3 12a9 9 0 0 1 15.5-6.5L21 8" />
-                      <path d="M21 3v5h-5" />
-                      <path d="M21 12a9 9 0 0 1-15.5 6.5L3 16" />
-                      <path d="M3 21v-5h5" />
-                    </svg>
-                    {refreshing ? "Refreshing" : "Refresh"}
-                  </button>
-                </div>
-              )}
               <div className="inline-flex p-1 border border-oai-gray-200 dark:border-oai-gray-800 rounded-lg">
                 {["week", "month", "total"].map((p) => (
                   <button

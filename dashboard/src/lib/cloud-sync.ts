@@ -26,7 +26,10 @@ export function shouldRotateStoredDeviceSession(
   return issuedAtMs + DEVICE_TOKEN_ROTATE_AFTER_MS <= nowMs;
 }
 
-async function triggerLeaderboardRefresh(accessToken: string): Promise<void> {
+async function triggerLeaderboardRefresh(
+  accessToken: string,
+  source: "cloud-sync-auto" | "cloud-sync-now",
+): Promise<void> {
   const baseUrl = getInsforgeRemoteUrl();
   if (!isRemoteHttpBase(baseUrl) || !accessToken) return;
   const root = baseUrl.replace(/\/$/, "");
@@ -39,13 +42,13 @@ async function triggerLeaderboardRefresh(accessToken: string): Promise<void> {
   if (anon) headers.apikey = anon;
   // Per-sync refresh is week-only. Month/Total scan tens of thousands of
   // hourly rows each call and burn InsForge Egress (~5 MB per full refresh
-  // every 5 min per active user blew through the 5 GB plan). A scheduled
-  // job covers the slower-moving month/total snapshots.
+  // every 5 min per active user blew through the 5 GB plan). Server-side
+  // schedules own the slower-moving month/total snapshots.
   try {
     await fetch(`${root}/functions/tokentracker-leaderboard-refresh`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ period: "week" }),
+      body: JSON.stringify({ period: "week", source }),
     });
   } catch { /* best effort */ }
 }
@@ -173,7 +176,7 @@ export async function runCloudUsageSyncIfDue(getAccessToken: () => Promise<strin
   const accessToken = await syncCloudUsageWithRecovery(getAccessToken);
   if (!accessToken) return;
   setLastCloudSyncTs(Date.now());
-  await triggerLeaderboardRefresh(accessToken);
+  await triggerLeaderboardRefresh(accessToken, "cloud-sync-auto");
 }
 
 /** 用户打开「同步到云端」后立即尝试一次（忽略节流） */
@@ -181,5 +184,5 @@ export async function runCloudUsageSyncNow(getAccessToken: () => Promise<string 
   const accessToken = await syncCloudUsageWithRecovery(getAccessToken);
   if (!accessToken) return;
   setLastCloudSyncTs(Date.now());
-  await triggerLeaderboardRefresh(accessToken);
+  await triggerLeaderboardRefresh(accessToken, "cloud-sync-now");
 }

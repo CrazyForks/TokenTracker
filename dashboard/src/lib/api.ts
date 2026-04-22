@@ -207,11 +207,14 @@ export async function setPublicVisibility({
   });
 }
 
-export async function refreshLeaderboard({ accessToken, period }: AnyRecord = {}) {
+export async function refreshLeaderboard({ accessToken, period, source }: AnyRecord = {}) {
+  const body: AnyRecord = {};
+  if (period) body.period = period;
+  if (typeof source === "string" && source.trim()) body.source = source.trim();
   return fetchInsforgeFunction("tokentracker-leaderboard-refresh", {
     accessToken,
     method: "POST",
-    body: period ? { period } : {},
+    body,
   });
 }
 

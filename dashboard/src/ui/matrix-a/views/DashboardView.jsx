@@ -95,14 +95,14 @@ export function DashboardView(props) {
   const header = null;
   const footer = null;
 
-  // Measure left column height so right column can match it (only when the
-  // two-column grid is active — xl breakpoint = 1280px).
+  // Measure left column height so right column can match it when the two-column
+  // grid is active (lg breakpoint = 1024px).
   const leftColRef = useRef(null);
   const [leftColHeight, setLeftColHeight] = useState(0);
   const [isTwoCol, setIsTwoCol] = useState(false);
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
-    const mq = window.matchMedia("(min-width: 1280px)");
+    const mq = window.matchMedia("(min-width: 1024px)");
     const update = () => setIsTwoCol(mq.matches);
     update();
     mq.addEventListener?.("change", update);
@@ -129,8 +129,8 @@ export function DashboardView(props) {
       >
         {(showExpiredGate || showAuthGate) ? null : (
           <>
-            <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-              <div ref={leftColRef} className="xl:col-span-4 flex flex-col gap-4 min-w-0 order-2 xl:order-1">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+              <div ref={leftColRef} className="lg:col-span-4 flex flex-col gap-4 min-w-0 order-2 lg:order-1">
                 {screenshotMode ? (
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex flex-col gap-1">
@@ -222,7 +222,7 @@ export function DashboardView(props) {
               </div>
 
               <div
-                className="xl:col-span-8 flex flex-col gap-4 min-w-0 order-1 xl:order-2"
+                className="lg:col-span-8 flex flex-col gap-4 min-w-0 order-1 lg:order-2"
                 style={isTwoCol && leftColHeight ? { maxHeight: leftColHeight } : undefined}
               >
                 <UsageOverview

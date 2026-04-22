@@ -18,6 +18,10 @@ function json(data: unknown, status = 200) {
   });
 }
 
+function logRefreshEvent(event: Record<string, unknown>) {
+  console.log(JSON.stringify({ scope: "leaderboard-refresh", ...event }));
+}
+
 type Period = "week" | "month" | "total";
 const ALL_PERIODS: Period[] = ["week", "month", "total"];
 
@@ -224,6 +228,7 @@ export default async function (req: Request): Promise<Response> {
   if (req.method === "OPTIONS")
     return new Response(null, { status: 204, headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  const requestStartedAt = Date.now();
 
   const baseUrl = Deno.env.get("INSFORGE_BASE_URL")!;
   const incomingApiKey =
@@ -242,6 +247,10 @@ export default async function (req: Request): Promise<Response> {
 
   // Parse requested periods
   const body = await req.json().catch(() => ({})) as Record<string, unknown>;
+  const requestSource =
+    typeof body.source === "string" && body.source.trim().length > 0
+      ? body.source.trim().slice(0, 80)
+      : "unknown";
   let periods: Period[];
   if (body.period && ALL_PERIODS.includes(body.period as Period)) {
     periods = [body.period as Period];
@@ -250,8 +259,10 @@ export default async function (req: Request): Promise<Response> {
   }
 
   const results: Record<string, { upserted: number; skipped?: boolean }> = {};
+  const requestId = crypto.randomUUID();
 
   for (const period of periods) {
+    const periodStartedAt = Date.now();
     const { from_day, to_day } = computeDateRange(period);
 
     // --- Rate limit: skip if generated_at within last 30s ---
@@ -269,6 +280,18 @@ export default async function (req: Request): Promise<Response> {
       const elapsed = Date.now() - new Date(recentSnap.generated_at as string).getTime();
       if (elapsed < 30_000) {
         results[period] = { upserted: 0, skipped: true };
+        logRefreshEvent({
+          event: "period_skipped",
+          request_id: requestId,
+          source: requestSource,
+          period,
+          from_day,
+          to_day,
+          upserted: 0,
+          skipped: true,
+          duration_ms: Date.now() - periodStartedAt,
+          recent_snapshot_age_ms: elapsed,
+        });
         continue;
       }
     }
@@ -290,6 +313,8 @@ export default async function (req: Request): Promise<Response> {
     let offset = 0;
     const PAGE_SIZE = 1000;
     let hasMore = true;
+    let scannedRows = 0;
+    let pageCount = 0;
 
     while (hasMore) {
       const { data: rows, error } = await client.database
@@ -300,8 +325,25 @@ export default async function (req: Request): Promise<Response> {
         .order("hour_start", { ascending: true })
         .range(offset, offset + PAGE_SIZE - 1);
 
-      if (error) return json({ error: error.message }, 500);
+      if (error) {
+        logRefreshEvent({
+          event: "period_error",
+          request_id: requestId,
+          source: requestSource,
+          period,
+          from_day,
+          to_day,
+          stage: "scan_hourly",
+          error: error.message,
+          scanned_rows: scannedRows,
+          pages_fetched: pageCount,
+          duration_ms: Date.now() - periodStartedAt,
+        });
+        return json({ error: error.message }, 500);
+      }
       if (!rows || rows.length === 0) break;
+      scannedRows += rows.length;
+      pageCount += 1;
 
       for (const row of rows as HourlyRow[]) {
         const key = `${row.user_id}|${row.source}|${row.model}|${row.hour_start}`;
@@ -332,6 +374,21 @@ export default async function (req: Request): Promise<Response> {
 
     if (aggMap.size === 0) {
       results[period] = { upserted: 0 };
+      logRefreshEvent({
+        event: "period_completed",
+        request_id: requestId,
+        source: requestSource,
+        period,
+        from_day,
+        to_day,
+        scanned_rows: scannedRows,
+        pages_fetched: pageCount,
+        deduped_buckets: bucketMap.size,
+        aggregated_users: 0,
+        upserted: 0,
+        skipped: false,
+        duration_ms: Date.now() - periodStartedAt,
+      });
       continue;
     }
 
@@ -448,11 +505,51 @@ export default async function (req: Request): Promise<Response> {
         .from("tokentracker_leaderboard_snapshots")
         .upsert(batch, { onConflict: "user_id,period,from_day,to_day" });
 
-      if (upsertErr) return json({ error: upsertErr.message }, 500);
+      if (upsertErr) {
+        logRefreshEvent({
+          event: "period_error",
+          request_id: requestId,
+          source: requestSource,
+          period,
+          from_day,
+          to_day,
+          stage: "upsert_snapshot",
+          error: upsertErr.message,
+          scanned_rows: scannedRows,
+          pages_fetched: pageCount,
+          deduped_buckets: bucketMap.size,
+          aggregated_users: aggMap.size,
+          duration_ms: Date.now() - periodStartedAt,
+        });
+        return json({ error: upsertErr.message }, 500);
+      }
     }
 
     results[period] = { upserted: upsertRows.length };
+    logRefreshEvent({
+      event: "period_completed",
+      request_id: requestId,
+      source: requestSource,
+      period,
+      from_day,
+      to_day,
+      scanned_rows: scannedRows,
+      pages_fetched: pageCount,
+      deduped_buckets: bucketMap.size,
+      aggregated_users: aggMap.size,
+      upserted: upsertRows.length,
+      skipped: false,
+      duration_ms: Date.now() - periodStartedAt,
+    });
   }
 
+  logRefreshEvent({
+    event: "request_completed",
+    request_id: requestId,
+    source: requestSource,
+    requested_periods: periods,
+    duration_ms: Date.now() - requestStartedAt,
+    results,
+  });
   return json({ ok: true, results });
 }
