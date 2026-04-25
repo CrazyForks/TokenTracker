@@ -2,6 +2,115 @@ import AppKit
 import Combine
 import SwiftUI
 
+enum MenuBarDisplayMetric: String, CaseIterable {
+    case todayTokens
+    case todayCost
+    case last7dTokens
+    case totalTokens
+    case totalCost
+    case claude5h
+    case claude7d
+    case codex5h
+    case codex7d
+
+    var menuLabel: String {
+        switch self {
+        case .todayTokens: return "Tokens"
+        case .todayCost: return "Cost"
+        case .last7dTokens: return "7d"
+        case .totalTokens: return "Total"
+        case .totalCost: return "All $"
+        case .claude5h: return "Cl 5h"
+        case .claude7d: return "Cl 7d"
+        case .codex5h: return "Cx 5h"
+        case .codex7d: return "Cx 7d"
+        }
+    }
+
+    var settingsTitle: String {
+        switch self {
+        case .todayTokens: return "Today Tokens"
+        case .todayCost: return "Today Cost"
+        case .last7dTokens: return "Last 7 Days"
+        case .totalTokens: return "Total Tokens"
+        case .totalCost: return "Total Cost"
+        case .claude5h: return "Claude 5h Limit"
+        case .claude7d: return "Claude 7d Limit"
+        case .codex5h: return "Codex 5h Limit"
+        case .codex7d: return "Codex 7d Limit"
+        }
+    }
+
+    var settingsCategory: String {
+        switch self {
+        case .todayTokens, .last7dTokens, .totalTokens:
+            return "tokens"
+        case .todayCost, .totalCost:
+            return "cost"
+        case .claude5h, .claude7d, .codex5h, .codex7d:
+            return "limits"
+        }
+    }
+}
+
+enum MenuBarDisplayPreferences {
+    static let key = "MenuBarDisplayItems"
+    static let defaultIDs = [MenuBarDisplayMetric.todayTokens.rawValue, MenuBarDisplayMetric.todayCost.rawValue]
+    static let maxVisibleItems = 2
+
+    static var availableItemsPayload: [[String: String]] {
+        MenuBarDisplayMetric.allCases.map {
+            [
+                "id": $0.rawValue,
+                "label": $0.settingsTitle,
+                "shortLabel": $0.menuLabel,
+                "category": $0.settingsCategory,
+            ]
+        }
+    }
+
+    static func read(from defaults: UserDefaults = .standard) -> [String] {
+        let raw = defaults.stringArray(forKey: key) ?? defaultIDs
+        let normalized = normalize(raw)
+        // Self-heal: if stored data drifted (legacy >2-item arrays from earlier
+        // dev builds, duplicates, or unknown ids), persist the cleaned version
+        // back so the next read doesn't have to keep trimming.
+        if raw != normalized {
+            defaults.set(normalized, forKey: key)
+        }
+        return normalized
+    }
+
+    static func write(_ ids: [String], to defaults: UserDefaults = .standard) {
+        defaults.set(normalize(ids), forKey: key)
+    }
+
+    static func normalize(_ ids: [String]) -> [String] {
+        var seen = Set<String>()
+        let allowed = Set(MenuBarDisplayMetric.allCases.map(\.rawValue))
+        var normalized = ids.compactMap { raw -> String? in
+            guard allowed.contains(raw), !seen.contains(raw) else { return nil }
+            seen.insert(raw)
+            return raw
+        }
+        // Pad up to `maxVisibleItems` with defaults that haven't been picked yet.
+        // Guards against legacy UserDefaults written by earlier dev builds
+        // (e.g. only `["todayTokens"]` would otherwise leave the second slot empty).
+        for fallbackID in defaultIDs where normalized.count < maxVisibleItems {
+            guard !seen.contains(fallbackID) else { continue }
+            normalized.append(fallbackID)
+            seen.insert(fallbackID)
+        }
+        return Array(normalized.prefix(maxVisibleItems))
+    }
+}
+
+private struct MenuBarDisplayValue {
+    let id: String
+    let label: String
+    let value: String
+}
+
 @MainActor
 final class StatusBarController: NSObject {
 
@@ -133,16 +242,31 @@ final class StatusBarController: NSObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.updateStatsDisplay() }
             .store(in: &cancellables)
+
+        viewModel.$rollingSummary
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.updateStatsDisplay() }
+            .store(in: &cancellables)
+
+        viewModel.$totalSummary
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.updateStatsDisplay() }
+            .store(in: &cancellables)
+
+        viewModel.$usageLimits
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.updateStatsDisplay() }
+            .store(in: &cancellables)
     }
 
     private func updateStatsDisplay() {
         guard let button = statusItem.button else { return }
+        let displayItems = buildMenuBarDisplayValues()
 
-        if showStats && viewModel.todayTokens > 0 {
-            let compositeImage = makeStatsMenuBarImage(
+        if showStats && !displayItems.isEmpty {
+            let compositeImage = makeDisplayMenuBarImage(
                 icon: animator?.currentImage ?? button.image,
-                tokens: TokenFormatter.formatCompact(viewModel.todayTokens),
-                cost: viewModel.todayCost
+                items: displayItems
             )
 
             button.title = ""
@@ -159,38 +283,92 @@ final class StatusBarController: NSObject {
         }
     }
 
-    private func makeStatsMenuBarImage(icon: NSImage?, tokens: String, cost: String) -> NSImage {
+    private func buildMenuBarDisplayValues() -> [MenuBarDisplayValue] {
+        MenuBarDisplayPreferences.read().compactMap { id -> MenuBarDisplayValue? in
+            guard let metric = MenuBarDisplayMetric(rawValue: id) else { return nil }
+
+            switch metric {
+            case .todayTokens:
+                guard viewModel.todayTokens > 0 else { return nil }
+                return MenuBarDisplayValue(
+                    id: id,
+                    label: metric.menuLabel,
+                    value: TokenFormatter.formatCompact(viewModel.todayTokens)
+                )
+            case .todayCost:
+                guard viewModel.todayTokens > 0 else { return nil }
+                return MenuBarDisplayValue(id: id, label: metric.menuLabel, value: viewModel.todayCost)
+            case .last7dTokens:
+                guard viewModel.last7dTokens > 0 else { return nil }
+                return MenuBarDisplayValue(
+                    id: id,
+                    label: metric.menuLabel,
+                    value: TokenFormatter.formatCompact(viewModel.last7dTokens)
+                )
+            case .totalTokens:
+                guard viewModel.totalTokens > 0 else { return nil }
+                return MenuBarDisplayValue(
+                    id: id,
+                    label: metric.menuLabel,
+                    value: TokenFormatter.formatCompact(viewModel.totalTokens)
+                )
+            case .totalCost:
+                guard viewModel.totalTokens > 0 else { return nil }
+                return MenuBarDisplayValue(id: id, label: metric.menuLabel, value: viewModel.totalCost)
+            case .claude5h:
+                guard let window = viewModel.usageLimits?.claude.fiveHour,
+                      viewModel.usageLimits?.claude.configured == true,
+                      viewModel.usageLimits?.claude.error == nil else { return nil }
+                return MenuBarDisplayValue(id: id, label: metric.menuLabel, value: formatLimitPercent(window.utilization))
+            case .claude7d:
+                guard let window = viewModel.usageLimits?.claude.sevenDay,
+                      viewModel.usageLimits?.claude.configured == true,
+                      viewModel.usageLimits?.claude.error == nil else { return nil }
+                return MenuBarDisplayValue(id: id, label: metric.menuLabel, value: formatLimitPercent(window.utilization))
+            case .codex5h:
+                guard let window = viewModel.usageLimits?.codex.primaryWindow,
+                      viewModel.usageLimits?.codex.configured == true,
+                      viewModel.usageLimits?.codex.error == nil else { return nil }
+                return MenuBarDisplayValue(id: id, label: metric.menuLabel, value: "\(window.usedPercent)%")
+            case .codex7d:
+                guard let window = viewModel.usageLimits?.codex.secondaryWindow,
+                      viewModel.usageLimits?.codex.configured == true,
+                      viewModel.usageLimits?.codex.error == nil else { return nil }
+                return MenuBarDisplayValue(id: id, label: metric.menuLabel, value: "\(window.usedPercent)%")
+            }
+        }
+    }
+
+    private func formatLimitPercent(_ value: Double) -> String {
+        "\(Int(min(max(value, 0), 100).rounded()))%"
+    }
+
+    private func makeDisplayMenuBarImage(icon: NSImage?, items: [MenuBarDisplayValue]) -> NSImage {
         let valueFont = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
         let labelFont = NSFont.systemFont(ofSize: 7, weight: .regular)
         let valueColor = NSColor.labelColor
         let labelColor = NSColor.labelColor
 
-        let tokenValue = NSAttributedString(string: tokens, attributes: [
-            .font: valueFont,
-            .foregroundColor: valueColor,
-        ])
-        let costValue = NSAttributedString(string: cost, attributes: [
-            .font: valueFont,
-            .foregroundColor: valueColor,
-        ])
-        let tokenLabel = NSAttributedString(string: Strings.menuTokenLabel, attributes: [
-            .font: labelFont,
-            .foregroundColor: labelColor,
-        ])
-        let costLabel = NSAttributedString(string: Strings.menuCostLabel, attributes: [
-            .font: labelFont,
-            .foregroundColor: labelColor,
-        ])
+        let columns = items.map { item in
+            let value = NSAttributedString(string: item.value, attributes: [
+                .font: valueFont,
+                .foregroundColor: valueColor,
+            ])
+            let label = NSAttributedString(string: item.label, attributes: [
+                .font: labelFont,
+                .foregroundColor: labelColor,
+            ])
+            let width = ceil(max(value.size().width, label.size().width))
+            return (value: value, label: label, width: width)
+        }
 
-        let tokenColumnWidth = ceil(max(tokenValue.size().width, tokenLabel.size().width))
-        let costColumnWidth = ceil(max(costValue.size().width, costLabel.size().width))
-        let columnGap: CGFloat = 4
         let iconTrailingPadding: CGFloat = 6
         let trailingPadding: CGFloat = 3
         let lineGap: CGFloat = -1
+        let sepGap: CGFloat = 4
 
-        let valueHeight = ceil(max(valueFont.ascender - valueFont.descender, tokenValue.size().height))
-        let labelHeight = ceil(max(labelFont.ascender - labelFont.descender, tokenLabel.size().height))
+        let valueHeight = ceil(max(valueFont.ascender - valueFont.descender, columns.map { $0.value.size().height }.max() ?? 0))
+        let labelHeight = ceil(max(labelFont.ascender - labelFont.descender, columns.map { $0.label.size().height }.max() ?? 0))
         let textBlockHeight = valueHeight + lineGap + labelHeight
         let textOriginY = floor((menuBarHeight - textBlockHeight) / 2)
         let labelOriginY = textOriginY
@@ -198,8 +376,11 @@ final class StatusBarController: NSObject {
 
         let iconWidth = menuBarIconSize.width
         let textOriginX = iconWidth + iconTrailingPadding
-        let sepGap: CGFloat = 4  // gap on each side of separator
-        let totalWidth = ceil(textOriginX + tokenColumnWidth + sepGap + 1 + sepGap + costColumnWidth + trailingPadding)
+        let columnsWidth = columns.enumerated().reduce(CGFloat(0)) { total, pair in
+            let separatorWidth: CGFloat = pair.offset == 0 ? 0 : (sepGap + 1 + sepGap)
+            return total + separatorWidth + pair.element.width
+        }
+        let totalWidth = ceil(textOriginX + columnsWidth + trailingPadding)
         let imageSize = NSSize(width: totalWidth, height: menuBarHeight)
 
         let image = NSImage(size: imageSize, flipped: false) { [weak self] _ in
@@ -217,22 +398,21 @@ final class StatusBarController: NSObject {
                 }
             }
 
-            let col2X = textOriginX + tokenColumnWidth + sepGap + 1 + sepGap
+            var cursorX = textOriginX
+            for (index, column) in columns.enumerated() {
+                if index > 0 {
+                    let sepX = cursorX + sepGap
+                    NSColor.labelColor.withAlphaComponent(0.5).setFill()
+                    NSRect(x: sepX, y: labelOriginY + 1, width: 0.5, height: textBlockHeight - 2).fill()
+                    cursorX = sepX + 1 + sepGap
+                }
 
-            let tokenRect = NSRect(x: textOriginX, y: valueOriginY, width: tokenColumnWidth, height: valueHeight)
-            let costRect = NSRect(x: col2X, y: valueOriginY, width: costColumnWidth, height: valueHeight)
-            let tokenLabelRect = NSRect(x: textOriginX, y: labelOriginY, width: tokenColumnWidth, height: labelHeight)
-            let costLabelRect = NSRect(x: col2X, y: labelOriginY, width: costColumnWidth, height: labelHeight)
-
-            tokenValue.draw(in: self.centeredRect(for: tokenValue, in: tokenRect))
-            costValue.draw(in: self.centeredRect(for: costValue, in: costRect))
-            tokenLabel.draw(in: self.centeredRect(for: tokenLabel, in: tokenLabelRect))
-            costLabel.draw(in: self.centeredRect(for: costLabel, in: costLabelRect))
-
-            // Separator line between columns
-            let sepX = textOriginX + tokenColumnWidth + sepGap
-            NSColor.labelColor.withAlphaComponent(0.5).setFill()
-            NSRect(x: sepX, y: labelOriginY + 1, width: 0.5, height: textBlockHeight - 2).fill()
+                let valueRect = NSRect(x: cursorX, y: valueOriginY, width: column.width, height: valueHeight)
+                let labelRect = NSRect(x: cursorX, y: labelOriginY, width: column.width, height: labelHeight)
+                column.value.draw(in: self.centeredRect(for: column.value, in: valueRect))
+                column.label.draw(in: self.centeredRect(for: column.label, in: labelRect))
+                cursorX += column.width
+            }
 
             return true
         }

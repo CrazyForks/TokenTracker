@@ -9,8 +9,9 @@ export function MenuBarSection() {
   const { available, settings, setSetting, runAction } = useNativeSettings();
   if (!available) return null;
 
-  const showStats = Boolean(settings?.showStats);
-  const animatedIcon = settings?.animatedIcon !== false;
+  // showStats + animatedIcon live on the Widgets page (Menu Bar section) where
+  // they sit next to the live preview. This section keeps only the system-level
+  // toggles + actions that don't have a visual analogue.
   const launchAtLogin = Boolean(settings?.launchAtLogin);
   const launchAtLoginSupported = settings?.launchAtLoginSupported !== false;
   const updateStatus = settings?.updateStatus || null;
@@ -19,28 +20,6 @@ export function MenuBarSection() {
 
   return (
     <SectionCard title={copy("settings.section.menubar")}>
-      <SettingsRow
-        label={copy("settings.menubar.showStats")}
-        hint={copy("settings.menubar.showStatsHint")}
-        control={
-          <ToggleSwitch
-            checked={showStats}
-            onChange={() => setSetting("showStats", !showStats)}
-            ariaLabel={copy("settings.menubar.showStats")}
-          />
-        }
-      />
-      <SettingsRow
-        label={copy("settings.menubar.animatedIcon")}
-        hint={copy("settings.menubar.animatedIconHint")}
-        control={
-          <ToggleSwitch
-            checked={animatedIcon}
-            onChange={() => setSetting("animatedIcon", !animatedIcon)}
-            ariaLabel={copy("settings.menubar.animatedIcon")}
-          />
-        }
-      />
       {launchAtLoginSupported ? (
         <SettingsRow
           label={copy("settings.menubar.launchAtLogin")}

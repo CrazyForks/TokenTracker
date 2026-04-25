@@ -84,6 +84,9 @@ final class NativeBridge {
         }
         let payload: [String: Any] = [
             "showStats": UserDefaults.standard.object(forKey: "MenuBarShowStats") as? Bool ?? true,
+            "menuBarItems": MenuBarDisplayPreferences.read(),
+            "menuBarAvailableItems": MenuBarDisplayPreferences.availableItemsPayload,
+            "menuBarMaxItems": MenuBarDisplayPreferences.maxVisibleItems,
             "animatedIcon": UserDefaults.standard.object(forKey: "MenuBarAnimationEnabled") as? Bool ?? true,
             "launchAtLogin": launchAtLoginValue,
             "launchAtLoginSupported": launchAtLoginSupported,
@@ -106,6 +109,14 @@ final class NativeBridge {
         case "showStats":
             if let bool = value as? Bool {
                 UserDefaults.standard.set(bool, forKey: "MenuBarShowStats")
+                NotificationCenter.default.post(name: .nativeSettingsChanged, object: nil)
+            }
+        case "menuBarItems":
+            if let ids = value as? [String] {
+                MenuBarDisplayPreferences.write(ids)
+                NotificationCenter.default.post(name: .nativeSettingsChanged, object: nil)
+            } else if let raw = value as? [Any] {
+                MenuBarDisplayPreferences.write(raw.compactMap { $0 as? String })
                 NotificationCenter.default.post(name: .nativeSettingsChanged, object: nil)
             }
         case "animatedIcon":
