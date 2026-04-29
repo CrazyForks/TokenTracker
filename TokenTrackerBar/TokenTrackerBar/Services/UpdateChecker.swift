@@ -412,7 +412,7 @@ final class UpdateChecker {
         process.standardError = Pipe()
         do {
             try process.run()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { NSApp.terminate(nil) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { AppDelegate.requestQuit() }
         } catch {
             finishUpdate()
             showAlert(title: Strings.updateCompleteTitle, message: Strings.updateCompleteMessage, style: .informational)

@@ -320,14 +320,24 @@ final class DashboardWindowController: NSObject, NSWindowDelegate, WKNavigationD
         }
     }
 
+    func closeWindow() {
+        window?.close()
+    }
+
     // MARK: - NSWindowDelegate
 
     func windowWillClose(_ notification: Notification) {
         // Keep webView and window alive so cookies/login state persist.
-        DispatchQueue.main.async {
-            let hasVisibleWindows = NSApp.windows.contains { $0.isVisible && !$0.isKind(of: NSPanel.self) }
-            if !hasVisibleWindows {
+        DispatchQueue.main.async { [weak self] in
+            let closingWindow = self?.window
+            let hasOtherVisibleWindows = NSApp.windows.contains {
+                $0.isVisible
+                && !$0.isKind(of: NSPanel.self)
+                && $0 != closingWindow
+            }
+            if !hasOtherVisibleWindows {
                 NSApp.setActivationPolicy(.accessory)
+                NSApp.hide(nil)
             }
         }
     }

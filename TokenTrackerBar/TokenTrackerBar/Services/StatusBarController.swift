@@ -638,7 +638,7 @@ final class StatusBarController: NSObject {
     }
 
     @objc private func quit() {
-        NSApp.terminate(nil)
+        AppDelegate.requestQuit()
     }
 
     // MARK: - Helpers

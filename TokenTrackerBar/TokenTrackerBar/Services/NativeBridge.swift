@@ -186,7 +186,7 @@ final class NativeBridge {
                 alert.runModal()
             }
         case "quit":
-            NSApp.terminate(nil)
+            AppDelegate.requestQuit()
         default:
             break
         }
