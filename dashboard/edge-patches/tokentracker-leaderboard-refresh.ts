@@ -83,7 +83,9 @@ async function verifiedClaimsFromJwt(
 // (LEADERBOARD_REFRESH_SECRET, sent by the pg_cron schedule), the service-role
 // key (manual ops), or a SIGNED-IN user (the dashboard's per-sync week refresh).
 // The public anon key is a validly-signed JWT with role="anon" and must NOT pass.
-type RefreshAuthorization = "privileged" | "signed-in";
+// "public" covers only the read-only anomaly-queue summary, which exposes
+// counts and no identities; it must never reach a code path that writes.
+type RefreshAuthorization = "privileged" | "signed-in" | "public";
 
 async function authorizeRefresh(req: Request): Promise<RefreshAuthorization | null> {
   const secret = Deno.env.get("LEADERBOARD_REFRESH_SECRET");
@@ -501,11 +503,56 @@ function newUserAgg(): UserAgg {
   };
 }
 
+/**
+ * GET ?anomalies=1 — anti-cheat queue health, for the credential-free GitHub
+ * Actions watchdog (.github/workflows/leaderboard-anticheat.yml).
+ *
+ * Returns COUNTS ONLY, never user_ids. The watchdog files a public GitHub issue
+ * with whatever it receives, and naming a flagged account in public before a
+ * human has reviewed it would accuse users the detector may yet clear. The
+ * operator pulls identities from the flags table directly (queries at the
+ * bottom of scripts/ops/leaderboard-anomaly-detection.sql).
+ */
+async function anomalyQueueSummary(
+  client: ReturnType<typeof createClient>,
+): Promise<Response> {
+  const { data, error } = await client.database
+    .from("tokentracker_leaderboard_anomaly_flags")
+    .select("status,peak_tokens,detected_at")
+    .in("status", ["auto_excluded", "review"]);
+  if (error) return json({ error: error.message }, 500);
+  const rows = (Array.isArray(data) ? data : []) as Array<{
+    status: string;
+    peak_tokens: number;
+    detected_at: string;
+  }>;
+  const pick = (s: string) => rows.filter((r) => r.status === s);
+  return json({
+    ok: true,
+    auto_excluded: pick("auto_excluded").length,
+    review: pick("review").length,
+    max_peak_tokens: rows.reduce(
+      (m, r) => Math.max(m, Number(r.peak_tokens) || 0),
+      0,
+    ),
+    latest_detected_at:
+      rows.map((r) => r.detected_at).sort().at(-1) ?? null,
+  });
+}
+
 export default async function (req: Request): Promise<Response> {
   if (req.method === "OPTIONS")
     return new Response(null, { status: 204, headers: corsHeaders });
-  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
-  const authorization = await authorizeRefresh(req);
+
+  const wantsAnomalySummary =
+    req.method === "GET" &&
+    new URL(req.url).searchParams.get("anomalies") === "1";
+  if (req.method !== "POST" && !wantsAnomalySummary)
+    return json({ error: "Method not allowed" }, 405);
+
+  // The read-only anomaly summary is unauthenticated (it exposes no identities);
+  // everything else still requires the refresh secret / service role / sign-in.
+  const authorization = wantsAnomalySummary ? "public" : await authorizeRefresh(req);
   if (!authorization) return json({ error: "unauthorized" }, 401);
   const requestStartedAt = Date.now();
 
@@ -523,6 +570,8 @@ export default async function (req: Request): Promise<Response> {
     anonKey,
     ...(anonKey ? { headers: { apikey: anonKey } } : {}),
   });
+
+  if (authorization === "public") return await anomalyQueueSummary(client);
 
   // Parse requested periods
   const body = await req.json().catch(() => ({})) as Record<string, unknown>;
@@ -634,6 +683,59 @@ export default async function (req: Request): Promise<Response> {
     }
     for (const blockedUserId of BLOCKED_LEADERBOARD_USER_IDS) {
       aggMap.delete(blockedUserId);
+    }
+
+    // Soft exclusion from the automated anti-cheat detector
+    // (scripts/ops/leaderboard-anomaly-detection.sql, hourly pg_cron). Distinct
+    // from the blocklist secret above: those are human-confirmed permanent bans,
+    // these are machine-flagged and reversible -- clearing the flag row puts the
+    // user back on the leaderboard at the next refresh, and their own dashboard
+    // never stops showing their data either way.
+    //
+    // Fail-OPEN on purpose. A leaderboard that briefly includes an unconfirmed
+    // cheat is a smaller failure than one that silently drops real users because
+    // a query errored, so a read failure logs and proceeds rather than throwing.
+    //
+    // Flags are per (user, day) but exclusion is whole-user across every period:
+    // one fabricated day makes the user's total untrustworthy, and the detector's
+    // lookback window keeps flags recent, so the queue stays short enough that
+    // "excluded until a human looks" is not a long sentence.
+    try {
+      const { data: flagData, error: flagErr } = await client.database
+        .from("tokentracker_leaderboard_anomaly_flags")
+        .select("user_id")
+        .eq("status", "auto_excluded");
+      if (flagErr) {
+        logRefreshEvent({
+          event: "anomaly_flags_read_failed",
+          period,
+          error: flagErr.message,
+        });
+      } else {
+        const flagged = new Set(
+          (Array.isArray(flagData) ? flagData : []).map(
+            (r: { user_id: string }) => r.user_id,
+          ),
+        );
+        let removed = 0;
+        for (const userId of flagged) {
+          if (aggMap.delete(userId)) removed++;
+        }
+        if (removed > 0) {
+          logRefreshEvent({
+            event: "anomaly_auto_excluded",
+            period,
+            excluded_users: removed,
+            flagged_total: flagged.size,
+          });
+        }
+      }
+    } catch (err) {
+      logRefreshEvent({
+        event: "anomaly_flags_read_failed",
+        period,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
 
     if (aggMap.size === 0) {
