@@ -75,6 +75,50 @@ test("a cached attribution run never touches the project directory", async () =>
   }
 });
 
+// macOS raises a separate TCC consent dialog per protected location, and ad-hoc
+// signing resets that consent on every update, so an opt-in beta must not walk
+// into ~/Documents or ~/Downloads on its own.
+test("attribution never enters a TCC-protected location", { skip: process.platform !== "darwin" ? "macOS-only guard" : false }, async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "tt-git-tcc-home-"));
+  const repo = path.join(home, "Documents", "project");
+  fs.mkdirSync(repo, { recursive: true });
+  const git = (...args) => execFileSync("git", args, { cwd: repo, stdio: "ignore", env: { ...process.env, GIT_AUTHOR_DATE: "2026-07-18T01:30:00Z", GIT_COMMITTER_DATE: "2026-07-18T01:30:00Z" } });
+  git("init");
+  git("config", "user.email", "test@example.com");
+  git("config", "user.name", "TokenTracker Test");
+  fs.writeFileSync(path.join(repo, "file.txt"), "safe");
+  git("add", "file.txt");
+  git("commit", "-m", "work in a protected folder");
+  const sessions = [{
+    session_hash: "tcc-hash",
+    project_ref: repo,
+    started_at: "2026-07-18T01:00:00Z",
+    ended_at: "2026-07-18T01:20:00Z",
+    source: "codex",
+    model: "gpt-test",
+  }];
+
+  const probed = [];
+  const realExistsSync = fs.existsSync;
+  fs.existsSync = (target) => {
+    if (typeof target === "string" && target.startsWith(path.join(home, "Documents"))) probed.push(target);
+    return realExistsSync(target);
+  };
+  try {
+    assert.deepEqual(await buildGitOutcomes(sessions, { home, force: true, maxAgeDays: 100_000 }), []);
+    assert.deepEqual(probed, [], "a protected directory must not be probed at all");
+
+    // Opting in restores attribution for anyone who keeps repos there.
+    process.env.TOKENTRACKER_GIT_ATTRIBUTION_PROTECTED_DIRS = "1";
+    const optedIn = await buildGitOutcomes(sessions, { home, force: true, maxAgeDays: 100_000 });
+    assert.equal(optedIn.length, 1);
+    assert.equal(optedIn[0].session_hash, "tcc-hash");
+  } finally {
+    delete process.env.TOKENTRACKER_GIT_ATTRIBUTION_PROTECTED_DIRS;
+    fs.existsSync = realExistsSync;
+  }
+});
+
 test("TOKENTRACKER_DISABLE_GIT_ATTRIBUTION keeps attribution out of project directories", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "tt-git-off-home-"));
   const missing = path.join(os.tmpdir(), "tt-git-off-nonexistent");

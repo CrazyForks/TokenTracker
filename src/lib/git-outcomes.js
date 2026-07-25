@@ -70,21 +70,56 @@ const GIT_PROBE_TTL_MS = 30 * 60 * 1000;
 // A data-only fingerprint of the sessions we would attribute. Computing it
 // touches no filesystem and spawns no git, so an unchanged fingerprint lets us
 // serve the cached sidecar without entering a single project directory.
-function sessionsFingerprint(sessions, cutoff, maxAgeDays) {
+function sessionsFingerprint(sessions, maxAgeDays) {
   const hash = crypto.createHash("sha256");
   hash.update(`v1\0${maxAgeDays}\n`);
-  const rows = [];
-  for (const session of sessions || []) {
-    if (!session?.project_ref || !session.started_at || !session.ended_at) continue;
-    if (Date.parse(session.ended_at) < cutoff) continue;
-    rows.push(`${session.project_ref}\0${session.session_hash}\0${session.started_at}\0${session.ended_at}`);
-  }
+  const rows = sessions.map(
+    (session) => `${session.project_ref}\0${session.session_hash}\0${session.started_at}\0${session.ended_at}`,
+  );
   for (const row of rows.sort()) hash.update(`${row}\n`);
   return hash.digest("hex");
 }
 
+// The sessions attribution is allowed to look at. Filtering here — before the
+// fingerprint and before any filesystem access — keeps the cache signature and
+// the probe set in agreement, so a skipped directory is never entered and never
+// invalidates the cache either.
+function attributableSessions(sessions, cutoff, home) {
+  const kept = [];
+  for (const session of sessions || []) {
+    if (!session?.project_ref || !session.started_at || !session.ended_at) continue;
+    if (Date.parse(session.ended_at) < cutoff) continue;
+    if (isTccProtectedPath(session.project_ref, home)) continue;
+    kept.push(session);
+  }
+  return kept;
+}
+
 function gitAttributionDisabled() {
   return ["1", "true"].includes(String(process.env.TOKENTRACKER_DISABLE_GIT_ATTRIBUTION || "").toLowerCase());
+}
+
+// macOS gates these locations behind TCC: the first access to each one raises
+// its own "TokenTracker would like to access data in …" consent dialog, and
+// ad-hoc signing resets that consent on every update, so the dialogs come back
+// each time. Attribution is an opt-in beta that walks into whatever directory a
+// session happened to run in — a token tracker has no business making the OS
+// ask for ~/Documents. Skip these by default; anyone who keeps repos there can
+// opt back in and answer the prompts knowingly.
+const TCC_PROTECTED_HOME_DIRS = ["Documents", "Downloads", "Desktop", "Movies", "Music", "Pictures", "Library"];
+
+function protectedProbeAllowed() {
+  return ["1", "true"].includes(String(process.env.TOKENTRACKER_GIT_ATTRIBUTION_PROTECTED_DIRS || "").toLowerCase());
+}
+
+function isTccProtectedPath(target, home) {
+  if (process.platform !== "darwin" || protectedProbeAllowed()) return false;
+  const resolved = path.resolve(String(target || ""));
+  if (resolved === "/Volumes" || resolved.startsWith("/Volumes/")) return true;
+  const base = path.resolve(String(home || ""));
+  if (resolved !== base && !resolved.startsWith(`${base}${path.sep}`)) return false;
+  const [first] = path.relative(base, resolved).split(path.sep);
+  return TCC_PROTECTED_HOME_DIRS.includes(first);
 }
 
 async function buildGitOutcomesInternal(sessions, { home = os.homedir(), force = false, maxAgeDays = 90 } = {}) {
@@ -98,7 +133,8 @@ async function buildGitOutcomesInternal(sessions, { home = os.homedir(), force =
 
   // Cheap gate, before any filesystem access: same sessions as last time and
   // the last probe is recent, so there is nothing new to attribute.
-  const sessionSignature = sessionsFingerprint(sessions, cutoff, maxAgeDays);
+  const candidates = attributableSessions(sessions, cutoff, home);
+  const sessionSignature = sessionsFingerprint(candidates, maxAgeDays);
   if (!force) {
     try {
       const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
@@ -117,9 +153,7 @@ async function buildGitOutcomesInternal(sessions, { home = os.homedir(), force =
 
   const groups = new Map();
   const rootCache = new Map();
-  for (const session of sessions || []) {
-    if (!session?.project_ref || !session.started_at || !session.ended_at) continue;
-    if (Date.parse(session.ended_at) < cutoff) continue;
+  for (const session of candidates) {
     let root = rootCache.get(session.project_ref);
     if (root === undefined) {
       root = await repoRoot(session.project_ref);
