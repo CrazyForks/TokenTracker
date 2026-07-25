@@ -1,7 +1,26 @@
 "use strict";
 
-// Metadata-only session analytics sidecar. This scanner deliberately never
-// persists prompts, assistant text, tool arguments, command output, or diffs.
+// Metadata-only session analytics sidecar.
+//
+// Never persisted, anywhere: prompts, assistant message bodies, tool arguments,
+// command output, diffs. Prompts are read only to fingerprint a repeated
+// request (a one-way hash, never stored).
+//
+// Persisted to the LOCAL sidecar only (~/.tokentracker/tracker, 0600 file in a
+// 0700 dir), because the session browser needs them to identify and resume a
+// session:
+//   - `title`  — the one line the agent wrote to name the session (Claude's
+//     "ai-title" record, Codex's thread_name). Agent-authored, not the user's
+//     prompt, but it does summarize what the session was about, so treat it as
+//     session content: local-only, never uploaded.
+//   - `session_id` — the vendor session UUID, needed for `--resume`.
+//   - `project_ref` — the session's working directory. The resume command only
+//     works from that directory, so the UI shows it and lets the user copy it.
+//
+// All three are stripped in summarizeSessions() before anything reaches the
+// cloud or a CSV export, and the browser endpoint that keeps them is served
+// only over loopback. `test/session-analytics.test.js` guards that boundary —
+// if you add a field here, decide which side of it the field belongs on.
 
 const crypto = require("node:crypto");
 const fs = require("node:fs");

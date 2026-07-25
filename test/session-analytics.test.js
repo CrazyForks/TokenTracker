@@ -416,6 +416,42 @@ test("session browser hides sessions that never spent tokens", async () => {
   assert.equal(listSessionsForBrowser([row]).sessions.length, 0);
 });
 
+test("local-only identity fields never reach the cloud or CSV surface", async () => {
+  // title / session_id / project_ref exist so the browser can name and resume a
+  // session, and project_ref is deliberately shown in the UI (the resume
+  // command only works from that directory). They must stay on this machine:
+  // summarizeSessions feeds both the cloud account view and the CSV export.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-privacy-"));
+  const file = path.join(dir, "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee.jsonl");
+  fs.writeFileSync(file, `${[
+    { type: "ai-title", aiTitle: "TITLE-MUST-NOT-LEAVE-THIS-MACHINE", sessionId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" },
+    { type: "user", sessionId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", cwd: "/DIRNAME-MUST-NOT-LEAVE/myproject", timestamp: "2026-07-18T01:00:00Z", message: { content: "hi" } },
+    { type: "assistant", sessionId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", cwd: "/DIRNAME-MUST-NOT-LEAVE/myproject", timestamp: "2026-07-18T01:01:00Z", message: { id: "p1", model: "claude-test", usage: { input_tokens: 5, output_tokens: 1 }, content: [] } },
+  ].map(JSON.stringify).join("\n")}\n`);
+  const row = await scanClaudeSession(file);
+
+  // The local browser payload keeps all three.
+  const local = listSessionsForBrowser([row]).sessions[0];
+  assert.equal(local.title, "TITLE-MUST-NOT-LEAVE-THIS-MACHINE");
+  assert.equal(local.project_ref, "/DIRNAME-MUST-NOT-LEAVE/myproject");
+  assert.ok(local.session_id);
+  // project_key (the directory's basename) is a different thing: project
+  // attribution is a shipped cloud feature, so it is expected to travel.
+  assert.equal(local.project_key, "myproject");
+
+  // The cloud/CSV payload keeps none of them.
+  const summary = summarizeSessions([row]);
+  for (const cloudRow of summary.sessions) {
+    for (const field of ["title", "session_id", "project_ref", "_cache_key"]) {
+      assert.equal(field in cloudRow, false, `${field} must be stripped from the cloud payload`);
+    }
+  }
+  const serialized = `${JSON.stringify(summary)}\n${sessionsToCsv(summary.sessions)}`;
+  for (const secret of ["TITLE-MUST-NOT-LEAVE-THIS-MACHINE", "DIRNAME-MUST-NOT-LEAVE", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"]) {
+    assert.equal(serialized.includes(secret), false, `${secret} leaked into a cloud/CSV payload`);
+  }
+});
+
 test("a log with no sessionId record yields no resume command", async () => {
   // scanClaudeSession still falls back to the basename for stable grouping, but
   // session_id must stay null — otherwise a non-session log named journal.jsonl
