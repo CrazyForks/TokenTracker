@@ -259,6 +259,7 @@ flowchart LR
 | `TOKENTRACKER_DEBUG` | 디버그 출력 활성화 (`1`로 활성화) | — |
 | `TOKENTRACKER_NO_TELEMETRY` | 모든 익명 텔레메트리(일일 하트비트 + 대시보드 분석) 비활성화 (`1`로 비활성화, `DO_NOT_TRACK` 표준도 지원) | — |
 | `TOKENTRACKER_HTTP_TIMEOUT_MS` | HTTP 타임아웃 (밀리초) | `20000` |
+| `TOKENTRACKER_DISABLE_GIT_ATTRIBUTION` | Git 커밋 연결 비활성화(`1`이면 비활성화). 연결 기능은 각 세션의 작업 디렉터리에서 `git log`를 실행하므로 macOS에서는 보호된 위치(문서, 다운로드, 다른 앱 데이터)마다 접근 허용 대화상자가 나타날 수 있습니다. 비활성화하면 TokenTracker가 프로젝트 디렉터리에 접근하지 않습니다(Outcomes에는 수동 기록만 표시) | — |
 | `CODEX_HOME` | Codex CLI 디렉토리 오버라이드 | `~/.codex` |
 | `GEMINI_HOME` | Gemini CLI 디렉토리 오버라이드 | `~/.gemini` |
 

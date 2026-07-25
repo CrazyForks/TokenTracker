@@ -60,10 +60,63 @@ async function writeAtomic(filePath, content) {
   await fsp.rename(temp, filePath);
 }
 
+// Attribution walks into the working directory of every recent session and
+// runs git there. On macOS each distinct protected location that gets touched
+// (~/Documents, ~/Downloads, another app's container) raises its own TCC
+// consent prompt, so probing must happen only when there is new work to
+// attribute — never on every dashboard poll.
+const GIT_PROBE_TTL_MS = 30 * 60 * 1000;
+
+// A data-only fingerprint of the sessions we would attribute. Computing it
+// touches no filesystem and spawns no git, so an unchanged fingerprint lets us
+// serve the cached sidecar without entering a single project directory.
+function sessionsFingerprint(sessions, cutoff, maxAgeDays) {
+  const hash = crypto.createHash("sha256");
+  hash.update(`v1\0${maxAgeDays}\n`);
+  const rows = [];
+  for (const session of sessions || []) {
+    if (!session?.project_ref || !session.started_at || !session.ended_at) continue;
+    if (Date.parse(session.ended_at) < cutoff) continue;
+    rows.push(`${session.project_ref}\0${session.session_hash}\0${session.started_at}\0${session.ended_at}`);
+  }
+  for (const row of rows.sort()) hash.update(`${row}\n`);
+  return hash.digest("hex");
+}
+
+function gitAttributionDisabled() {
+  return ["1", "true"].includes(String(process.env.TOKENTRACKER_DISABLE_GIT_ATTRIBUTION || "").toLowerCase());
+}
+
 async function buildGitOutcomesInternal(sessions, { home = os.homedir(), force = false, maxAgeDays = 90 } = {}) {
+  const outputPath = resolveAutoOutcomesPath(home);
+  const metaPath = `${outputPath}.meta.json`;
+  const cutoff = Date.now() - Math.max(1, Number(maxAgeDays) || 90) * 86400_000;
+
+  // Escape hatch for anyone who would rather keep TokenTracker out of their
+  // project directories entirely. Serves whatever was already attributed.
+  if (gitAttributionDisabled()) return readJsonl(outputPath);
+
+  // Cheap gate, before any filesystem access: same sessions as last time and
+  // the last probe is recent, so there is nothing new to attribute.
+  const sessionSignature = sessionsFingerprint(sessions, cutoff, maxAgeDays);
+  if (!force) {
+    try {
+      const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+      const age = Date.now() - Date.parse(meta.generated_at || "");
+      if (
+        meta.version === 2
+        && meta.session_signature === sessionSignature
+        && Number.isFinite(age)
+        && age >= 0
+        && age < GIT_PROBE_TTL_MS
+      ) {
+        return readJsonl(outputPath);
+      }
+    } catch { /* first run, or a v1 sidecar written before this gate existed */ }
+  }
+
   const groups = new Map();
   const rootCache = new Map();
-  const cutoff = Date.now() - Math.max(1, Number(maxAgeDays) || 90) * 86400_000;
   for (const session of sessions || []) {
     if (!session?.project_ref || !session.started_at || !session.ended_at) continue;
     if (Date.parse(session.ended_at) < cutoff) continue;
@@ -77,8 +130,6 @@ async function buildGitOutcomesInternal(sessions, { home = os.homedir(), force =
     groups.get(root).push(session);
   }
 
-  const outputPath = resolveAutoOutcomesPath(home);
-  const metaPath = `${outputPath}.meta.json`;
   const signatureHash = crypto.createHash("sha256");
   for (const [root, repoSessions] of [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))) {
     signatureHash.update(`${root}\0${await runGit(root, ["for-each-ref", "--format=%(objectname)"])}\n`);
@@ -88,7 +139,12 @@ async function buildGitOutcomesInternal(sessions, { home = os.homedir(), force =
   if (!force) {
     try {
       const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
-      if (meta.version === 1 && meta.signature === signature) return readJsonl(outputPath);
+      // Git state is unchanged too — refresh the timestamp so the cheap gate
+      // above can short-circuit the next poll instead of re-probing.
+      if (meta.signature === signature) {
+        await writeAtomic(metaPath, `${JSON.stringify({ ...meta, version: 2, session_signature: sessionSignature, generated_at: new Date().toISOString() })}\n`);
+        return readJsonl(outputPath);
+      }
     } catch { /* first run */ }
   }
 
@@ -123,7 +179,13 @@ async function buildGitOutcomesInternal(sessions, { home = os.homedir(), force =
   }
   outcomes.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
   await writeAtomic(outputPath, outcomes.map((row) => JSON.stringify(row)).join("\n") + (outcomes.length ? "\n" : ""));
-  await writeAtomic(metaPath, `${JSON.stringify({ version: 1, signature, generated_at: new Date().toISOString(), max_age_days: maxAgeDays })}\n`);
+  await writeAtomic(metaPath, `${JSON.stringify({
+    version: 2,
+    signature,
+    session_signature: sessionSignature,
+    generated_at: new Date().toISOString(),
+    max_age_days: maxAgeDays,
+  })}\n`);
   return outcomes;
 }
 
