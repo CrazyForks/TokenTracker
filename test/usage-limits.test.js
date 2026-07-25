@@ -14,6 +14,8 @@ const {
   normalizeGeminiQuotaResponse,
   normalizeKimiUsageResponse,
   parseKiroUsageOutput,
+  fetchKiroLimits,
+  runCommand,
   resetUsageLimitsCache,
   normalizeAntigravityResponse,
   parseListeningPorts,
@@ -2519,6 +2521,141 @@ Usage is managed by organization admin.
     assert.equal(result.primary_window.used_percent, 0);
     assert.equal(result.primary_window.reset_at, null);
     assert.equal(result.secondary_window, null);
+  });
+});
+
+describe("fetchKiroLimits", () => {
+  const now = new Date("2026-07-25T00:00:00.000Z");
+  const usageOutput = `
+Estimated Usage | resets on 2026-08-01 | KIRO PRO
+████████████ 25%
+(25 of 100 covered in plan)
+`;
+
+  it("uses a PTY first for kiro-cli 2.13 so /usage is not sent as a model prompt", async () => {
+    const calls = [];
+    const commandRunner = (command, args) => {
+      calls.push({ command, args });
+      if (command === "which") {
+        return { status: 0, stdout: "/opt/kiro-cli\n", stderr: "" };
+      }
+      if (command === "/opt/kiro-cli" && args[0] === "--version") {
+        return {
+          status: 0,
+          stdout: "kiro-cli 2.13.0\n",
+          stderr: "",
+        };
+      }
+      if (command === "/usr/bin/script") {
+        assert.deepEqual(args, [
+          "-q",
+          "/dev/null",
+          "/opt/kiro-cli",
+          "chat",
+          "--no-interactive",
+          "/usage",
+        ]);
+        return { status: 0, stdout: usageOutput, stderr: "" };
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+
+    const result = await fetchKiroLimits({
+      commandRunner,
+      now,
+      platform: "darwin",
+    });
+
+    assert.equal(result.error, null);
+    assert.equal(result.plan_name, "KIRO PRO");
+    assert.equal(result.primary_window.used_percent, 25);
+    assert.equal(
+      result.primary_window.reset_at,
+      "2026-08-01T00:00:00.000Z",
+    );
+    assert.equal(
+      calls.some(
+        ({ command, args }) =>
+          command === "/opt/kiro-cli" && args[0] === "chat",
+      ),
+      false,
+      "2.13 must not run the unsafe pipe transport",
+    );
+  });
+
+  it("falls back from unparseable pipe output to the PTY on older Kiro versions", async () => {
+    const calls = [];
+    const commandRunner = (command, args) => {
+      calls.push({ command, args });
+      if (command === "which") {
+        return { status: 0, stdout: "/opt/kiro-cli\n", stderr: "" };
+      }
+      if (command === "/opt/kiro-cli" && args[0] === "--version") {
+        return {
+          status: 0,
+          stdout: "kiro-cli 2.12.3\n",
+          stderr: "",
+        };
+      }
+      if (command === "/opt/kiro-cli" && args[0] === "chat") {
+        return {
+          status: 0,
+          stdout: "What would you like to work on?",
+          stderr: "[INFO] MCP subsystem initialized",
+        };
+      }
+      if (command === "/usr/bin/script") {
+        return { status: 0, stdout: usageOutput, stderr: "" };
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    };
+
+    const result = await fetchKiroLimits({
+      commandRunner,
+      now,
+      platform: "darwin",
+    });
+
+    assert.equal(result.error, null);
+    assert.equal(result.plan_name, "KIRO PRO");
+    assert.equal(
+      calls.filter(
+        ({ command, args }) =>
+          command === "/opt/kiro-cli" && args[0] === "chat",
+      ).length,
+      1,
+    );
+    assert.equal(
+      calls.filter(({ command }) => command === "/usr/bin/script").length,
+      1,
+    );
+  });
+});
+
+describe("runCommand completion", () => {
+  it("terminates a process group shortly after complete output arrives", async () => {
+    const startedAt = Date.now();
+    const result = await runCommand(
+      null,
+      process.execPath,
+      [
+        "-e",
+        "process.stdout.write('usage complete\\n'); setInterval(() => {}, 1000);",
+      ],
+      {
+        timeout: 5_000,
+        completeWhen: (stdout) => stdout.includes("usage complete"),
+        completionGraceMs: 25,
+        killProcessGroup: true,
+      },
+    );
+
+    assert.match(result.stdout, /usage complete/);
+    assert.equal(result.error, undefined);
+    assert.ok(
+      Date.now() - startedAt < 2_000,
+      "complete output should not wait for the hard timeout",
+    );
   });
 });
 

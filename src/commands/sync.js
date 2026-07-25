@@ -1397,8 +1397,9 @@ async function cmdSync(argv, context = {}) {
       );
     }
 
-    // ── Kiro CLI (reads ~/Library/Application Support/kiro-cli/data.sqlite3
-    //    AND live sessions under ~/.kiro/sessions/cli/{uuid}.json) ──
+    // ── Kiro CLI (reads ~/Library/Application Support/kiro-cli/data.sqlite3,
+    //    legacy ~/.kiro/sessions/cli/{uuid}.json, and Kiro CLI 2.13+
+    //    ~/.kiro/sessions/{workspace}/sess_{uuid}/messages.jsonl) ──
     // Runs IN PARALLEL with the Kiro IDE branch above — NOT instead of it.
     // Both emit source='kiro' so totals merge transparently; cursor state
     // is isolated in cursors.kiroCli. Kiro CLI does not persist explicit

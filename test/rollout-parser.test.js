@@ -7341,6 +7341,217 @@ test("resolveKiroCliSessionFiles includes both completed and live (.lock) sessio
   }
 });
 
+test("resolveKiroCliSessionFiles discovers Kiro CLI 2.13 messages.jsonl sessions only at the canonical depth", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-kirocli-v2-"));
+  try {
+    const legacyDir = path.join(tmp, "sessions", "cli");
+    const sessionDir = path.join(
+      tmp,
+      "sessions",
+      "d741dbc631f1a77a",
+      "sess_54d63bb9-e719-461e-a3b0-52ba957d6fb9",
+    );
+    const opaqueSessionDir = path.join(
+      tmp,
+      "sessions",
+      "d741dbc631f1a77a",
+      "sess_future-format",
+    );
+    await fs.mkdir(legacyDir, { recursive: true });
+    await fs.mkdir(path.join(sessionDir, "sub-executions"), {
+      recursive: true,
+    });
+    await fs.mkdir(opaqueSessionDir, { recursive: true });
+    await fs.writeFile(path.join(legacyDir, "session.history"), "");
+    await fs.writeFile(path.join(sessionDir, "messages.jsonl"), "");
+    await fs.writeFile(path.join(opaqueSessionDir, "messages.jsonl"), "");
+    await fs.writeFile(
+      path.join(sessionDir, "sub-executions", "nested.jsonl"),
+      "",
+    );
+    await fs.mkdir(
+      path.join(tmp, "sessions", "d741dbc631f1a77a", "not-a-session"),
+    );
+    await fs.writeFile(
+      path.join(
+        tmp,
+        "sessions",
+        "d741dbc631f1a77a",
+        "not-a-session",
+        "messages.jsonl",
+      ),
+      "",
+    );
+
+    const files = rolloutModule.resolveKiroCliSessionFiles({
+      HOME: tmp,
+      KIRO_HOME: tmp,
+    });
+
+    assert.deepEqual(files, [
+      path.join(sessionDir, "messages.jsonl"),
+      path.join(opaqueSessionDir, "messages.jsonl"),
+    ]);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("parseKiroCliIncremental parses Kiro CLI 2.13 event sessions with per-turn model and reasoning attribution", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-kirocli-v2-"));
+  try {
+    const sessionDir = path.join(
+      tmp,
+      "sessions",
+      "d741dbc631f1a77a",
+      "sess_54d63bb9-e719-461e-a3b0-52ba957d6fb9",
+    );
+    await fs.mkdir(sessionDir, { recursive: true });
+    await fs.writeFile(
+      path.join(sessionDir, "session.json"),
+      JSON.stringify({
+        id: "sess_54d63bb9-e719-461e-a3b0-52ba957d6fb9",
+        modelId: "auto",
+        createdAt: "2026-07-22T03:24:00.000Z",
+      }),
+    );
+    const messagesPath = path.join(sessionDir, "messages.jsonl");
+    const writeMessages = async ({ firstAnswerChars = 40 } = {}) => {
+      const events = [
+        {
+          id: "user-1",
+          timestamp: "2026-07-22T03:24:03.717Z",
+          payload: { type: "user", content: "u".repeat(400) },
+        },
+        {
+          id: "exec-1-turn-start",
+          timestamp: "2026-07-22T03:24:04.000Z",
+          payload: { type: "turn_start", executionId: "exec-1" },
+        },
+        {
+          id: "exec-1-reasoning",
+          timestamp: "2026-07-22T03:24:05.000Z",
+          payload: {
+            type: "assistant",
+            operationType: "Reasoning",
+            executionId: "exec-1",
+            reasoningModelId: "qdev::claude-sonnet-4.6",
+            content: "r".repeat(80),
+          },
+        },
+        {
+          id: "exec-1-say",
+          timestamp: "2026-07-22T03:24:06.000Z",
+          payload: {
+            type: "assistant",
+            operationType: "Say",
+            executionId: "exec-1",
+            content: "a".repeat(firstAnswerChars),
+          },
+        },
+        {
+          id: "exec-1-turn-end",
+          timestamp: "2026-07-22T03:24:07.000Z",
+          payload: { type: "turn_end", executionId: "exec-1" },
+        },
+        {
+          id: "user-2",
+          timestamp: "2026-07-22T03:25:00.000Z",
+          payload: { type: "user", content: "v".repeat(200) },
+        },
+        {
+          id: "exec-2-turn-start",
+          timestamp: "2026-07-22T03:25:01.000Z",
+          payload: { type: "turn_start", executionId: "exec-2" },
+        },
+        {
+          id: "exec-2-say",
+          timestamp: "2026-07-22T03:25:02.000Z",
+          payload: {
+            type: "assistant",
+            operationType: "Say",
+            executionId: "exec-2",
+            reasoningModelId: "qdev::minimax-m2.1",
+            content: "b".repeat(20),
+          },
+        },
+        // A malformed concurrent tail must not discard prior complete data.
+        "{\"id\":",
+      ];
+      await fs.writeFile(
+        messagesPath,
+        events
+          .map((event) =>
+            typeof event === "string" ? event : JSON.stringify(event),
+          )
+          .join("\n") + "\n",
+      );
+    };
+    await writeMessages();
+
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1 };
+    const env = {
+      HOME: tmp,
+      KIRO_HOME: tmp,
+      KIRO_CLI_DB_PATH: path.join(tmp, "missing.sqlite3"),
+    };
+
+    const first = await rolloutModule.parseKiroCliIncremental({
+      cursors,
+      queuePath,
+      env,
+    });
+    assert.equal(first.recordsProcessed, 2);
+    assert.equal(first.eventsAggregated, 2);
+
+    const firstRows = (await fs.readFile(queuePath, "utf8"))
+      .split("\n")
+      .filter(Boolean)
+      .map(JSON.parse);
+    const claude = firstRows.find(
+      (row) => row.model === "claude-sonnet-4.6",
+    );
+    const minimax = firstRows.find((row) => row.model === "minimax-m2.1");
+    assert.ok(claude);
+    assert.equal(claude.input_tokens, 100);
+    assert.equal(claude.output_tokens, 10);
+    assert.equal(claude.reasoning_output_tokens, 20);
+    assert.equal(claude.total_tokens, 130);
+    assert.ok(minimax);
+    assert.equal(minimax.input_tokens, 50);
+    assert.equal(minimax.output_tokens, 5);
+    assert.equal(minimax.reasoning_output_tokens, 0);
+
+    const second = await rolloutModule.parseKiroCliIncremental({
+      cursors,
+      queuePath,
+      env,
+    });
+    assert.equal(second.eventsAggregated, 0, "unchanged rerun is idempotent");
+
+    await writeMessages({ firstAnswerChars: 80 });
+    const third = await rolloutModule.parseKiroCliIncremental({
+      cursors,
+      queuePath,
+      env,
+    });
+    assert.equal(third.eventsAggregated, 1, "rewritten turn is re-bucketed");
+
+    const allRows = (await fs.readFile(queuePath, "utf8"))
+      .split("\n")
+      .filter(Boolean)
+      .map(JSON.parse);
+    const latestClaude = allRows
+      .filter((row) => row.model === "claude-sonnet-4.6")
+      .pop();
+    assert.equal(latestClaude.output_tokens, 20);
+    assert.equal(latestClaude.total_tokens, 140);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
 async function safeFileSize(p) {
   try {
     const st = await fs.stat(p);

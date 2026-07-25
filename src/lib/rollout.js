@@ -4934,32 +4934,77 @@ function resolveKiroCliDbPath(env = process.env) {
 // no hyphens. kiro-cli writes proper UUIDs; lock to the canonical shape.
 const KIRO_CLI_SESSION_FILE_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/i;
+// The directory prefix and direct messages.jsonl child are the stable
+// contract. Do not assume the suffix will always remain a UUID: Kiro has
+// already changed this layout once, and an opaque non-empty session id is
+// sufficient to keep discovery both bounded and forward-compatible.
+const KIRO_CLI_V2_SESSION_DIR_RE = /^sess_.+$/;
 
-// Lists ~/.kiro/sessions/cli/{uuid}.json files. Includes files whose sibling
-// .lock is present — we read those as tail-only snapshots so a running
-// session's completed turns still land in the queue on the next sync. The
-// .json files are rewritten atomically by kiro-cli on each turn flush, so
-// a stale read just means we'll pick up the rest next time.
+// Lists both Kiro CLI session layouts:
+//   legacy: ~/.kiro/sessions/cli/{uuid}.json
+//   2.13+:  ~/.kiro/sessions/{workspaceHash}/sess_{uuid}/messages.jsonl
+//
+// Legacy .json files are rewritten atomically per turn. The 2.13+ JSONL is
+// append-only and may be read while a session is active. Only the direct
+// messages.jsonl child is accepted; sub-executions and arbitrary nested JSONL
+// files are intentionally excluded.
 //
 // TASK-014: env.HOME is honored (symmetric with resolveKiroCliDbPath) so
 // callers can redirect to a tmp home for hermetic tests/CI.
 function resolveKiroCliSessionFiles(env = process.env) {
   const home = env.HOME || require("node:os").homedir();
   const kiroHome = env.KIRO_HOME || path.join(home, ".kiro");
-  const sessionsDir = path.join(kiroHome, "sessions", "cli");
-  if (!fssync.existsSync(sessionsDir)) return [];
+  const sessionsRoot = path.join(kiroHome, "sessions");
+  if (!fssync.existsSync(sessionsRoot)) return [];
   const files = [];
+
+  const legacyDir = path.join(sessionsRoot, "cli");
   try {
-    for (const entry of fssync.readdirSync(sessionsDir)) {
+    for (const entry of fssync.readdirSync(legacyDir)) {
       // TASK-003: only canonical {uuid}.json files; backups, scratch,
       // typos are skipped so they don't feed JSON.parse garbage.
       if (!KIRO_CLI_SESSION_FILE_RE.test(entry)) continue;
-      files.push(path.join(sessionsDir, entry));
+      files.push(path.join(legacyDir, entry));
     }
   } catch {
     // ignore read errors
   }
-  return files;
+
+  try {
+    const workspaceDirs = fssync.readdirSync(sessionsRoot, {
+      withFileTypes: true,
+    });
+    for (const workspace of workspaceDirs) {
+      if (!workspace.isDirectory() || workspace.name === "cli") continue;
+      const workspacePath = path.join(sessionsRoot, workspace.name);
+      let sessionDirs;
+      try {
+        sessionDirs = fssync.readdirSync(workspacePath, {
+          withFileTypes: true,
+        });
+      } catch {
+        continue;
+      }
+      for (const session of sessionDirs) {
+        if (
+          !session.isDirectory() ||
+          !KIRO_CLI_V2_SESSION_DIR_RE.test(session.name)
+        ) {
+          continue;
+        }
+        const messagesPath = path.join(
+          workspacePath,
+          session.name,
+          "messages.jsonl",
+        );
+        if (fssync.existsSync(messagesPath)) files.push(messagesPath);
+      }
+    }
+  } catch {
+    // ignore read errors
+  }
+
+  return files.sort();
 }
 
 // Build char-count maps from a .jsonl sibling file. Lets us approximate
@@ -5177,6 +5222,199 @@ async function readKiroCliSessionTurns(jsonPath) {
   return flat;
 }
 
+function kiroCliV2ContentChars(value) {
+  if (typeof value === "string") return value.length;
+  if (Array.isArray(value)) {
+    return value.reduce(
+      (sum, item) => sum + kiroCliV2ContentChars(item),
+      0,
+    );
+  }
+  if (!value || typeof value !== "object") return 0;
+  for (const key of ["content", "text", "value", "parts", "entries"]) {
+    if (value[key] !== undefined) {
+      return kiroCliV2ContentChars(value[key]);
+    }
+  }
+  return 0;
+}
+
+// Kiro CLI 2.13+ writes event-sourced sessions under
+// ~/.kiro/sessions/<workspaceHash>/sess_<uuid>/messages.jsonl. The records do
+// not carry token counts, but user/assistant text, turn boundaries, timestamps,
+// and assistant reasoningModelId are sufficient for the same 4 chars/token
+// approximation used by the legacy CLI reader.
+async function readKiroCliV2SessionTurns(messagesPath) {
+  if (
+    !messagesPath ||
+    path.basename(messagesPath) !== "messages.jsonl" ||
+    !fssync.existsSync(messagesPath)
+  ) {
+    return [];
+  }
+
+  const sessionDir = path.dirname(messagesPath);
+  let sessionMeta = {};
+  try {
+    sessionMeta = JSON.parse(
+      fssync.readFileSync(path.join(sessionDir, "session.json"), "utf8"),
+    );
+  } catch {
+    // messages.jsonl is self-contained enough to parse without session.json.
+  }
+
+  const sessionId =
+    typeof sessionMeta?.id === "string" && sessionMeta.id
+      ? sessionMeta.id
+      : path.basename(sessionDir);
+  const fallbackModel =
+    typeof sessionMeta?.modelId === "string" ? sessionMeta.modelId : null;
+  const fallbackTimestamp = Date.parse(
+    sessionMeta?.createdAt || sessionMeta?.lastModifiedAt || "",
+  );
+
+  const flat = [];
+  let stream;
+  try {
+    stream = fssync.createReadStream(messagesPath, { encoding: "utf8" });
+  } catch {
+    return flat;
+  }
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+
+  let pendingUserChars = 0;
+  let pendingUserTimestampMs = NaN;
+  let turn = null;
+  let fallbackTurnIndex = 0;
+
+  const flushTurn = () => {
+    if (!turn) return;
+    const hasUsage =
+      turn.outputChars > 0 ||
+      turn.reasoningChars > 0;
+    const tsMs = Number.isFinite(turn.timestampMs)
+      ? turn.timestampMs
+      : Number.isFinite(pendingUserTimestampMs)
+        ? pendingUserTimestampMs
+        : fallbackTimestamp;
+    if (hasUsage && Number.isFinite(tsMs) && tsMs > 0) {
+      const requestId =
+        turn.executionId ||
+        `${sessionId}:v2:${fallbackTurnIndex}`;
+      const messageIds = Array.from(turn.messageIds);
+      flat.push({
+        request_id: requestId,
+        message_id: messageIds[0] || turn.executionId || null,
+        all_message_ids: messageIds,
+        session_id: sessionId,
+        session_model_id: fallbackModel,
+        model_id: turn.modelId || fallbackModel,
+        request_start_timestamp_ms: tsMs,
+        user_prompt_length: turn.inputChars,
+        response_size: turn.outputChars,
+        reasoning_size: turn.reasoningChars,
+      });
+    }
+    fallbackTurnIndex++;
+    turn = null;
+  };
+
+  const startTurn = (payload, timestampMs) => {
+    flushTurn();
+    turn = {
+      executionId:
+        typeof payload?.executionId === "string" ? payload.executionId : null,
+      timestampMs:
+        Number.isFinite(timestampMs)
+          ? timestampMs
+          : pendingUserTimestampMs,
+      inputChars: pendingUserChars,
+      outputChars: 0,
+      reasoningChars: 0,
+      modelId: null,
+      messageIds: new Set(),
+    };
+    pendingUserChars = 0;
+    pendingUserTimestampMs = NaN;
+  };
+
+  try {
+    for await (const line of rl) {
+      if (!line || !line.trim()) continue;
+      let event;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const payload = event?.payload;
+      if (!payload || typeof payload !== "object") continue;
+      const type =
+        typeof payload.type === "string"
+          ? payload.type.toLowerCase()
+          : "";
+      const timestampMs = Date.parse(event.timestamp || "");
+
+      if (type === "user") {
+        if (turn) flushTurn();
+        pendingUserChars = kiroCliV2ContentChars(payload.content);
+        pendingUserTimestampMs = timestampMs;
+        continue;
+      }
+
+      if (type === "turn_start") {
+        startTurn(payload, timestampMs);
+        continue;
+      }
+
+      if (
+        ["assistant", "tool_call", "tool_result", "usage_summary"].includes(
+          type,
+        ) &&
+        !turn
+      ) {
+        startTurn(payload, timestampMs);
+      }
+      if (!turn) continue;
+
+      if (
+        typeof payload.executionId === "string" &&
+        payload.executionId &&
+        !turn.executionId
+      ) {
+        turn.executionId = payload.executionId;
+      }
+      if (typeof event.id === "string" && event.id) {
+        turn.messageIds.add(event.id);
+      }
+
+      if (type === "assistant") {
+        const chars = kiroCliV2ContentChars(payload.content);
+        if (
+          typeof payload.operationType === "string" &&
+          payload.operationType.toLowerCase() === "reasoning"
+        ) {
+          turn.reasoningChars += chars;
+        } else {
+          turn.outputChars += chars;
+        }
+        if (
+          typeof payload.reasoningModelId === "string" &&
+          payload.reasoningModelId
+        ) {
+          turn.modelId = payload.reasoningModelId;
+        }
+      } else if (type === "turn_end") {
+        flushTurn();
+      }
+    }
+  } catch {
+    // Return complete turns parsed before a concurrent truncate/delete.
+  }
+  flushTurn();
+  return flat;
+}
+
 // Canonicalize a Kiro-CLI-emitted model id so IDE and CLI rows collapse when
 // they refer to the same underlying Bedrock model. Examples:
 //   anthropic.claude-sonnet-4-20250514-v1:0  -> claude-sonnet-4
@@ -5196,6 +5434,7 @@ function canonicalizeKiroCliModelId(raw) {
   if (!name) return null;
   name = name.toLowerCase();
   if (name === "auto") return null;
+  name = name.replace(/^(?:qdev|kiro)::/, "");
   // Strip provider prefix (anthropic., aws., openai., or a full Bedrock ARN).
   name = name.replace(
     /^(?:arn:aws:bedrock:[^:]*:[^:]*:(?:foundation-model\/)?|anthropic\.|openai\.|aws\.)/,
@@ -5288,10 +5527,11 @@ async function parseKiroCliIncremental({ sessionFiles, cursors, queuePath, onPro
   const resolvedEnv = env || process.env;
   const dbPath = resolveKiroCliDbPath(resolvedEnv);
 
-  // Combine two sources under the same (source='kiro', cursors.kiroCli)
-  // namespace: historical rows from the SQLite DB plus live session state
-  // from ~/.kiro/sessions/cli/{uuid}.json (covers turns from a running
-  // session that hasn't flushed to SQLite yet). Request ID shapes differ:
+  // Combine three sources under the same (source='kiro', cursors.kiroCli)
+  // namespace: historical rows from the SQLite DB, legacy live session state
+  // from ~/.kiro/sessions/cli/{uuid}.json, and Kiro CLI 2.13+ event logs at
+  // ~/.kiro/sessions/<workspaceHash>/sess_<uuid>/messages.jsonl. Request ID
+  // shapes differ:
   // SQLite carries a persisted request_id UUID; session files synthesize
   // `${sessionId}:${loop_id.rand}`. When kiro-cli migrates a live session
   // into SQLite the same turn lands under a new request_id — the cross-
@@ -5303,8 +5543,11 @@ async function parseKiroCliIncremental({ sessionFiles, cursors, queuePath, onPro
     : [];
   const sessionFilesList = resolveKiroCliSessionFiles(resolvedEnv);
   let flatSessions = [];
-  for (const jsonPath of sessionFilesList) {
-    const turns = await readKiroCliSessionTurns(jsonPath);
+  for (const sessionPath of sessionFilesList) {
+    const turns =
+      path.basename(sessionPath) === "messages.jsonl"
+        ? await readKiroCliV2SessionTurns(sessionPath)
+        : await readKiroCliSessionTurns(sessionPath);
     for (const turn of turns) flatSessions.push(turn);
   }
   // Per-request state replaces the old seenIds set. Each entry captures
@@ -5376,7 +5619,14 @@ async function parseKiroCliIncremental({ sessionFiles, cursors, queuePath, onPro
       toRetract.push([reqId, prev, sid]);
     }
     for (const [reqId, prev, sid] of toRetract) {
-      if (prev.input_tokens || prev.output_tokens) {
+      if (
+        prev.input_tokens ||
+        prev.output_tokens ||
+        prev.reasoning_output_tokens
+      ) {
+        const prevReasoning = toNonNegativeInt(
+          prev.reasoning_output_tokens,
+        );
         const prevBucket = getHourlyBucket(
           hourlyState,
           "kiro",
@@ -5388,8 +5638,12 @@ async function parseKiroCliIncremental({ sessionFiles, cursors, queuePath, onPro
           cached_input_tokens: 0,
           cache_creation_input_tokens: 0,
           output_tokens: -prev.output_tokens,
-          reasoning_output_tokens: 0,
-          total_tokens: -(prev.input_tokens + prev.output_tokens),
+          reasoning_output_tokens: -prevReasoning,
+          total_tokens: -(
+            prev.input_tokens +
+            prev.output_tokens +
+            prevReasoning
+          ),
           conversation_count: -1,
         });
         touchedBuckets.add(bucketKey("kiro", prev.model, prev.bucketStart));
@@ -5482,8 +5736,12 @@ async function parseKiroCliIncremental({ sessionFiles, cursors, queuePath, onPro
 
     const promptChars = toNonNegativeInt(r.user_prompt_length);
     const responseChars = toNonNegativeInt(r.response_size);
+    const reasoningChars = toNonNegativeInt(r.reasoning_size);
     const approxInput = Math.floor(promptChars / KIRO_CLI_CHARS_PER_TOKEN);
     const approxOutput = Math.floor(responseChars / KIRO_CLI_CHARS_PER_TOKEN);
+    const approxReasoning = Math.floor(
+      reasoningChars / KIRO_CLI_CHARS_PER_TOKEN,
+    );
 
     const tsMs = Number(r.request_start_timestamp_ms);
     if (!Number.isFinite(tsMs) || tsMs <= 0) continue;
@@ -5496,37 +5754,52 @@ async function parseKiroCliIncremental({ sessionFiles, cursors, queuePath, onPro
     const model = canonical || "kiro-cli-agent";
 
     // Fingerprint captures every field whose change should cause a re-bucket.
-    const fingerprint = `${promptChars}:${responseChars}:${model}:${tsMs}`;
+    const fingerprint =
+      `${promptChars}:${responseChars}:${reasoningChars}:${model}:${tsMs}`;
     const prev = requestState[requestId];
     if (prev && prev.fingerprint === fingerprint) continue; // unchanged
 
     // Subtract the prior contribution (if any) from its prior bucket so the
     // bucket's absolute totals reflect the CURRENT truth, not the historical
     // truth. enqueueTouchedBuckets will emit the net delta at flush time.
-    if (prev && (prev.input_tokens || prev.output_tokens)) {
+    if (
+      prev &&
+      (
+        prev.input_tokens ||
+        prev.output_tokens ||
+        prev.reasoning_output_tokens
+      )
+    ) {
+      const prevReasoning = toNonNegativeInt(
+        prev.reasoning_output_tokens,
+      );
       const prevBucket = getHourlyBucket(hourlyState, "kiro", prev.model, prev.bucketStart);
       addTotals(prevBucket.totals, {
         input_tokens: -prev.input_tokens,
         cached_input_tokens: 0,
         cache_creation_input_tokens: 0,
         output_tokens: -prev.output_tokens,
-        reasoning_output_tokens: 0,
-        total_tokens: -(prev.input_tokens + prev.output_tokens),
+        reasoning_output_tokens: -prevReasoning,
+        total_tokens: -(
+          prev.input_tokens +
+          prev.output_tokens +
+          prevReasoning
+        ),
         conversation_count: -1,
       });
       touchedBuckets.add(bucketKey("kiro", prev.model, prev.bucketStart));
     }
 
     // Add the new contribution.
-    if (approxInput > 0 || approxOutput > 0) {
+    if (approxInput > 0 || approxOutput > 0 || approxReasoning > 0) {
       const bucket = getHourlyBucket(hourlyState, "kiro", model, bucketStart);
       addTotals(bucket.totals, {
         input_tokens: approxInput,
         cached_input_tokens: 0,
         cache_creation_input_tokens: 0,
         output_tokens: approxOutput,
-        reasoning_output_tokens: 0,
-        total_tokens: approxInput + approxOutput,
+        reasoning_output_tokens: approxReasoning,
+        total_tokens: approxInput + approxOutput + approxReasoning,
         conversation_count: 1,
       });
       touchedBuckets.add(bucketKey("kiro", model, bucketStart));
@@ -5545,6 +5818,7 @@ async function parseKiroCliIncremental({ sessionFiles, cursors, queuePath, onPro
       model,
       input_tokens: approxInput,
       output_tokens: approxOutput,
+      reasoning_output_tokens: approxReasoning,
       ...(r.session_id ? { session_id: r.session_id } : {}),
     };
 

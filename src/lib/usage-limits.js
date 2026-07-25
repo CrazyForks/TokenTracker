@@ -1222,11 +1222,24 @@ function runCommand(commandRunner, command, args, options = {}) {
     return Promise.resolve(commandRunner(command, args, merged));
   }
 
-  const { timeout, maxBuffer, ...spawnOptions } = merged;
+  const {
+    timeout,
+    maxBuffer,
+    completeWhen,
+    completionGraceMs = 250,
+    killProcessGroup = false,
+    ...spawnOptions
+  } = merged;
   return new Promise((resolve) => {
     let child;
+    const useProcessGroup =
+      killProcessGroup && process.platform !== "win32";
     try {
-      child = cp.spawn(command, args, { ...spawnOptions, stdio: ["ignore", "pipe", "pipe"] });
+      child = cp.spawn(command, args, {
+        ...spawnOptions,
+        detached: useProcessGroup || spawnOptions.detached,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
     } catch (error) {
       resolve({ status: null, stdout: "", stderr: "", error });
       return;
@@ -1238,12 +1251,14 @@ function runCommand(commandRunner, command, args, options = {}) {
     let timedOut = false;
     let timer = null;
     let hardTimer = null;
+    let completionTimer = null;
 
     const settle = ({ status = null, error = null } = {}) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
       if (hardTimer) clearTimeout(hardTimer);
+      if (completionTimer) clearTimeout(completionTimer);
       let finalError = error;
       if (!finalError && timedOut) {
         finalError = new Error(`spawn ${command} ETIMEDOUT`);
@@ -1254,18 +1269,48 @@ function runCommand(commandRunner, command, args, options = {}) {
       resolve(result);
     };
 
+    const signalChild = (signal) => {
+      try {
+        if (useProcessGroup && Number.isInteger(child.pid)) {
+          process.kill(-child.pid, signal);
+        } else {
+          child.kill(signal);
+        }
+      } catch (_error) {}
+    };
+
+    const stopChild = ({ timeoutExpired = false } = {}) => {
+      if (settled) return;
+      if (timeoutExpired) timedOut = true;
+      signalChild("SIGTERM");
+      // Guarantee settlement even if the process group ignores SIGTERM or
+      // keeps inherited stdio open.
+      hardTimer = setTimeout(() => {
+        signalChild("SIGKILL");
+        settle({ status: null });
+      }, 1000);
+      if (typeof hardTimer.unref === "function") hardTimer.unref();
+    };
+
     if (Number.isFinite(timeout) && timeout > 0) {
       timer = setTimeout(() => {
-        timedOut = true;
-        try { child.kill("SIGTERM"); } catch (_error) {}
-        // Guarantee settlement even if the child ignores SIGTERM or keeps stdio open.
-        hardTimer = setTimeout(() => {
-          try { child.kill("SIGKILL"); } catch (_error) {}
-          settle({ status: null });
-        }, 1000);
-        if (typeof hardTimer.unref === "function") hardTimer.unref();
+        stopChild({ timeoutExpired: true });
       }, timeout);
     }
+
+    const scheduleCompletion = () => {
+      if (typeof completeWhen !== "function" || settled) return;
+      let complete = false;
+      try {
+        complete = Boolean(completeWhen(stdout, stderr));
+      } catch (_error) {}
+      if (!complete) return;
+      if (completionTimer) clearTimeout(completionTimer);
+      completionTimer = setTimeout(
+        () => stopChild(),
+        Math.max(0, Number(completionGraceMs) || 0),
+      );
+    };
 
     const collect = (stream, append) => {
       if (!stream) return;
@@ -1275,9 +1320,11 @@ function runCommand(commandRunner, command, args, options = {}) {
         if (stdout.length + stderr.length > maxBuffer) {
           const error = new Error(`spawn ${command} maxBuffer length exceeded`);
           error.code = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
-          try { child.kill("SIGKILL"); } catch (_error) {}
+          signalChild("SIGKILL");
           settle({ status: null, error });
+          return;
         }
+        scheduleCompletion();
       });
     };
     collect(child.stdout, (chunk) => { stdout += chunk; });
@@ -1324,14 +1371,94 @@ function parseMonthDayResetDate(dateStr, now = new Date()) {
   return candidate.toISOString();
 }
 
+function parseKiroResetDate(dateStr, now = new Date()) {
+  if (typeof dateStr !== "string") return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    const candidate = new Date(`${dateStr}T00:00:00.000Z`);
+    if (
+      Number.isFinite(candidate.getTime()) &&
+      candidate.toISOString().slice(0, 10) === dateStr
+    ) {
+      return candidate.toISOString();
+    }
+    return null;
+  }
+  return parseMonthDayResetDate(dateStr, now);
+}
+
 function isKiroUsageOutputComplete(output) {
-  const lowered = stripAnsi(output).toLowerCase();
-  return lowered.includes("covered in plan")
-    || lowered.includes("resets on")
-    || lowered.includes("bonus credits")
-    || lowered.includes("plan:")
-    || lowered.includes("managed by admin")
-    || lowered.includes("managed by organization");
+  try {
+    parseKiroUsageOutput(output);
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function parseKiroCliVersion(output) {
+  const match = String(output || "").match(
+    /(?:kiro-cli\s+)?(\d+)\.(\d+)\.(\d+)/i,
+  );
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+  };
+}
+
+function kiroCliRequiresPty(version) {
+  if (!version) return false;
+  if (version.major !== 2) return version.major > 2;
+  return version.minor >= 13;
+}
+
+function quotePosixShellArg(value) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
+}
+
+function kiroPtyInvocation(binaryPath, args, platform = process.platform) {
+  if (platform === "darwin") {
+    return {
+      command: "/usr/bin/script",
+      args: ["-q", "/dev/null", binaryPath, ...args],
+    };
+  }
+  if (platform === "linux") {
+    const commandLine = [binaryPath, ...args]
+      .map(quotePosixShellArg)
+      .join(" ");
+    return {
+      command: "script",
+      args: ["-q", "-c", commandLine, "/dev/null"],
+    };
+  }
+  return null;
+}
+
+function combineKiroCommandOutput(result) {
+  const stdout =
+    typeof result?.stdout === "string" ? result.stdout.trim() : "";
+  const stderr =
+    typeof result?.stderr === "string" ? result.stderr.trim() : "";
+  return [stdout, stderr].filter(Boolean).join("\n");
+}
+
+function parseKiroCommandResult(result, { now = new Date() } = {}) {
+  const output = combineKiroCommandOutput(result);
+  if (
+    result?.error?.code === "ETIMEDOUT" &&
+    !isKiroUsageOutputComplete(output)
+  ) {
+    throw new Error("Kiro CLI timed out.");
+  }
+  if (!output && result?.status !== 0) {
+    const detail = result?.error?.message
+      ? `: ${result.error.message}`
+      : ".";
+    throw new Error(`Kiro CLI failed with status ${result?.status ?? "unknown"}${detail}`);
+  }
+  return parseKiroUsageOutput(output, { now });
 }
 
 function parseKiroUsageOutput(output, { now = new Date() } = {}) {
@@ -1364,8 +1491,12 @@ function parseKiroUsageOutput(output, { now = new Date() } = {}) {
     planName = modernPlan[1].split("\n")[0].trim() || planName;
   }
 
-  const resetMatch = stripped.match(/resets on (\d{2}\/\d{2})/i);
-  const primaryReset = resetMatch ? parseMonthDayResetDate(resetMatch[1], now) : null;
+  const resetMatch = stripped.match(
+    /resets on (\d{4}-\d{2}-\d{2}|\d{2}\/\d{2})/i,
+  );
+  const primaryReset = resetMatch
+    ? parseKiroResetDate(resetMatch[1], now)
+    : null;
 
   let creditsPercent = null;
   const percentMatch = stripped.match(/█+\s*(\d+)%/);
@@ -1845,38 +1976,76 @@ async function fetchCopilotLimits({
   }
 }
 
-async function fetchKiroLimits({ commandRunner, now = new Date() } = {}) {
-  if (!(await isBinaryAvailable("kiro-cli", { commandRunner }))) {
+async function fetchKiroLimits({
+  commandRunner,
+  now = new Date(),
+  platform = process.platform,
+} = {}) {
+  const binaryPath = await whichBinary("kiro-cli", { commandRunner });
+  if (!binaryPath) {
     return { configured: false };
   }
 
-  const result = await runCommand(
+  const versionResult = await runCommand(
     commandRunner,
-    "kiro-cli",
-    ["chat", "--no-interactive", "/usage"],
+    binaryPath,
+    ["--version"],
     {
-      timeout: 20_000,
+      timeout: 2_000,
       env: { ...process.env, TERM: "xterm-256color" },
     },
   );
+  const version = parseKiroCliVersion(
+    combineKiroCommandOutput(versionResult),
+  );
+  const args = ["chat", "--no-interactive", "/usage"];
+  const pty = kiroPtyInvocation(binaryPath, args, platform);
 
-  const stdout = typeof result?.stdout === "string" ? result.stdout : "";
-  const stderr = typeof result?.stderr === "string" ? result.stderr : "";
-  const output = stderr.trim() || stdout.trim();
+  // Kiro CLI 2.13 changed pipe behavior: /usage is treated as a normal model
+  // prompt without a terminal. Go straight to a PTY so a refresh does not
+  // accidentally spend credits on an assistant response. Older/unknown builds
+  // retain the existing pipe-first behavior, with a bounded PTY fallback if
+  // the output is not a recognizable usage panel.
+  const attempts = [];
+  if (kiroCliRequiresPty(version)) {
+    if (pty) attempts.push(pty);
+  } else {
+    attempts.push({ command: binaryPath, args });
+    if (pty) attempts.push(pty);
+  }
 
+  let lastError = null;
   try {
-    if (result?.error?.code === "ETIMEDOUT" && !isKiroUsageOutputComplete(output)) {
-      throw new Error("Kiro CLI timed out.");
+    if (attempts.length === 0) {
+      throw new Error(
+        `Kiro CLI ${version ? `${version.major}.${version.minor}.${version.patch}` : ""} requires a pseudo-terminal on ${platform}.`,
+      );
     }
-    if (!output && result?.status !== 0) {
-      throw new Error(`Kiro CLI failed with status ${result.status}.`);
+    for (const attempt of attempts) {
+      const result = await runCommand(
+        commandRunner,
+        attempt.command,
+        attempt.args,
+        {
+          timeout: 20_000,
+          env: { ...process.env, TERM: "xterm-256color" },
+          completeWhen: (stdout, stderr) =>
+            isKiroUsageOutputComplete(`${stdout}\n${stderr}`),
+          completionGraceMs: 750,
+          killProcessGroup: Boolean(pty),
+        },
+      );
+      try {
+        return {
+          configured: true,
+          error: null,
+          ...parseKiroCommandResult(result, { now }),
+        };
+      } catch (error) {
+        lastError = error;
+      }
     }
-
-    return {
-      configured: true,
-      error: null,
-      ...parseKiroUsageOutput(output, { now }),
-    };
+    throw lastError || new Error("Failed to read Kiro usage.");
   } catch (error) {
     return {
       configured: true,
@@ -2906,7 +3075,7 @@ async function fetchUsageLimitsUncached({
       .catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
     withProviderTimeout(fetchGeminiLimits({ home, env, fetchImpl: providerFetch, commandRunner }), "Gemini", providerTimeoutMs)
       .catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
-    fetchKiroLimits({ commandRunner, now }),
+    fetchKiroLimits({ commandRunner, now, platform }),
     fetchAntigravityLimits({ home, commandRunner, requestFn, fetchImpl: providerFetch, nowMs }),
     withProviderTimeout(fetchCopilotLimits({ home, env, fetchImpl: providerFetch, platform, securityRunner }), "GitHub Copilot", providerTimeoutMs)
       .catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
@@ -3086,6 +3255,7 @@ module.exports = {
   normalizeGeminiQuotaResponse,
   normalizeKimiUsageResponse,
   parseKiroUsageOutput,
+  fetchKiroLimits,
   normalizeAntigravityResponse,
   parseListeningPorts,
   detectAntigravityProcess,

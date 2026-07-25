@@ -47,6 +47,7 @@ const {
   resolveKimiWireFiles,
   resolveKimiCodeWireFiles,
   resolveKiroCliDbPath,
+  resolveKiroCliSessionFiles,
   resolveCodebuddyHome,
   resolveCodebuddyProjectFiles,
   resolveWorkbuddyHome,
@@ -229,12 +230,14 @@ async function cmdStatus(argv = []) {
   const kimiCodeHome = process.env.KIMI_CODE_HOME || path.join(home, ".kimi-code");
   const kimiCodeInstalled = fssync.existsSync(path.join(kimiCodeHome, "sessions"));
 
-  // Kiro CLI — reads from SQLite at
-  // ~/Library/Application Support/kiro-cli/data.sqlite3. End-user dashboards
-  // show CLI and IDE merged under a single "Kiro" brand; this status line
-  // surfaces the CLI sub-path separately for operators.
+  // Kiro CLI — reads the legacy SQLite/session files and Kiro CLI 2.13+
+  // event sessions. End-user dashboards show them merged under "Kiro"; this
+  // status line surfaces which passive sources are actually present.
   const kiroCliDbPath = resolveKiroCliDbPath(process.env);
-  const kiroCliInstalled = fssync.existsSync(kiroCliDbPath);
+  const kiroCliDbExists = fssync.existsSync(kiroCliDbPath);
+  const kiroCliSessionFiles = resolveKiroCliSessionFiles(process.env);
+  const kiroCliInstalled =
+    kiroCliDbExists || kiroCliSessionFiles.length > 0;
 
   // AnythingLLM Desktop — per-message token metrics in workspace_chats.
   const anythingllmDbPath = resolveAnythingllmDbPath(process.env);
@@ -634,7 +637,14 @@ async function cmdStatus(argv = []) {
           ? { installed: true, files: kimiWireFiles.length + kimiCodeWireFiles.length }
           : { installed: false },
         kiro_cli: kiroCliInstalled
-          ? { installed: true, detail: kiroCliDbPath }
+          ? {
+              installed: true,
+              detail: kiroCliDbExists
+                ? kiroCliDbPath
+                : path.dirname(kiroCliSessionFiles[0]),
+              database: kiroCliDbExists ? kiroCliDbPath : null,
+              files: kiroCliSessionFiles.length,
+            }
           : { installed: false },
         codebuddy: codebuddyInstalled
           ? { installed: true, files: codebuddyFiles.length }
@@ -746,7 +756,7 @@ async function cmdStatus(argv = []) {
         ? `- Kimi Code: passive reader (${kimiWireFiles.length + kimiCodeWireFiles.length} wire.jsonl file${(kimiWireFiles.length + kimiCodeWireFiles.length) !== 1 ? "s" : ""} found, directories: ${kimiActive.join(" | ") || "none"})`
         : null,
       kiroCliInstalled
-        ? `- Kiro CLI: SQLite data.sqlite3 found (tokens approximated from char lengths, merged under 'kiro' source)`
+        ? `- Kiro CLI: passive reader (${kiroCliSessionFiles.length} session file${kiroCliSessionFiles.length !== 1 ? "s" : ""} found, SQLite ${kiroCliDbExists ? "found" : "not found"}; tokens approximated from char lengths and merged under 'kiro')`
         : null,
       codebuddyInstalled
         ? `- CodeBuddy hooks: ${codebuddyHookConfigured ? "set" : "unset"} (${codebuddyFiles.length} usage file${codebuddyFiles.length !== 1 ? "s" : ""} found)`
