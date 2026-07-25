@@ -6204,7 +6204,7 @@ async function parseKimiCodeIncremental({ wireFiles, cursors, queuePath, onProgr
 // each sync (passive scan only, same shape as Kimi's wire.jsonl reader).
 //
 // Per-line record types: message, reasoning, topic, file-history-snapshot.
-// Only `type=="message" && role=="assistant"` carry token usage. The shape:
+// Only `type=="message" and role=="assistant"` carry token usage. The shape:
 //
 //   providerData.rawUsage = {
 //     prompt_tokens: 22223,           // OpenAI-style — INCLUDES cached
@@ -6734,7 +6734,7 @@ async function parseCodebuddyIncremental({
 // (each verified against real ~/.workbuddy logs, NOT assumed from CodeBuddy):
 //
 //   1. Usage lives on `function_call` records too — not only on
-//      `type=="message" && role=="assistant"`. Each LLM round-trip (whether it
+//      `type=="message" and role=="assistant"`. Each LLM round-trip (whether it
 //      ends in a tool call or a text reply) carries its own providerData.rawUsage.
 //      We therefore aggregate EVERY record that has providerData.rawUsage and
 //      dedup per response id, instead of filtering by record type.
@@ -12795,7 +12795,7 @@ async function readGrokUpdateTokenEvents(updatesPath, fallbackTimestamp, prevOff
 
   // When the file does not end on a newline, the final emitted line is a
   // partial tail still being written. Exclude its bytes so the committed offset
-  // stays on a complete-line boundary && the line is re-read once finished.
+  // stays on a complete-line boundary and the line is re-read once finished.
   const trailingPartialBytes = endsWithNewline ? 0 : Buffer.byteLength(lastLine, "utf8");
   const committedSize = Math.max(startOffset, stat.size - trailingPartialBytes);
   return {
@@ -12901,22 +12901,43 @@ async function parseGrokBuildIncremental({
   const prevVersion = Number(grokState.version) || 0;
   const needsTurnUsageMigration = prevVersion < GROK_CURSOR_VERSION;
 
-  // v3 && earlier treated context-window totalTokens as cumulative spend, which
-  // undercounts heavily (often 10-50x) && mis-splits input/output. Rebuild from
+  // v3 and earlier treated context-window totalTokens as cumulative spend, which
+  // undercounts heavily (often 10-50x) and mis-splits input/output. Rebuild from
   // turn_completed.usage when migrating to v4.
-  let sessionSnapshots = needsTurnUsageMigration ? {} : normalizeGrokSessionSnapshots(grokState);
+  //
+  // Drop prior watermark totals / updateOffsets so files are re-read from byte 0,
+  // but keep legacySeen markers from seenSessions so the one-shot baseline
+  // (sessions already counted under the old scanner) still applies.
+  let sessionSnapshots;
+  if (needsTurnUsageMigration) {
+    const normalized = normalizeGrokSessionSnapshots(grokState);
+    sessionSnapshots = {};
+    for (const [sessionId, snapshot] of Object.entries(normalized)) {
+      if (!snapshot?.legacySeen) continue;
+      sessionSnapshots[sessionId] = {
+        totalTokens: 0,
+        messageCount: 0,
+        model: null,
+        source: null,
+        lastEventId: null,
+        lastEventTimestamp: null,
+        updatedAt: snapshot.updatedAt || null,
+        legacySeen: true,
+      };
+    }
+    clearGrokHourlyBuckets(hourlyState);
+  } else {
+    sessionSnapshots = normalizeGrokSessionSnapshots(grokState);
+  }
   const prevUpdateOffsets =
     !needsTurnUsageMigration &&
     grokState.updateOffsets &&
     typeof grokState.updateOffsets === "object"
       ? grokState.updateOffsets
       : {};
-  if (needsTurnUsageMigration) {
-    clearGrokHourlyBuckets(hourlyState);
-  }
 
   // Rebuilt from the sessions seen this scan, so entries for deleted session
-  // dirs are pruned && the cursor stays bounded by the on-disk session count.
+  // dirs are pruned and the cursor stays bounded by the on-disk session count.
   const updateOffsets = {};
   const touchedBuckets = new Set();
 
@@ -12957,6 +12978,9 @@ async function parseGrokBuildIncremental({
     let lastEventTimestamp = previous.lastEventTimestamp || null;
     let lastModel = previous.model || model;
     let sawTurnUsage = source === "turn_usage" || previous.source === "turn_usage";
+    // Defer bucket writes until after we know whether this is a legacy baseline
+    // pass (first sighting of a session already counted under an older scanner).
+    const pendingBucketDeltas = [];
 
     const updatesPath = grokUpdatesPathForSession(sess);
     const updates = await readGrokUpdateTokenEvents(
@@ -12986,10 +13010,7 @@ async function parseGrokBuildIncremental({
         billable_total_tokens: event.billable_total_tokens,
         conversation_count: event.conversation_count || 1,
       };
-      const bucket = getHourlyBucket(hourlyState, "grok", eventModel, hourStartStr);
-      addTotals(bucket.totals, delta);
-      touchedBuckets.add(bucketKey("grok", eventModel, hourStartStr));
-      eventsAggregated++;
+      pendingBucketDeltas.push({ model: eventModel, hourStartStr, delta });
       cumulativeTotal += event.total_tokens;
       tokenDeltaForSession += event.total_tokens;
       finalTouchedHourStart = hourStartStr;
@@ -13001,7 +13022,7 @@ async function parseGrokBuildIncremental({
 
     // Fallback only when this session never emitted turn_completed usage
     // (older logs / partial sessions). Context watermark is a lower-bound
-    // estimate && must not run on top of turn usage.
+    // estimate and must not run on top of turn usage.
     if (!sawTurnUsage) {
       let highWatermark = previousTotal;
       for (const event of updates.contextEvents) {
@@ -13016,13 +13037,10 @@ async function parseGrokBuildIncremental({
           toUtcHalfHourStart(Date.now());
         if (!hourStartStr) continue;
         const delta = estimateGrokTokenDelta(deltaTokens, 0, { allowZeroConversationCount: true });
-        const bucket = getHourlyBucket(hourlyState, "grok", model, hourStartStr);
-        addTotals(bucket.totals, delta);
-        touchedBuckets.add(bucketKey("grok", model, hourStartStr));
-        eventsAggregated++;
+        pendingBucketDeltas.push({ model, hourStartStr, delta });
         tokenDeltaForSession += deltaTokens;
         finalTouchedHourStart = hourStartStr;
-        source = "context_fallback";
+        source = "updates";
       }
 
       const effectiveSignalTotal = grokEffectiveTotalFromSignals(safeSignals);
@@ -13032,34 +13050,37 @@ async function parseGrokBuildIncremental({
         const hourStartStr = toUtcHalfHourStart(lastActive) || toUtcHalfHourStart(Date.now());
         if (hourStartStr) {
           const delta = estimateGrokTokenDelta(deltaTokens, 0, { allowZeroConversationCount: true });
-          const bucket = getHourlyBucket(hourlyState, "grok", model, hourStartStr);
-          addTotals(bucket.totals, delta);
-          touchedBuckets.add(bucketKey("grok", model, hourStartStr));
-          eventsAggregated++;
+          pendingBucketDeltas.push({ model, hourStartStr, delta });
           tokenDeltaForSession += deltaTokens;
           finalTouchedHourStart = hourStartStr;
-          source = "signals_fallback";
+          source = "signals";
         }
       }
       cumulativeTotal = Math.max(previousTotal, highWatermark);
     }
 
     const finalTotal = Math.max(previousTotal, cumulativeTotal);
+    // Sessions already observed under an older scanner must establish a watermark
+    // without backfilling historical tokens as brand-new usage.
     const legacyBaselineOnly = previous.legacySeen && previousTotal === 0 && finalTotal > 0;
 
-    // Message/conversation count for fallback-only sessions (turn path already
-    // counts each turn_completed as one conversation).
-    if (
-      !legacyBaselineOnly &&
-      !sawTurnUsage &&
-      tokenDeltaForSession > 0 &&
-      finalTouchedHourStart
-    ) {
-      const deltaMessageCount =
-        messageCount > previousMessageCount ? messageCount - previousMessageCount : 1;
-      const bucket = getHourlyBucket(hourlyState, "grok", lastModel || model, finalTouchedHourStart);
-      addTotals(bucket.totals, { conversation_count: deltaMessageCount });
-      touchedBuckets.add(bucketKey("grok", lastModel || model, finalTouchedHourStart));
+    if (!legacyBaselineOnly) {
+      for (const pending of pendingBucketDeltas) {
+        const bucket = getHourlyBucket(hourlyState, "grok", pending.model, pending.hourStartStr);
+        addTotals(bucket.totals, pending.delta);
+        touchedBuckets.add(bucketKey("grok", pending.model, pending.hourStartStr));
+        eventsAggregated++;
+      }
+
+      // Message/conversation count for fallback-only sessions (turn path already
+      // counts each turn_completed as one conversation).
+      if (!sawTurnUsage && tokenDeltaForSession > 0 && finalTouchedHourStart) {
+        const deltaMessageCount =
+          messageCount > previousMessageCount ? messageCount - previousMessageCount : 1;
+        const bucket = getHourlyBucket(hourlyState, "grok", lastModel || model, finalTouchedHourStart);
+        addTotals(bucket.totals, { conversation_count: deltaMessageCount });
+        touchedBuckets.add(bucketKey("grok", lastModel || model, finalTouchedHourStart));
+      }
     }
 
     if (finalTotal > 0 && (tokenDeltaForSession > 0 || previousTotal > 0 || legacyBaselineOnly)) {
@@ -13071,6 +13092,19 @@ async function parseGrokBuildIncremental({
         lastEventId,
         lastEventTimestamp,
         updatedAt: new Date().toISOString(),
+      };
+    } else if (previous.legacySeen && finalTotal === 0) {
+      // Keep the baseline marker across empty syncs so later growth is still
+      // baselined once instead of backfilled as brand-new usage.
+      sessionSnapshots[sessionId] = {
+        totalTokens: 0,
+        messageCount: Math.max(previousMessageCount, messageCount),
+        model: lastModel || model,
+        source: previous.source || null,
+        lastEventId: lastEventId || previous.lastEventId || null,
+        lastEventTimestamp: lastEventTimestamp || previous.lastEventTimestamp || null,
+        updatedAt: new Date().toISOString(),
+        legacySeen: true,
       };
     }
 

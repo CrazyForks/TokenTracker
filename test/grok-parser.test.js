@@ -259,7 +259,7 @@ test("parseGrokBuildIncremental falls back to context watermark only without tur
   });
   const snap = cursors.grok.sessionSnapshots[fixture.sessionId];
   assert.ok(snap);
-  assert.equal(snap.source, "context_fallback");
+  assert.equal(snap.source, "updates");
   assert.equal(snap.totalTokens, 20_000);
   const rows = dedupeQueue(readQueue(queuePath));
   assert.equal(rows.length, 1);
