@@ -423,7 +423,7 @@ Nur einmal nötig. Alternative unter älterem macOS: Rechtsklick auf die App im 
 Das ist Gatekeeper, das auf das `com.apple.quarantine`-Attribut reagiert – kein echtes Problem. Einmalig beheben mit:
 
 ```bash
-xattr -cr /Applications/TokenTrackerBar.app
+xattr -cr /Applications/TokenTracker.app
 ```
 
 Danach öffnet die App normal.

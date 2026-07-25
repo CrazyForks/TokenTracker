@@ -402,7 +402,7 @@ TokenTrackerBar 使用 **ad-hoc 签名**（没有用 Apple Developer ID 做公�
 其实不是真坏了 —— 这是 Gatekeeper 对 macOS 给下载文件自动贴的 `com.apple.quarantine` 属性做出的反应。清除一次即可：
 
 ```bash
-xattr -cr /Applications/TokenTrackerBar.app
+xattr -cr /Applications/TokenTracker.app
 ```
 
 之后就能正常打开了。

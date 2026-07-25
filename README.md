@@ -475,7 +475,7 @@ You only need to do this once. Older macOS alternative: right-click the app in F
 This is Gatekeeper reacting to the `com.apple.quarantine` attribute macOS attaches to every downloaded file — not an actual problem. Clear it once with:
 
 ```bash
-xattr -cr /Applications/TokenTrackerBar.app
+xattr -cr /Applications/TokenTracker.app
 ```
 
 After that the app opens normally.

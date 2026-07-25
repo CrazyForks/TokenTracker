@@ -397,7 +397,7 @@ TokenTrackerBar は **アドホック署名**されています（Apple Develope
 これは macOS がダウンロードファイルに付与する `com.apple.quarantine` 属性に Gatekeeper が反応しているだけで、実際の問題ではありません。次のコマンドで一度クリアしてください:
 
 ```bash
-xattr -cr /Applications/TokenTrackerBar.app
+xattr -cr /Applications/TokenTracker.app
 ```
 
 これでアプリは普通に開けます。

@@ -240,7 +240,8 @@ jobs:
             clean build
 
           # Verify universal binary — fail loudly if Intel slice is missing
-          APP_BIN="$(find build/DerivedData/Build/Products/Release -name 'TokenTrackerBar' -path '*/MacOS/*' -maxdepth 5)"
+          # (PRODUCT_NAME is "TokenTracker"; the scheme stays TokenTrackerBar)
+          APP_BIN="$(find build/DerivedData/Build/Products/Release -name 'TokenTracker' -path '*/MacOS/*' -maxdepth 5)"
           echo "Built binary: $APP_BIN"
           lipo -info "$APP_BIN"
           if ! lipo -info "$APP_BIN" 2>&1 | grep -q "x86_64"; then
@@ -268,7 +269,7 @@ jobs:
       - name: Ad-hoc sign app
         working-directory: TokenTrackerBar
         run: |
-          APP_PATH="$(find build/DerivedData/Build/Products/Release -name 'TokenTrackerBar.app' -maxdepth 1)"
+          APP_PATH="$(find build/DerivedData/Build/Products/Release -name 'TokenTracker.app' -maxdepth 1)"
           APPEX_PATH="$APP_PATH/Contents/PlugIns/TokenTrackerWidget.appex"
           echo "Signing: $APP_PATH"
 
@@ -321,7 +322,7 @@ jobs:
       - name: Create DMG
         working-directory: TokenTrackerBar
         run: |
-          APP_PATH="$(find build/DerivedData/Build/Products/Release -name 'TokenTrackerBar.app' -maxdepth 1)"
+          APP_PATH="$(find build/DerivedData/Build/Products/Release -name 'TokenTracker.app' -maxdepth 1)"
           echo "App path: $APP_PATH"
           bash scripts/create-dmg.sh "$APP_PATH"
 

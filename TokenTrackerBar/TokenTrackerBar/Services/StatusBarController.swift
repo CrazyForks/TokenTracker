@@ -822,7 +822,7 @@ final class StatusBarController: NSObject {
 
         // About
         let version = UpdateChecker.shared.currentVersion()
-        let aboutItem = NSMenuItem(title: "TokenTrackerBar v\(version)", action: #selector(openAbout), keyEquivalent: "")
+        let aboutItem = NSMenuItem(title: "TokenTracker v\(version)", action: #selector(openAbout), keyEquivalent: "")
         aboutItem.target = self
         menu.addItem(aboutItem)
 
@@ -965,9 +965,9 @@ final class StatusBarController: NSObject {
     }
 
     @objc private func openAbout() {
-        if let url = URL(string: "https://github.com/mm7894215/TokenTracker") {
-            NSWorkspace.shared.open(url)
-        }
+        // Standard About panel (icon + version); GitHub already has its own "Star" item.
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(nil)
     }
 
     @objc private func toggleStats() {

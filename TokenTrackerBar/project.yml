@@ -32,7 +32,10 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.tokentracker.bar
-        PRODUCT_NAME: TokenTrackerBar
+        # App bundle / process / permission-dialog name. Target & scheme stay
+        # "TokenTrackerBar"; the shipped DMG keeps the stable TokenTrackerBar.dmg
+        # filename (download URLs depend on it).
+        PRODUCT_NAME: TokenTracker
         INFOPLIST_VALUES: |
           LSUIElement = YES
         MARKETING_VERSION: "0.84.6"
@@ -47,7 +50,8 @@ targets:
       properties:
         LSUIElement: true
         CFBundleDisplayName: TokenTracker
-        CFBundleName: TokenTrackerBar
+        # Keep in sync with CFBundleDisplayName: the app menu title uses CFBundleName.
+        CFBundleName: TokenTracker
         CFBundleIconFile: AppIcon
         CFBundleIconName: AppIcon
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"

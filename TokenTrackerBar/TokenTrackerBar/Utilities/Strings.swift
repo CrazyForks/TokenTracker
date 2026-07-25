@@ -217,6 +217,10 @@ enum Strings {
 
     static var menuSyncNow: String { t("Sync Now", "立即同步", "立即同步", "今すぐ同期", "지금 동기화") }
     static var menuCheckForUpdates: String { t("Check for Updates…", "检查更新…", "檢查更新…", "アップデートを確認…", "업데이트 확인…") }
+
+    static var menuAbout: String { t("About TokenTracker", "关于 TokenTracker", "關於 TokenTracker", "TokenTracker について", "TokenTracker 정보") }
+
+    static var menuHelp: String { t("TokenTracker Help", "TokenTracker 帮助", "TokenTracker 說明", "TokenTracker ヘルプ", "TokenTracker 도움말") }
     static var menuLaunchAtLogin: String { t("Launch at Login", "登录时启动", "登入時啟動", "ログイン時に起動", "로그인 시 실행") }
     static var menuStarOnGitHub: String { t("★ Star on GitHub", "★ 在 GitHub 上标星", "★ 在 GitHub 上標星", "★ GitHub でスターを付ける", "★ GitHub에서 스타하기") }
     static var menuShowStats: String { t("Show Stats in Menu Bar", "在菜单栏显示统计", "在選單欄顯示統計", "メニューバーに統計を表示", "메뉴 막대에 통계 표시") }
@@ -332,7 +336,7 @@ enum Strings {
     static var restarting: String { t("Restarting...", "正在重启...", "正在重啟...", "再起動中...", "재시작 중...") }
     static var installationFailedTitle: String { t("Installation Failed", "安装失败", "安裝失敗", "インストールに失敗", "설치 실패") }
     static var manualInstallHint: String {
-        t("Please drag TokenTrackerBar into Applications manually.", "请手动将 TokenTrackerBar 拖入“应用程序”。", "請手動將 TokenTrackerBar 拖入“應用程式”。", "TokenTrackerBar を手動で「アプリケーション」にドラッグしてください。", "TokenTrackerBar를 수동으로 응용 프로그램 폴더로 드래그하세요.")
+        t("Please drag TokenTracker into Applications manually.", "请手动将 TokenTracker 拖入“应用程序”。", "請手動將 TokenTracker 拖入“應用程式”。", "TokenTracker を手動で「アプリケーション」にドラッグしてください。", "TokenTracker를 수동으로 응용 프로그램 폴더로 드래그하세요.")
     }
     static var updateCompleteTitle: String { t("Update Complete", "更新完成", "更新完成", "アップデート完了", "업데이트 완료") }
     static var updateCompleteMessage: String {

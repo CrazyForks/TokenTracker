@@ -397,7 +397,7 @@ TokenTrackerBar는 **애드혹 서명**되어 있습니다 (Apple Developer ID�
 이것은 macOS가 다운로드된 모든 파일에 붙이는 `com.apple.quarantine` 속성에 Gatekeeper가 반응하는 것일 뿐 — 실제 문제는 아닙니다. 다음으로 한 번 클리어:
 
 ```bash
-xattr -cr /Applications/TokenTrackerBar.app
+xattr -cr /Applications/TokenTracker.app
 ```
 
 이후 앱이 정상적으로 열립니다.
