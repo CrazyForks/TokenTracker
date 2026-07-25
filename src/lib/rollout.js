@@ -12387,7 +12387,8 @@ async function parseCopilotAppDbIncremental({
 // ─────────────────────────────────────────────────────────────────────────────
 
 const GROK_ESTIMATED_INPUT_RATIO = 0.8;
-const GROK_CURSOR_VERSION = 3;
+// v4: bill from turn_completed.usage (true cumulative API usage), not context-window totalTokens.
+const GROK_CURSOR_VERSION = 4;
 
 function resolveGrokBuildHome(env = process.env) {
   if (env.TOKENTRACKER_GROK_HOME) return env.TOKENTRACKER_GROK_HOME;
@@ -12540,6 +12541,9 @@ function grokMessageCountFromSignals(signals) {
   );
 }
 
+// Context-window telemetry only. Prefer turn_completed.usage when available —
+// signals.totalTokens / contextTokensUsed track the live window, not billable
+// cumulative spend across a session (especially after compaction).
 function grokEffectiveTotalFromSignals(signals) {
   if (!signals || typeof signals !== "object") return 0;
   const beforeCompaction = normalizeNonNegativeNumber(signals.totalTokensBeforeCompaction);
@@ -12612,28 +12616,135 @@ function grokFileEndsWithNewline(filePath, size) {
   }
 }
 
-async function readGrokUpdateTokenEvents(updatesPath, fallbackTimestamp, prevOffsetEntry) {
-  if (!updatesPath) return { events: [], offsetEntry: null };
+
+function canonicalizeGrokUsageModel(model) {
+  const raw = normalizeModelInput(model) || "grok-build";
+  const lower = raw.toLowerCase();
+  // Free Build SKU must not fuzzy-match paid grok-4.5 rates in native clients.
+  if (lower.includes("build-free") || lower.endsWith("-free") || lower.includes("free-tier")) {
+    return "grok-build-free";
+  }
+  if (lower === "grok-4.5-build" || lower === "grok-4-5-build") {
+    return "grok-4.5-build";
+  }
+  return raw;
+}
+
+function normalizeGrokTurnUsage(usage, model, timestamp, eventId) {
+  if (!usage || typeof usage !== "object") return null;
+  const inputRaw = normalizeNonNegativeNumber(
+    usage.inputTokens ?? usage.input_tokens,
+  );
+  const output = normalizeNonNegativeNumber(
+    usage.outputTokens ?? usage.output_tokens,
+  );
+  const cached = normalizeNonNegativeNumber(
+    usage.cachedReadTokens ??
+      usage.cache_read_input_tokens ??
+      usage.cached_input_tokens,
+  );
+  const reasoning = normalizeNonNegativeNumber(
+    usage.reasoningTokens ?? usage.reasoning_output_tokens,
+  );
+  // Grok reports inputTokens as the full prompt (including cache hits). Split
+  // so pricing can apply cache_read rates correctly.
+  const nonCachedInput = Math.max(0, inputRaw - cached);
+  let total = normalizeNonNegativeNumber(usage.totalTokens ?? usage.total_tokens);
+  if (total <= 0) {
+    total = inputRaw + output;
+  }
+  if (total <= 0 && nonCachedInput <= 0 && cached <= 0 && output <= 0) return null;
+  return {
+    input_tokens: nonCachedInput,
+    cached_input_tokens: cached,
+    cache_creation_input_tokens: 0,
+    output_tokens: output,
+    reasoning_output_tokens: reasoning,
+    total_tokens: total > 0 ? total : nonCachedInput + cached + output,
+    billable_total_tokens: total > 0 ? total : nonCachedInput + cached + output,
+    conversation_count: 1,
+    model: canonicalizeGrokUsageModel(model),
+    timestamp,
+    eventId,
+  };
+}
+
+function extractGrokTurnUsageEvents(record, fallbackTimestamp, fallbackModel, lineIndex) {
+  const update = record?.params?.update;
+  if (!update || typeof update !== "object") return [];
+  if (update.sessionUpdate !== "turn_completed") return [];
+  const usage = update.usage;
+  if (!usage || typeof usage !== "object") return [];
+
+  const meta = record?.params?._meta || record?._meta || {};
+  const timestamp = grokTimestampFromUpdate(meta, record, fallbackTimestamp);
+  const baseEventId = grokEventId(
+    meta.eventId ?? record?.eventId ?? record?.id ?? update.prompt_id,
+    String(lineIndex),
+  );
+
+  const modelUsage =
+    usage.modelUsage && typeof usage.modelUsage === "object" ? usage.modelUsage : null;
+  const events = [];
+  if (modelUsage && Object.keys(modelUsage).length > 0) {
+    for (const [modelName, modelUsageEntry] of Object.entries(modelUsage)) {
+      if (!modelUsageEntry || typeof modelUsageEntry !== "object") continue;
+      const event = normalizeGrokTurnUsage(
+        modelUsageEntry,
+        modelName,
+        timestamp,
+        `${baseEventId}|${modelName}`,
+      );
+      if (event) events.push(event);
+    }
+  }
+  if (events.length === 0) {
+    const event = normalizeGrokTurnUsage(usage, fallbackModel, timestamp, baseEventId);
+    if (event) events.push(event);
+  }
+  return events;
+}
+
+// Context-window watermark events (legacy / fallback only).
+function extractGrokContextTokenEvent(record, fallbackTimestamp, lineIndex) {
+  const meta = record?.params?._meta || record?._meta;
+  if (!meta || typeof meta !== "object") return null;
+  const totalTokens = normalizeNonNegativeNumber(meta.totalTokens);
+  if (totalTokens <= 0) return null;
+  return {
+    totalTokens,
+    timestamp: grokTimestampFromUpdate(meta, record, fallbackTimestamp),
+    eventId: grokEventId(meta.eventId ?? record?.eventId ?? record?.id, String(lineIndex)),
+  };
+}
+
+async function readGrokUpdateTokenEvents(updatesPath, fallbackTimestamp, prevOffsetEntry, options = {}) {
+  const fallbackModel = options.fallbackModel || "grok-build";
+  if (!updatesPath) {
+    return { turnEvents: [], contextEvents: [], offsetEntry: null };
+  }
   let stat;
   try {
     stat = fssync.statSync(updatesPath);
-    if (!stat.isFile()) return { events: [], offsetEntry: null };
+    if (!stat.isFile()) return { turnEvents: [], contextEvents: [], offsetEntry: null };
   } catch {
-    return { events: [], offsetEntry: null };
+    return { turnEvents: [], contextEvents: [], offsetEntry: null };
   }
 
-  // updates.jsonl is append-only and carries cumulative totalTokens, deduped
-  // by the session high-watermark, so resuming from the last consumed byte is
-  // safe: re-read events stay below the watermark (no double count), and any
-  // bytes a write race leaves unparsed are covered by the next event's
-  // cumulative total. Re-read from 0 on truncation or inode change.
+  // updates.jsonl is append-only. Turn usage is additive per turn_completed, so
+  // resuming from the last consumed byte is safe. Re-read from 0 on truncation
+  // or inode change.
   const prevSize = Number(prevOffsetEntry?.size) || 0;
   const prevIno = prevOffsetEntry?.ino;
   const inodeChanged = typeof prevIno === "number" && prevIno !== stat.ino;
   const startOffset = stat.size < prevSize || inodeChanged ? 0 : prevSize;
   const baseOffset = { mtimeMs: stat.mtimeMs, ino: stat.ino };
   if (stat.size <= startOffset) {
-    return { events: [], offsetEntry: { size: startOffset, ...baseOffset } };
+    return {
+      turnEvents: [],
+      contextEvents: [],
+      offsetEntry: { size: startOffset, ...baseOffset },
+    };
   }
 
   // Only advance the stored offset to the end of the last newline-terminated
@@ -12642,7 +12753,8 @@ async function readGrokUpdateTokenEvents(updatesPath, fallbackTimestamp, prevOff
   // complete instead of skipping it forever (which would undercount tokens).
   const endsWithNewline = grokFileEndsWithNewline(updatesPath, stat.size);
 
-  const events = [];
+  const turnEvents = [];
+  const contextEvents = [];
   let lineIndex = 0;
   let lastLine = "";
   const input = fssync.createReadStream(updatesPath, {
@@ -12662,29 +12774,35 @@ async function readGrokUpdateTokenEvents(updatesPath, fallbackTimestamp, prevOff
       } catch {
         continue;
       }
-      const meta = record?.params?._meta || record?._meta;
-      if (!meta || typeof meta !== "object") continue;
-      const totalTokens = normalizeNonNegativeNumber(meta.totalTokens);
-      if (totalTokens <= 0) continue;
-      const timestamp = grokTimestampFromUpdate(meta, record, fallbackTimestamp);
-      events.push({
-        totalTokens,
-        timestamp,
-        eventId: grokEventId(meta.eventId ?? record?.eventId ?? record?.id, String(lineIndex)),
-      });
+      const turns = extractGrokTurnUsageEvents(
+        record,
+        fallbackTimestamp,
+        fallbackModel,
+        lineIndex,
+      );
+      if (turns.length > 0) {
+        turnEvents.push(...turns);
+        continue;
+      }
+      const contextEvent = extractGrokContextTokenEvent(record, fallbackTimestamp, lineIndex);
+      if (contextEvent) contextEvents.push(contextEvent);
     }
   } catch {
     // Stream error mid-read: keep the events we got, but do not advance the
-    // offset so the next sync retries the same range (watermark-safe).
-    return { events, offsetEntry: prevOffsetEntry || null };
+    // offset so the next sync retries the same range.
+    return { turnEvents, contextEvents, offsetEntry: prevOffsetEntry || null };
   }
 
   // When the file does not end on a newline, the final emitted line is a
   // partial tail still being written. Exclude its bytes so the committed offset
-  // stays on a complete-line boundary and the line is re-read once finished.
+  // stays on a complete-line boundary && the line is re-read once finished.
   const trailingPartialBytes = endsWithNewline ? 0 : Buffer.byteLength(lastLine, "utf8");
   const committedSize = Math.max(startOffset, stat.size - trailingPartialBytes);
-  return { events, offsetEntry: { size: committedSize, ...baseOffset } };
+  return {
+    turnEvents,
+    contextEvents,
+    offsetEntry: { size: committedSize, ...baseOffset },
+  };
 }
 
 function estimateGrokTokenDelta(totalTokens, conversationCount, options = {}) {
@@ -12706,6 +12824,70 @@ function estimateGrokTokenDelta(totalTokens, conversationCount, options = {}) {
   };
 }
 
+function clearGrokHourlyBuckets(hourlyState) {
+  if (!hourlyState || typeof hourlyState !== "object") return;
+  const buckets = hourlyState.buckets && typeof hourlyState.buckets === "object" ? hourlyState.buckets : null;
+  if (buckets) {
+    for (const key of Object.keys(buckets)) {
+      if (key.startsWith("grok|")) delete buckets[key];
+    }
+  }
+  const groupQueued =
+    hourlyState.groupQueued && typeof hourlyState.groupQueued === "object"
+      ? hourlyState.groupQueued
+      : null;
+  if (groupQueued) {
+    for (const key of Object.keys(groupQueued)) {
+      if (key.startsWith("grok|")) delete groupQueued[key];
+    }
+  }
+}
+
+async function retractStaleGrokQueueRows(queuePath, keepKeys) {
+  if (!queuePath) return 0;
+  let raw = "";
+  try {
+    raw = fssync.readFileSync(queuePath, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return 0;
+    throw error;
+  }
+
+  const latestGrok = new Map();
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if ((row?.source || "") !== "grok") continue;
+    const model = normalizeModelInput(row.model) || DEFAULT_MODEL;
+    const hourStart = typeof row.hour_start === "string" ? row.hour_start : null;
+    if (!hourStart) continue;
+    latestGrok.set(bucketKey("grok", model, hourStart), { model, hour_start: hourStart, row });
+  }
+
+  const zero = initTotals();
+  const lines = [];
+  for (const [key, entry] of latestGrok.entries()) {
+    if (keepKeys.has(key)) continue;
+    if (totalsKey(entry.row) === totalsKey(zero)) continue;
+    lines.push(
+      JSON.stringify({
+        source: "grok",
+        model: entry.model,
+        hour_start: entry.hour_start,
+        ...zero,
+      }),
+    );
+  }
+  if (lines.length === 0) return 0;
+  await fs.appendFile(queuePath, `${lines.join("\n")}\n`, "utf8");
+  return lines.length;
+}
+
 async function parseGrokBuildIncremental({
   sessions,
   cursors = {},
@@ -12716,13 +12898,25 @@ async function parseGrokBuildIncremental({
   if (queuePath) await ensureDir(path.dirname(queuePath));
   const hourlyState = normalizeHourlyState(cursors?.hourly);
   const grokState = cursors.grok && typeof cursors.grok === "object" ? { ...cursors.grok } : {};
-  let sessionSnapshots = normalizeGrokSessionSnapshots(grokState);
+  const prevVersion = Number(grokState.version) || 0;
+  const needsTurnUsageMigration = prevVersion < GROK_CURSOR_VERSION;
+
+  // v3 && earlier treated context-window totalTokens as cumulative spend, which
+  // undercounts heavily (often 10-50x) && mis-splits input/output. Rebuild from
+  // turn_completed.usage when migrating to v4.
+  let sessionSnapshots = needsTurnUsageMigration ? {} : normalizeGrokSessionSnapshots(grokState);
   const prevUpdateOffsets =
-    grokState.updateOffsets && typeof grokState.updateOffsets === "object"
+    !needsTurnUsageMigration &&
+    grokState.updateOffsets &&
+    typeof grokState.updateOffsets === "object"
       ? grokState.updateOffsets
       : {};
+  if (needsTurnUsageMigration) {
+    clearGrokHourlyBuckets(hourlyState);
+  }
+
   // Rebuilt from the sessions seen this scan, so entries for deleted session
-  // dirs are pruned and the cursor stays bounded by the on-disk session count.
+  // dirs are pruned && the cursor stays bounded by the on-disk session count.
   const updateOffsets = {};
   const touchedBuckets = new Set();
 
@@ -12755,78 +12949,124 @@ async function parseGrokBuildIncremental({
     const model = grokModelFromSignals(safeSignals);
     const lastActive = grokLastActiveFromSignals(safeSignals, summary);
 
-    let highWatermark = previousTotal;
-    let observedTotal = previousTotal;
+    let cumulativeTotal = previousTotal;
     let tokenDeltaForSession = 0;
     let finalTouchedHourStart = null;
     let source = previous.source || null;
     let lastEventId = previous.lastEventId || null;
     let lastEventTimestamp = previous.lastEventTimestamp || null;
-    const pendingTokenDeltas = [];
-
-    const recordTokenDelta = (deltaTokens, timestamp, deltaSource) => {
-      const hourStartStr = toUtcHalfHourStart(timestamp) || toUtcHalfHourStart(Date.now());
-      if (!hourStartStr) return false;
-      pendingTokenDeltas.push({ deltaTokens, hourStartStr });
-      tokenDeltaForSession += deltaTokens;
-      finalTouchedHourStart = hourStartStr;
-      source = deltaSource;
-      lastEventTimestamp = timestamp || lastEventTimestamp;
-      return true;
-    };
+    let lastModel = previous.model || model;
+    let sawTurnUsage = source === "turn_usage" || previous.source === "turn_usage";
 
     const updatesPath = grokUpdatesPathForSession(sess);
     const updates = await readGrokUpdateTokenEvents(
       updatesPath,
       lastActive,
       updatesPath ? prevUpdateOffsets[updatesPath] : null,
+      { fallbackModel: model },
     );
     if (updatesPath && updates.offsetEntry) {
       updateOffsets[updatesPath] = updates.offsetEntry;
     }
-    for (const event of updates.events) {
-      observedTotal = Math.max(observedTotal, event.totalTokens);
+
+    // Preferred path: each turn_completed carries true cumulative API usage for
+    // that turn (input/output/cache/reasoning). Sum them.
+    for (const event of updates.turnEvents) {
+      sawTurnUsage = true;
+      const hourStartStr = toUtcHalfHourStart(event.timestamp) || toUtcHalfHourStart(lastActive) || toUtcHalfHourStart(Date.now());
+      if (!hourStartStr) continue;
+      const eventModel = event.model || model;
+      const delta = {
+        input_tokens: event.input_tokens,
+        cached_input_tokens: event.cached_input_tokens,
+        cache_creation_input_tokens: event.cache_creation_input_tokens,
+        output_tokens: event.output_tokens,
+        reasoning_output_tokens: event.reasoning_output_tokens,
+        total_tokens: event.total_tokens,
+        billable_total_tokens: event.billable_total_tokens,
+        conversation_count: event.conversation_count || 1,
+      };
+      const bucket = getHourlyBucket(hourlyState, "grok", eventModel, hourStartStr);
+      addTotals(bucket.totals, delta);
+      touchedBuckets.add(bucketKey("grok", eventModel, hourStartStr));
+      eventsAggregated++;
+      cumulativeTotal += event.total_tokens;
+      tokenDeltaForSession += event.total_tokens;
+      finalTouchedHourStart = hourStartStr;
+      source = "turn_usage";
       lastEventId = event.eventId || lastEventId;
       lastEventTimestamp = event.timestamp || lastEventTimestamp;
-      if (event.totalTokens <= highWatermark) continue;
-      const deltaTokens = event.totalTokens - highWatermark;
-      highWatermark = event.totalTokens;
-      recordTokenDelta(deltaTokens, event.timestamp || lastActive, "updates");
+      lastModel = eventModel;
     }
 
-    const effectiveSignalTotal = grokEffectiveTotalFromSignals(safeSignals);
-    observedTotal = Math.max(observedTotal, effectiveSignalTotal);
-    if (effectiveSignalTotal > highWatermark) {
-      const deltaTokens = effectiveSignalTotal - highWatermark;
-      highWatermark = effectiveSignalTotal;
-      recordTokenDelta(deltaTokens, lastActive, "signals");
-    }
-
-    const finalTotal = Math.max(previousTotal, highWatermark, observedTotal);
-    const legacyBaselineOnly = previous.legacySeen && previousTotal === 0 && finalTotal > 0;
-    if (!legacyBaselineOnly) {
-      for (const pending of pendingTokenDeltas) {
-        const delta = estimateGrokTokenDelta(pending.deltaTokens, 0, { allowZeroConversationCount: true });
-        const bucket = getHourlyBucket(hourlyState, "grok", model, pending.hourStartStr);
+    // Fallback only when this session never emitted turn_completed usage
+    // (older logs / partial sessions). Context watermark is a lower-bound
+    // estimate && must not run on top of turn usage.
+    if (!sawTurnUsage) {
+      let highWatermark = previousTotal;
+      for (const event of updates.contextEvents) {
+        lastEventId = event.eventId || lastEventId;
+        lastEventTimestamp = event.timestamp || lastEventTimestamp;
+        if (event.totalTokens <= highWatermark) continue;
+        const deltaTokens = event.totalTokens - highWatermark;
+        highWatermark = event.totalTokens;
+        const hourStartStr =
+          toUtcHalfHourStart(event.timestamp) ||
+          toUtcHalfHourStart(lastActive) ||
+          toUtcHalfHourStart(Date.now());
+        if (!hourStartStr) continue;
+        const delta = estimateGrokTokenDelta(deltaTokens, 0, { allowZeroConversationCount: true });
+        const bucket = getHourlyBucket(hourlyState, "grok", model, hourStartStr);
         addTotals(bucket.totals, delta);
-        touchedBuckets.add(bucketKey("grok", model, pending.hourStartStr));
+        touchedBuckets.add(bucketKey("grok", model, hourStartStr));
         eventsAggregated++;
+        tokenDeltaForSession += deltaTokens;
+        finalTouchedHourStart = hourStartStr;
+        source = "context_fallback";
       }
+
+      const effectiveSignalTotal = grokEffectiveTotalFromSignals(safeSignals);
+      if (effectiveSignalTotal > highWatermark) {
+        const deltaTokens = effectiveSignalTotal - highWatermark;
+        highWatermark = effectiveSignalTotal;
+        const hourStartStr = toUtcHalfHourStart(lastActive) || toUtcHalfHourStart(Date.now());
+        if (hourStartStr) {
+          const delta = estimateGrokTokenDelta(deltaTokens, 0, { allowZeroConversationCount: true });
+          const bucket = getHourlyBucket(hourlyState, "grok", model, hourStartStr);
+          addTotals(bucket.totals, delta);
+          touchedBuckets.add(bucketKey("grok", model, hourStartStr));
+          eventsAggregated++;
+          tokenDeltaForSession += deltaTokens;
+          finalTouchedHourStart = hourStartStr;
+          source = "signals_fallback";
+        }
+      }
+      cumulativeTotal = Math.max(previousTotal, highWatermark);
     }
 
-    if (!legacyBaselineOnly && tokenDeltaForSession > 0 && finalTouchedHourStart) {
+    const finalTotal = Math.max(previousTotal, cumulativeTotal);
+    const legacyBaselineOnly = previous.legacySeen && previousTotal === 0 && finalTotal > 0;
+
+    // Message/conversation count for fallback-only sessions (turn path already
+    // counts each turn_completed as one conversation).
+    if (
+      !legacyBaselineOnly &&
+      !sawTurnUsage &&
+      tokenDeltaForSession > 0 &&
+      finalTouchedHourStart
+    ) {
       const deltaMessageCount =
         messageCount > previousMessageCount ? messageCount - previousMessageCount : 1;
-      const bucket = getHourlyBucket(hourlyState, "grok", model, finalTouchedHourStart);
+      const bucket = getHourlyBucket(hourlyState, "grok", lastModel || model, finalTouchedHourStart);
       addTotals(bucket.totals, { conversation_count: deltaMessageCount });
-      touchedBuckets.add(bucketKey("grok", model, finalTouchedHourStart));
+      touchedBuckets.add(bucketKey("grok", lastModel || model, finalTouchedHourStart));
     }
 
     if (finalTotal > 0 && (tokenDeltaForSession > 0 || previousTotal > 0 || legacyBaselineOnly)) {
       sessionSnapshots[sessionId] = {
         totalTokens: finalTotal,
         messageCount: Math.max(previousMessageCount, messageCount),
-        model,
+        model: lastModel || model,
         source: source || previous.source || null,
         lastEventId,
         lastEventTimestamp,
@@ -12839,12 +13079,37 @@ async function parseGrokBuildIncremental({
     }
   }
 
-  const bucketsQueued = queuePath
+  let bucketsQueued = queuePath
     ? await enqueueTouchedBuckets({ queuePath, hourlyState, touchedBuckets })
     : 0;
+
+  // After a semantics migration, retract stale grok queue keys that the full
+  // rescan no longer produces so dashboard "latest per key" no longer keeps
+  // the old undercounted rows.
+  if (needsTurnUsageMigration && queuePath) {
+    const keepKeys = new Set();
+    for (const [key, bucket] of Object.entries(hourlyState.buckets || {})) {
+      if (!key.startsWith("grok|") || !bucket?.totals) continue;
+      keepKeys.add(key);
+    }
+    const retracted = await retractStaleGrokQueueRows(queuePath, keepKeys);
+    bucketsQueued += retracted;
+  }
+
   hourlyState.updatedAt = new Date().toISOString();
   cursors.hourly = hourlyState;
   sessionSnapshots = capGrokSessionSnapshots(sessionSnapshots);
+
+  const migrations = grokState.migrations && typeof grokState.migrations === "object"
+    ? { ...grokState.migrations }
+    : {};
+  if (needsTurnUsageMigration) {
+    migrations.turnUsageV4 = {
+      appliedAt: new Date().toISOString(),
+      fromVersion: prevVersion,
+      toVersion: GROK_CURSOR_VERSION,
+    };
+  }
 
   cursors.grok = {
     ...grokState,
@@ -12852,6 +13117,7 @@ async function parseGrokBuildIncremental({
     sessionSnapshots,
     seenSessions: Object.keys(sessionSnapshots),
     updateOffsets,
+    migrations,
     updatedAt: new Date().toISOString()
   };
 
