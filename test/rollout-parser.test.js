@@ -9231,7 +9231,7 @@ test("parseGrokBuildIncremental reads Grok updates metadata by event timestamp",
     assert.equal(queued[1].input_tokens, 120);
     assert.equal(queued[1].output_tokens, 30);
     assert.equal(queued[1].conversation_count, 2);
-    assert.equal(cursors.grok.version, 3);
+    assert.equal(cursors.grok.version, 4);
     assert.equal(cursors.grok.sessionSnapshots["grok-session-updates"].totalTokens, 250);
     assert.equal(cursors.grok.sessionSnapshots["grok-session-updates"].source, "updates");
     assert.equal(cursors.grok.sessionSnapshots["grok-session-updates"].lastEventId, "evt-2");
@@ -9507,7 +9507,7 @@ test("parseGrokBuildIncremental preserves zero current context after compaction"
   }
 });
 
-test("parseGrokBuildIncremental upgrades v2 Grok cursor without replaying updates", async () => {
+test("parseGrokBuildIncremental upgrades pre-v4 Grok cursor by rebuilding from updates", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-grok-v2-cursor-"));
   try {
     const queuePath = path.join(tmp, "queue.jsonl");
@@ -9516,6 +9516,9 @@ test("parseGrokBuildIncremental upgrades v2 Grok cursor without replaying update
       files: {},
       updatedAt: null,
       grok: {
+        // Pre-v4 cursors used context-window watermarks. Migrating to v4 must
+        // rebuild from disk (turn_completed when present; otherwise context
+        // fallback) rather than keep the old undercount forever.
         version: 2,
         sessionSnapshots: {
           "grok-session-v2": {
@@ -9549,15 +9552,30 @@ test("parseGrokBuildIncremental upgrades v2 Grok cursor without replaying update
       "utf8",
     );
 
-    const result = await parseGrokBuildIncremental({
-      sessions: [{ sessionDir, updatesPath, signalsPath, summaryPath: path.join(sessionDir, "summary.json"), sessionId: "grok-session-v2" }],
+    const session = {
+      sessionDir,
+      updatesPath,
+      signalsPath,
+      summaryPath: path.join(sessionDir, "summary.json"),
+      sessionId: "grok-session-v2",
+    };
+    const firstRun = await parseGrokBuildIncremental({
+      sessions: [session],
       cursors,
       queuePath,
     });
-    assert.equal(result.eventsAggregated, 0);
-    assert.equal(result.bucketsQueued, 0);
-    assert.deepEqual(await readJsonLines(queuePath), []);
-    assert.equal(cursors.grok.version, 3);
+    assert.ok(firstRun.eventsAggregated >= 1);
+    assert.equal(cursors.grok.version, 4);
+    assert.equal(cursors.grok.sessionSnapshots["grok-session-v2"].totalTokens, 250);
+
+    // Second sync must not double-count the rebuilt totals.
+    const secondRun = await parseGrokBuildIncremental({
+      sessions: [session],
+      cursors,
+      queuePath,
+    });
+    assert.equal(secondRun.eventsAggregated, 0);
+    assert.equal(secondRun.bucketsQueued, 0);
     assert.equal(cursors.grok.sessionSnapshots["grok-session-v2"].totalTokens, 250);
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
