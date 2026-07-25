@@ -12651,7 +12651,7 @@ function normalizeGrokTurnUsage(usage, model, timestamp, eventId) {
   const nonCachedInput = Math.max(0, inputRaw - cached);
   let total = normalizeNonNegativeNumber(usage.totalTokens ?? usage.total_tokens);
   if (total <= 0) {
-    total = inputRaw + output;
+    total = inputRaw + output + reasoning;
   }
   if (total <= 0 && nonCachedInput <= 0 && cached <= 0 && output <= 0) return null;
   return {
@@ -12660,8 +12660,8 @@ function normalizeGrokTurnUsage(usage, model, timestamp, eventId) {
     cache_creation_input_tokens: 0,
     output_tokens: output,
     reasoning_output_tokens: reasoning,
-    total_tokens: total > 0 ? total : nonCachedInput + cached + output,
-    billable_total_tokens: total > 0 ? total : nonCachedInput + cached + output,
+    total_tokens: total > 0 ? total : nonCachedInput + cached + output + reasoning,
+    billable_total_tokens: total > 0 ? total : nonCachedInput + cached + output + reasoning,
     conversation_count: 1,
     model: canonicalizeGrokUsageModel(model),
     timestamp,
@@ -12788,9 +12788,10 @@ async function readGrokUpdateTokenEvents(updatesPath, fallbackTimestamp, prevOff
       if (contextEvent) contextEvents.push(contextEvent);
     }
   } catch {
-    // Stream error mid-read: keep the events we got, but do not advance the
-    // offset so the next sync retries the same range.
-    return { turnEvents, contextEvents, offsetEntry: prevOffsetEntry || null };
+    // Stream error mid-read: discard partial events and do not advance the
+    // offset, so the next sync re-extracts from the same range exactly once
+    // instead of double-counting already-parsed turn events.
+    return { turnEvents: [], contextEvents: [], offsetEntry: prevOffsetEntry || null };
   }
 
   // When the file does not end on a newline, the final emitted line is a
