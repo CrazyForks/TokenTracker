@@ -714,6 +714,30 @@ function formatLocalDate(value) {
   return `${year}-${month}-${day}`;
 }
 
+// Identity hash for cross-environment duplicate session files (native and
+// \\wsl$ views of a synced ~/.claude). sha256 of the first 64KB plus the
+// file size: Claude session headers carry sessionId/cwd so the prefix is
+// discriminating, and folding in the size keeps a grown file distinct from
+// a stale copy. Deliberately excludes inode (unstable across the 9p bridge)
+// and mtime (rewritten by sync tools).
+const CLAUDE_FILE_ID_PREFIX_BYTES = 64 * 1024;
+async function claudeFileIdentityHash(filePath, st) {
+  const length = Math.min(CLAUDE_FILE_ID_PREFIX_BYTES, st.size);
+  if (length <= 0) return null;
+  let fh = null;
+  try {
+    fh = await fs.open(filePath, "r");
+    const buf = Buffer.alloc(length);
+    const { bytesRead } = await fh.read(buf, 0, length, 0);
+    const hash = crypto.createHash("sha256").update(buf.subarray(0, bytesRead)).digest("hex");
+    return `${hash}:${st.size}`;
+  } catch (_e) {
+    return null;
+  } finally {
+    if (fh) await fh.close().catch(() => { });
+  }
+}
+
 async function parseClaudeIncremental({
   projectFiles,
   cursors,
@@ -747,6 +771,22 @@ async function parseClaudeIncremental({
     cursors.files = {};
   }
 
+  // Cross-environment file dedup (#307): when the scan list mixes native and
+  // \\wsl$ paths, a session file synced between the environments shows up
+  // twice under different paths. Identify never-parsed files by content hash
+  // and skip the duplicate wholesale — the message-hash layer alone is capped
+  // at 100k entries, and eviction would let bulk history double count.
+  let sawUncFile = false;
+  let sawLocalFile = false;
+  for (const entry of files) {
+    const p = typeof entry === "string" ? entry : entry?.path;
+    if (typeof p !== "string" || !p) continue;
+    if (isUncPath(p)) sawUncFile = true;
+    else sawLocalFile = true;
+    if (sawUncFile && sawLocalFile) break;
+  }
+  const seenFileIds = sawUncFile && sawLocalFile ? new Map() : null;
+
   for (let idx = 0; idx < files.length; idx++) {
     const entry = files[idx];
     const filePath = typeof entry === "string" ? entry : entry?.path;
@@ -765,6 +805,59 @@ async function parseClaudeIncremental({
     const prevOffset = sameInode ? prev.offset || 0 : 0;
     const truncated = sameInode && prevOffset > st.size;
     const startOffset = sameInode && !truncated ? prevOffset : 0;
+
+    let fileId = null;
+    if (seenFileIds) {
+      const cachedFileId =
+        sameInode && typeof prev?.fileId === "string" && prev?.fileIdSize === st.size
+          ? prev.fileId
+          : null;
+      fileId = cachedFileId || (await claudeFileIdentityHash(filePath, st));
+      if (fileId) {
+        // Cache on the live cursor object so idle files don't re-hash on
+        // every sync (the idle short-circuit below never rewrites cursors).
+        if (prev && (prev.fileId !== fileId || prev.fileIdSize !== st.size)) {
+          prev.fileId = fileId;
+          prev.fileIdSize = st.size;
+        }
+        const primary = seenFileIds.get(fileId);
+        if (primary === undefined) {
+          seenFileIds.set(fileId, filePath);
+        } else if (!prev && primary !== filePath) {
+          // Never-parsed duplicate of a file already accounted this run (the
+          // native copy sorts first). Mark it caught-up so future syncs only
+          // look at genuinely new tail bytes — message hashes still guard the
+          // tail if the copies diverge later.
+          cursors.files[key] = {
+            inode,
+            offset: st.size,
+            updatedAt: new Date().toISOString(),
+            fileId,
+            fileIdSize: st.size,
+            duplicateOf: primary,
+            ...(projectEnabled
+              ? {
+                  claudeCwd: null,
+                  projectFileContext: buildProjectFileContext(null),
+                  projectRef: null,
+                  projectKey: null,
+                }
+              : {}),
+          };
+          if (cb) {
+            cb({
+              index: idx + 1,
+              total: totalFiles,
+              filePath,
+              filesProcessed,
+              eventsAggregated,
+              bucketsQueued: touchedBuckets.size,
+            });
+          }
+          continue;
+        }
+      }
+    }
 
     // Claude's launch cwd is fixed for a session file's lifetime, so once
     // resolved (found, or confirmed absent) from content it never needs
@@ -850,6 +943,7 @@ async function parseClaudeIncremental({
       inode,
       offset: result.endOffset,
       updatedAt: new Date().toISOString(),
+      ...(fileId ? { fileId, fileIdSize: st.size } : {}),
       ...(projectEnabled
         ? {
             claudeCwd: nextCwd === undefined ? null : nextCwd,
@@ -2075,7 +2169,10 @@ async function parseClaudeFile({
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
 
   let eventsAggregated = 0;
-  const isMainSession = !filePath.includes("/subagents/");
+  // Separator-agnostic: WSL installs are scanned over \\wsl$ UNC paths where
+  // path.join produces backslashes, and a forward-slash-only check would
+  // misclassify subagent transcripts as main sessions (#307).
+  const isMainSession = !/[\\/]subagents[\\/]/.test(filePath);
   for await (const line of rl) {
     if (!line) continue;
 
@@ -2095,13 +2192,25 @@ async function parseClaudeFile({
           typeof content === "string" ||
           (Array.isArray(content) && content.some((b) => b?.type === "text"));
         if (hasText) {
-          const userTs = typeof userObj?.timestamp === "string" ? userObj.timestamp : null;
-          const userBucketStart = userTs ? toUtcHalfHourStart(userTs) : null;
-          if (userBucketStart) {
-            const userModel = DEFAULT_MODEL;
-            const userBucket = getHourlyBucket(hourlyState, source, userModel, userBucketStart);
-            userBucket.totals.conversation_count += 1;
-            touchedBuckets.add(bucketKey(source, userModel, userBucketStart));
+          // Dedup by the line's uuid so a synced copy of the session file
+          // (WSL mirror of a divergent native file, inode-reset re-read)
+          // cannot re-count the conversation. Usage rows get the same
+          // guarantee from claudeMessageDedupKey; user lines have no
+          // message.id, so the line uuid is the identity.
+          const userKey =
+            seenMessageHashes && typeof userObj?.uuid === "string" && userObj.uuid
+              ? `u:${userObj.uuid}`
+              : null;
+          if (!userKey || !seenMessageHashes.has(userKey)) {
+            if (userKey) seenMessageHashes.add(userKey);
+            const userTs = typeof userObj?.timestamp === "string" ? userObj.timestamp : null;
+            const userBucketStart = userTs ? toUtcHalfHourStart(userTs) : null;
+            if (userBucketStart) {
+              const userModel = DEFAULT_MODEL;
+              const userBucket = getHourlyBucket(hourlyState, source, userModel, userBucketStart);
+              userBucket.totals.conversation_count += 1;
+              touchedBuckets.add(bucketKey(source, userModel, userBucketStart));
+            }
           }
         }
       }
@@ -4554,37 +4663,60 @@ async function parseCursorApiIncremental({
 // Kiro token tracking (reads from devdata.sqlite or tokens_generated.jsonl)
 // ---------------------------------------------------------------------------
 
-function resolveKiroBasePath() {
+// Kiro IDE (VS Code fork) globalStorage lives under the editor config root,
+// which differs per platform: %APPDATA% on Windows, ~/.config on Linux/WSL,
+// ~/Library/Application Support on macOS.
+function resolveKiroBasePath(env = process.env) {
   const home = require("node:os").homedir();
-  return path.join(
-    home,
-    "Library",
-    "Application Support",
-    "Kiro",
-    "User",
-    "globalStorage",
-    "kiro.kiroagent",
-  );
+  const suffix = ["Kiro", "User", "globalStorage", "kiro.kiroagent"];
+  if (process.platform === "win32") {
+    const appData = typeof env.APPDATA === "string" && env.APPDATA.trim().length > 0
+      ? env.APPDATA.trim()
+      : path.join(home, "AppData", "Roaming");
+    return path.join(appData, ...suffix);
+  }
+  if (process.platform === "linux") {
+    const configHome = typeof env.XDG_CONFIG_HOME === "string" && env.XDG_CONFIG_HOME.trim().length > 0
+      ? env.XDG_CONFIG_HOME.trim()
+      : path.join(home, ".config");
+    return path.join(configHome, ...suffix);
+  }
+  return path.join(home, "Library", "Application Support", ...suffix);
 }
 
-function resolveKiroDbPath() {
-  return path.join(resolveKiroBasePath(), "dev_data", "devdata.sqlite");
+function resolveKiroDbPath(basePath) {
+  return path.join(basePath || resolveKiroBasePath(), "dev_data", "devdata.sqlite");
 }
 
-function resolveKiroJsonlPath() {
-  return path.join(resolveKiroBasePath(), "dev_data", "tokens_generated.jsonl");
+function resolveKiroJsonlPath(basePath) {
+  return path.join(basePath || resolveKiroBasePath(), "dev_data", "tokens_generated.jsonl");
 }
 
 function readKiroDbTokens(dbPath, sinceId, sqliteOptions = {}) {
   if (!dbPath || !fssync.existsSync(dbPath)) return [];
   const minId = Number.isFinite(sinceId) && sinceId > 0 ? sinceId : 0;
   const sql = `SELECT id, model, provider, tokens_prompt, tokens_generated, timestamp FROM tokens_generated WHERE id > ${minId} ORDER BY id ASC`;
-  return readSqliteJsonRows(dbPath, sql, {
-    label: "Kiro",
-    maxBuffer: 10 * 1024 * 1024,
-    timeout: 15_000,
-    ...sqliteOptions,
-  });
+
+  // WSL installs are read over the \\wsl$ UNC bridge; sqlite3 cannot safely
+  // open WAL databases there, so copy db (+ sidecars) to tmp first.
+  let snapshot = null;
+  let effectiveDbPath = dbPath;
+  if (isUncPath(dbPath)) {
+    try {
+      snapshot = snapshotSqliteDb(dbPath);
+      effectiveDbPath = snapshot.path;
+    } catch (_e) { }
+  }
+  try {
+    return readSqliteJsonRows(effectiveDbPath, sql, {
+      label: "Kiro",
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: 15_000,
+      ...sqliteOptions,
+    });
+  } finally {
+    if (snapshot) snapshot.cleanup();
+  }
 }
 
 // Read Kiro token data from JSONL fallback (tokens_generated.jsonl).
@@ -4726,7 +4858,7 @@ function normalizeKiroModelName(raw) {
   return name || null;
 }
 
-async function parseKiroIncremental({ dbPath, jsonlPath, cursors, queuePath, onProgress, sqliteOptions } = {}) {
+async function parseKiroIncremental({ basePath, dbPath, jsonlPath, cursors, queuePath, onProgress, sqliteOptions } = {}) {
   await ensureDir(path.dirname(queuePath));
   const kiroState = cursors.kiro && typeof cursors.kiro === "object" ? cursors.kiro : {};
   const lastDbId = typeof kiroState.lastDbId === "number"
@@ -4735,8 +4867,8 @@ async function parseKiroIncremental({ dbPath, jsonlPath, cursors, queuePath, onP
   const jsonlState = kiroState.jsonl && typeof kiroState.jsonl === "object" ? kiroState.jsonl : {};
   const lastJsonlLine = typeof jsonlState.lastLine === "number" ? jsonlState.lastLine : 0;
 
-  const resolvedDbPath = dbPath || resolveKiroDbPath();
-  const resolvedJsonlPath = jsonlPath || resolveKiroJsonlPath();
+  const resolvedDbPath = dbPath || resolveKiroDbPath(basePath);
+  const resolvedJsonlPath = jsonlPath || resolveKiroJsonlPath(basePath);
 
   // Try SQLite first, fall back to JSONL.
   let rows = [];
@@ -4784,9 +4916,12 @@ async function parseKiroIncremental({ dbPath, jsonlPath, cursors, queuePath, onP
     return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
   }
 
-  // Build model timeline from .chat files for model name resolution
-  const basePath = resolveKiroBasePath();
-  const modelTimeline = buildKiroModelTimeline(basePath);
+  // Build model timeline from .chat files for model name resolution.
+  // Must come from the SAME install as the rows being parsed (dual-install:
+  // a WSL install's rows must not be resolved against native .chat files).
+  const timelineBase = basePath
+    || (dbPath ? path.dirname(path.dirname(dbPath)) : resolveKiroBasePath());
+  const modelTimeline = buildKiroModelTimeline(timelineBase);
 
   const hourlyState = normalizeHourlyState(cursors?.hourly);
   const touchedBuckets = new Set();
@@ -5075,6 +5210,74 @@ function hermesInstallOwnsCursor(hermesPath, flatState, sqliteOptions) {
   return allDbs.some((db) => sqliteDbContainsIds(db, "sessions", sample, sqliteOptions));
 }
 
+function kiroInstallOwnsCursor(dbPath, flatState, sqliteOptions) {
+  // The flat cursor tracks the max AUTOINCREMENT id it consumed. An install
+  // whose tokens_generated table never reached that id cannot be the flat
+  // cursor's host. Both installs containing the id (short/equal histories)
+  // yields two hits upstream → caller seeds every namespace (safe).
+  const lastDbId = typeof flatState?.lastDbId === "number" && Number.isInteger(flatState.lastDbId) && flatState.lastDbId > 0
+    ? flatState.lastDbId
+    : (typeof flatState?.lastId === "number" && Number.isInteger(flatState.lastId) && flatState.lastId > 0
+      ? flatState.lastId
+      : 0);
+  if (!lastDbId) return false;
+  return sqliteDbContainsIds(dbPath, "tokens_generated", [String(lastDbId)], sqliteOptions);
+}
+
+// Kiro CLI request_ids live inside the conversations_v2 JSON payload, not in
+// an id column — probe via json_each instead of sqliteDbContainsIds.
+function kiroCliDbContainsRequestIds(dbPath, requestIds, sqliteOptions = {}) {
+  if (!dbPath || !Array.isArray(requestIds) || requestIds.length === 0) return false;
+  if (!fssync.existsSync(dbPath)) return false;
+  const inList = requestIds.map(sqliteStringLiteral).join(",");
+  // Alias both tables: conversations_v2.value and json_each's own `value`
+  // column collide — a bare `value` is "ambiguous column name" and sqlite
+  // errors out (which readSqliteJsonRows swallows into []).
+  const sql =
+    "SELECT 1 FROM conversations_v2 AS c, " +
+    "json_each(json_extract(c.value, '$.user_turn_metadata.requests')) AS je " +
+    `WHERE json_extract(je.value, '$.request_id') IN (${inList}) LIMIT 1`;
+
+  let snapshot = null;
+  let effectiveDbPath = dbPath;
+  if (isUncPath(dbPath)) {
+    try {
+      snapshot = snapshotSqliteDb(dbPath);
+      effectiveDbPath = snapshot.path;
+    } catch (_e) { }
+  }
+  try {
+    const rows = readSqliteJsonRows(effectiveDbPath, sql, {
+      label: "InstallProbe",
+      maxBuffer: 1024 * 1024,
+      timeout: 10_000,
+      ...sqliteOptions,
+    });
+    return Array.isArray(rows) && rows.length > 0;
+  } catch (_e) {
+    return false;
+  } finally {
+    if (snapshot) snapshot.cleanup();
+  }
+}
+
+function kiroCliInstallOwnsCursor(dbPath, flatState, sqliteOptions) {
+  // Only SQLite-origin request_id UUIDs are probe evidence: session-file
+  // entries synthesize `${sessionId}:${loopRand}` keys or carry a session_id
+  // tag, and neither appears in conversations_v2. Filter BEFORE sampling so
+  // recent session-file churn cannot blind the probe to older SQLite ids.
+  const requests =
+    flatState?.requests && typeof flatState.requests === "object" ? flatState.requests : {};
+  const sqliteKeyed = {};
+  for (const [k, v] of Object.entries(requests)) {
+    if (k.includes(":")) continue;
+    if (v && typeof v === "object" && typeof v.session_id === "string" && v.session_id) continue;
+    sqliteKeyed[k] = v;
+  }
+  const sample = sampleRecentKeys(sqliteKeyed);
+  return kiroCliDbContainsRequestIds(dbPath, sample, sqliteOptions);
+}
+
 function hasLegacyHermesDefaultState(hermesState) {
   return (
     typeof hermesState.lastStartedAt === "number" ||
@@ -5307,6 +5510,22 @@ const KIRO_CLI_CREDITS_SIDECAR = "kiro-credits.json";
 function resolveKiroCliDbPath(env = process.env) {
   if (env.KIRO_CLI_DB_PATH) return env.KIRO_CLI_DB_PATH;
   const home = env.HOME || require("node:os").homedir();
+  if (process.platform === "win32") {
+    // Speculative: Kiro CLI descends from Amazon Q CLI, which ships
+    // macOS/Linux only — Windows users run it inside WSL (handled by the
+    // dual-install path in sync). Kept as the conventional %LOCALAPPDATA%
+    // location so a future native build is picked up; harmless when absent.
+    const localAppData = typeof env.LOCALAPPDATA === "string" && env.LOCALAPPDATA.trim().length > 0
+      ? env.LOCALAPPDATA.trim()
+      : path.join(home, "AppData", "Local");
+    return path.join(localAppData, "kiro-cli", "data.sqlite3");
+  }
+  if (process.platform === "linux") {
+    const dataHome = typeof env.XDG_DATA_HOME === "string" && env.XDG_DATA_HOME.trim().length > 0
+      ? env.XDG_DATA_HOME.trim()
+      : path.join(home, ".local", "share");
+    return path.join(dataHome, "kiro-cli", "data.sqlite3");
+  }
   return path.join(home, "Library", "Application Support", "kiro-cli", "data.sqlite3");
 }
 
@@ -5870,6 +6089,7 @@ async function readKiroCliV2SessionTurns(messagesPath) {
 
 async function writeKiroCliCreditsSidecar({
   queuePath,
+  installKey,
   totalCredits,
   recordCount,
   sessionCount,
@@ -5882,15 +6102,64 @@ async function writeKiroCliCreditsSidecar({
     KIRO_CLI_CREDITS_SIDECAR,
   );
   try {
-    await writeJson(sidecarPath, {
-      version: 1,
-      source: "kiro-cli-usage-summary",
+    // Dual-install (#306): keep one entry per install and aggregate at the
+    // top level, so a second install's write never clobbers the first. The
+    // top-level fields keep the v1 shape readKiroCreditsSummary consumes.
+    let installs = {};
+    try {
+      const prev = JSON.parse(await fs.readFile(sidecarPath, "utf8"));
+      if (prev?.version === 1 && prev.installs && typeof prev.installs === "object") {
+        installs = prev.installs;
+      }
+    } catch {
+      // first write or pre-dual-install sidecar — start fresh
+    }
+    // Expire entries whose install stopped syncing (deleted WSL distro,
+    // distro rename / UNC alias flip leaving a duplicate key, mode switched
+    // to *-only). Without this the read-modify-write merge would inflate the
+    // aggregate with phantom installs forever; a 30-day grace keeps entries
+    // alive across transient wsl.exe probe failures.
+    const staleMs = 30 * 24 * 60 * 60 * 1000;
+    for (const [k, entry] of Object.entries(installs)) {
+      const ts = Date.parse(entry?.updated_at || "");
+      if (!Number.isFinite(ts) || Date.now() - ts > staleMs) delete installs[k];
+    }
+    const key = typeof installKey === "string" && installKey ? installKey : "default";
+    installs[key] = {
       total_credits: Number(totalCredits.toFixed(12)),
       record_count: recordCount,
       session_count: sessionCount,
       file_count: fileCount,
       latest_at: latestAt,
       updated_at: new Date().toISOString(),
+    };
+    let aggCredits = 0;
+    let aggRecords = 0;
+    let aggSessions = 0;
+    let aggFiles = 0;
+    let aggLatestAt = null;
+    for (const entry of Object.values(installs)) {
+      aggCredits += Number(entry.total_credits) || 0;
+      aggRecords += Number(entry.record_count) || 0;
+      aggSessions += Number(entry.session_count) || 0;
+      aggFiles += Number(entry.file_count) || 0;
+      if (
+        typeof entry.latest_at === "string" &&
+        (!aggLatestAt || Date.parse(entry.latest_at) > Date.parse(aggLatestAt))
+      ) {
+        aggLatestAt = entry.latest_at;
+      }
+    }
+    await writeJson(sidecarPath, {
+      version: 1,
+      source: "kiro-cli-usage-summary",
+      total_credits: Number(aggCredits.toFixed(12)),
+      record_count: aggRecords,
+      session_count: aggSessions,
+      file_count: aggFiles,
+      latest_at: aggLatestAt,
+      updated_at: new Date().toISOString(),
+      installs,
     });
     await chmod600IfPossible(sidecarPath);
   } catch {
@@ -5953,13 +6222,29 @@ function readKiroCliRequests(dbPath, env = process.env, sqliteOptions = {}) {
     "json_extract(value, '$.user_turn_metadata.requests') AS requests_json " +
     "FROM conversations_v2 " +
     "WHERE json_extract(value, '$.user_turn_metadata.requests') IS NOT NULL";
-  const rows = readSqliteJsonRows(dbPath, sql, {
-    label: "Kiro CLI",
-    env,
-    maxBuffer: 128 * 1024 * 1024,
-    timeout: 120_000,
-    ...sqliteOptions,
-  });
+
+  // WSL installs are read over the \\wsl$ UNC bridge; snapshot to tmp so
+  // sqlite3 never opens a WAL database across the 9p bridge.
+  let snapshot = null;
+  let effectiveDbPath = dbPath;
+  if (isUncPath(dbPath)) {
+    try {
+      snapshot = snapshotSqliteDb(dbPath);
+      effectiveDbPath = snapshot.path;
+    } catch (_e) { }
+  }
+  let rows;
+  try {
+    rows = readSqliteJsonRows(effectiveDbPath, sql, {
+      label: "Kiro CLI",
+      env,
+      maxBuffer: 128 * 1024 * 1024,
+      timeout: 120_000,
+      ...sqliteOptions,
+    });
+  } finally {
+    if (snapshot) snapshot.cleanup();
+  }
   const flat = [];
   for (const row of rows) {
     let requests;
@@ -6058,6 +6343,11 @@ async function parseKiroCliIncremental({ sessionFiles, cursors, queuePath, onPro
   }
   await writeKiroCliCreditsSidecar({
     queuePath,
+    // Install identity mirrors resolveKiroCliSessionFiles' sessions home so
+    // dual installs keep separate sidecar entries.
+    installKey:
+      resolvedEnv.KIRO_HOME ||
+      path.join(resolvedEnv.HOME || require("node:os").homedir(), ".kiro"),
     totalCredits: kiroCreditTotal,
     recordCount: kiroCreditRecords,
     sessionCount: kiroCreditSessions,
@@ -14371,6 +14661,7 @@ module.exports = {
   resolveQoderDbPath,
   resolveQoderDbPaths,
   readQoderDbMessages,
+  resolveKiroBasePath,
   resolveKiroDbPath,
   resolveKiroJsonlPath,
   resolveHermesPath,
@@ -14404,6 +14695,8 @@ module.exports = {
   gooseInstallOwnsCursor,
   zedInstallOwnsCursor,
   hermesInstallOwnsCursor,
+  kiroInstallOwnsCursor,
+  kiroCliInstallOwnsCursor,
   copilotOtelCursorHasLegacyCliUsage,
   pruneCopilotUsageClaims,
   parseCopilotIncremental,

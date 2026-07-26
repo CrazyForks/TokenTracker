@@ -24,6 +24,7 @@ const {
   readQoderDbMessages,
   resolveKiroDbPath,
   resolveKiroJsonlPath,
+  resolveKiroBasePath,
   resolveHermesPath,
   resolveCopilotOtelPaths,
   normalizeCopilotDbPath,
@@ -45,6 +46,8 @@ const {
   gooseInstallOwnsCursor,
   zedInstallOwnsCursor,
   hermesInstallOwnsCursor,
+  kiroInstallOwnsCursor,
+  kiroCliInstallOwnsCursor,
   copilotOtelCursorHasLegacyCliUsage,
   pruneCopilotUsageClaims,
   parseCopilotIncremental,
@@ -443,7 +446,25 @@ async function cmdSync(argv, context = {}) {
     }
     let grokHookSignalConsumed = false;
 
-    const claudeProjectsDir = path.join(home, ".claude", "projects");
+    // Claude Code home — dual-install aware (#307): a Windows host may carry
+    // a native ~/.claude plus a WSL install reachable over \\wsl$. Unlike the
+    // SQLite providers, Claude UNIONS every allowed install instead of taking
+    // resolveAllWin32Paths' single pick: under the default wsl-first mode a
+    // WSL ~/.claude would otherwise silently evict the native one from
+    // collection — and from the "disk is truth" ground-truth repair below,
+    // which would then erase the native history. The file-hash and
+    // message-hash dedup layers make the union safe. Native is listed first
+    // so the cross-environment file dedup keeps the native copy as primary.
+    const claudeNativeHome = path.join(home, ".claude");
+    const wslClaudeHome = process.platform === "win32" && wsl.shouldProbeWsl(process.env)
+      ? wsl.discoverWslHome(".claude")
+      : null;
+    const claudeInstallHomes = [];
+    if (process.platform !== "win32" || wsl.shouldProbeNative(process.env)) {
+      claudeInstallHomes.push(claudeNativeHome);
+    }
+    if (wslClaudeHome) claudeInstallHomes.push(wslClaudeHome);
+    const claudeProjectsDirs = claudeInstallHomes.map((h) => path.join(h, "projects"));
     const xdgDataHome = process.env.XDG_DATA_HOME || path.join(home, ".local", "share");
     const kiloHome = process.env.KILO_HOME || path.join(xdgDataHome, "kilo");
     const mimoHome = process.env.MIMO_HOME || path.join(xdgDataHome, "mimocode");
@@ -751,7 +772,18 @@ async function cmdSync(argv, context = {}) {
     openclawResult.eventsAggregated += openclawFallback.eventsAggregated;
     openclawResult.bucketsQueued += openclawFallback.bucketsQueued;
 
-    const claudeFiles = sourceAllowed("claude") ? await listClaudeProjectFiles(claudeProjectsDir) : [];
+    let claudeFiles = [];
+    if (sourceAllowed("claude")) {
+      const seenClaudeFiles = new Set();
+      for (const dir of claudeProjectsDirs) {
+        for (const f of await listClaudeProjectFiles(dir)) {
+          if (!seenClaudeFiles.has(f)) {
+            seenClaudeFiles.add(f);
+            claudeFiles.push(f);
+          }
+        }
+      }
+    }
     if (isFullSourceScan) {
       await reincludeClaudeMemObserverFiles({ cursors, claudeFiles, queuePath, queueStatePath });
       await repairClaudeQueueFromGroundTruth({
@@ -760,6 +792,7 @@ async function cmdSync(argv, context = {}) {
         queueStatePath,
         projectQueuePath,
         projectQueueStatePath,
+        rootDirs: claudeProjectsDirs,
       });
     }
     let claudeResult = { filesProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
@@ -1344,30 +1377,44 @@ async function cmdSync(argv, context = {}) {
       }
     }
 
-    // ── Kiro (SQLite-based, with JSONL fallback) ──
+    // ── Kiro (SQLite-based, with JSONL fallback; dual-install aware) ──
     let kiroResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
-    const kiroDbPath = resolveKiroDbPath();
-    const kiroJsonlPath = resolveKiroJsonlPath();
-    if (sourceAllowed("kiro") && (fssync.existsSync(kiroDbPath) || fssync.existsSync(kiroJsonlPath))) {
-      if (progress?.enabled) {
-        progress.start(`Parsing Kiro ${renderBar(0)} | buckets 0`);
-      }
-      try {
-        kiroResult = await parseKiroIncremental({
-          dbPath: kiroDbPath,
-          jsonlPath: kiroJsonlPath,
-          cursors,
-          queuePath,
-          onProgress: (p) => {
-            if (!progress?.enabled) return;
-            const pct = p.total > 0 ? p.index / p.total : 1;
-            progress.update(
-              `Parsing Kiro ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} records | buckets ${formatNumber(p.bucketsQueued)}`,
-            );
-          },
-        });
-      } catch (err) {
-        warnProviderParseFailure("Kiro", err, opts);
+    if (sourceAllowed("kiro")) {
+      const kiroNativeBase = resolveKiroBasePath(process.env);
+      const wslKiroBase = process.platform === "win32" && wsl.shouldProbeWsl(process.env)
+        ? wsl.discoverWslHome(".config/Kiro/User/globalStorage/kiro.kiroagent")
+        : null;
+      const kiroPaths = resolveInstallPaths({ nativeValue: kiroNativeBase, wslValue: wslKiroBase });
+      // resolveInstallPaths only checks the base dir (and skips the check off
+      // win32); keep the original per-install db/jsonl presence gate so empty
+      // installs never spin up a parse or seed a cursor namespace.
+      const kiroHasData = (base) => Boolean(base)
+        && (fssync.existsSync(resolveKiroDbPath(base)) || fssync.existsSync(resolveKiroJsonlPath(base)));
+      if (!kiroHasData(kiroPaths.native)) kiroPaths.native = null;
+      if (!kiroHasData(kiroPaths.wsl)) kiroPaths.wsl = null;
+      if (kiroPaths.native || kiroPaths.wsl) {
+        if (progress?.enabled) {
+          progress.start(`Parsing Kiro ${renderBar(0)} | buckets 0`);
+        }
+        try {
+          kiroResult = await multiInstallParse({
+            paths: kiroPaths,
+            parserFn: parseKiroIncremental,
+            providerName: "kiro",
+            cursors,
+            getParams: (base) => ({
+              basePath: base,
+              dbPath: resolveKiroDbPath(base),
+              jsonlPath: resolveKiroJsonlPath(base),
+            }),
+            queuePath,
+            onProgress: makeProviderProgress("Kiro"),
+            detectInstall: (base, flatState) =>
+              kiroInstallOwnsCursor(resolveKiroDbPath(base), flatState),
+          });
+        } catch (err) {
+          warnProviderParseFailure("Kiro", err, opts);
+        }
       }
     }
 
@@ -1454,28 +1501,79 @@ async function cmdSync(argv, context = {}) {
     // token counts (billing is credit-based on Bedrock); we approximate at
     // 4 chars/token from user prompt chars and assistant response chars.
     let kiroCliResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
-    const kiroCliDb = resolveKiroCliDbPath(process.env);
-    const kiroCliSessionFiles = sourceAllowed("kiro") ? resolveKiroCliSessionFiles(process.env) : [];
-    if (sourceAllowed("kiro") && (fssync.existsSync(kiroCliDb) || kiroCliSessionFiles.length > 0)) {
-      if (progress?.enabled) {
-        progress.start(`Parsing Kiro CLI ${renderBar(0)} | buckets 0`);
+    if (sourceAllowed("kiro")) {
+      const kiroCliDb = resolveKiroCliDbPath(process.env);
+      const kiroCliSessionFiles = resolveKiroCliSessionFiles(process.env);
+      const nativeCliPresent = fssync.existsSync(kiroCliDb) || kiroCliSessionFiles.length > 0;
+
+      // Explicit overrides pin a single install — never mix them with WSL
+      // auto-discovery (mirrors the Hermes TOKENTRACKER_HERMES_HOME branch).
+      const kiroCliOverride = Boolean(process.env.KIRO_CLI_DB_PATH || process.env.KIRO_HOME);
+      let wslKiroCliEnv = null;
+      let wslKiroCliMarker = null;
+      if (!kiroCliOverride && process.platform === "win32" && wsl.shouldProbeWsl(process.env)) {
+        // A WSL install owns BOTH a data dir (~/.local/share/kiro-cli) and a
+        // sessions home (~/.kiro). Derive both from whichever probe hits so
+        // the per-install env never falls back to native paths.
+        const wslKiroHomeDir = wsl.discoverWslHome(".kiro");
+        const wslCliDataDir = wsl.discoverWslHome(".local/share/kiro-cli");
+        const wslHomeRoot = wslKiroHomeDir
+          ? path.dirname(wslKiroHomeDir)
+          : (wslCliDataDir ? path.dirname(path.dirname(path.dirname(wslCliDataDir))) : null);
+        if (wslHomeRoot) {
+          const wslCliDb = path.join(wslHomeRoot, ".local", "share", "kiro-cli", "data.sqlite3");
+          wslKiroCliEnv = {
+            ...process.env,
+            KIRO_CLI_DB_PATH: wslCliDb,
+            KIRO_HOME: path.join(wslHomeRoot, ".kiro"),
+          };
+          const wslCliPresent = fssync.existsSync(wslCliDb)
+            || resolveKiroCliSessionFiles(wslKiroCliEnv).length > 0;
+          if (wslCliPresent) wslKiroCliMarker = wslCliDb;
+        }
       }
-      try {
-        kiroCliResult = await parseKiroCliIncremental({
-          cursors,
-          queuePath,
+
+      // Paths here are install markers only — the parser resolves its DB and
+      // session files from the per-install env (KIRO_CLI_DB_PATH/KIRO_HOME).
+      const kiroCliPaths = process.platform === "win32"
+        ? wsl.resolveAllWin32Paths({
+          nativeValue: nativeCliPresent ? kiroCliDb : null,
+          wslValue: wslKiroCliMarker,
           env: process.env,
-          onProgress: (p) => {
-            if (!progress?.enabled) return;
-            const pct = p.total > 0 ? p.index / p.total : 1;
-            progress.update(
-              `Parsing Kiro CLI ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} sessions | buckets ${formatNumber(p.bucketsQueued)}`,
-            );
-          },
-        });
-      } catch (err) {
-        if (!opts.auto) {
-          process.stderr.write(`Kiro CLI sync: ${err.message}\n`);
+          platform: "win32",
+        })
+        : { native: nativeCliPresent ? kiroCliDb : null, wsl: null };
+      const kiroCliEnvFor = (p) =>
+        wslKiroCliEnv && p === wslKiroCliMarker ? wslKiroCliEnv : process.env;
+      if (kiroCliPaths.native || kiroCliPaths.wsl) {
+        if (progress?.enabled) {
+          progress.start(`Parsing Kiro CLI ${renderBar(0)} | buckets 0`);
+        }
+        try {
+          kiroCliResult = await multiInstallParse({
+            paths: kiroCliPaths,
+            parserFn: parseKiroCliIncremental,
+            providerName: "kiroCli",
+            cursors,
+            // Per-install env MUST come from getParams: multiInstallParse
+            // spreads shared params over it, so a top-level env would clobber
+            // the per-install one.
+            getParams: (p) => ({ env: kiroCliEnvFor(p) }),
+            queuePath,
+            onProgress: (p) => {
+              if (!progress?.enabled) return;
+              const pct = p.total > 0 ? p.index / p.total : 1;
+              progress.update(
+                `Parsing Kiro CLI ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} sessions | buckets ${formatNumber(p.bucketsQueued)}`,
+              );
+            },
+            detectInstall: (p, flatState) =>
+              kiroCliInstallOwnsCursor(kiroCliEnvFor(p).KIRO_CLI_DB_PATH || kiroCliDb, flatState),
+          });
+        } catch (err) {
+          if (!opts.auto) {
+            process.stderr.write(`Kiro CLI sync: ${err.message}\n`);
+          }
         }
       }
     }
@@ -4688,6 +4786,7 @@ async function repairClaudeQueueFromGroundTruth({
   queueStatePath = null,
   projectQueuePath = null,
   projectQueueStatePath = null,
+  rootDirs = null,
 }) {
   if (!cursors || typeof cursors !== "object") return false;
   const migrations = (cursors.migrations ||= {});
@@ -4695,7 +4794,13 @@ async function repairClaudeQueueFromGroundTruth({
 
   let result;
   try {
-    result = await computeClaudeGroundTruthBuckets();
+    // rootDirs must cover every install the incremental parser scans (native
+    // AND WSL): this repair's semantics are "disk is truth" — it clears all
+    // claude buckets and replaces claudeHashes wholesale, so scanning fewer
+    // roots than sync would silently drop the missing install's history.
+    result = await computeClaudeGroundTruthBuckets(
+      Array.isArray(rootDirs) && rootDirs.length > 0 ? { rootDirs } : {},
+    );
   } catch (e) {
     console.error("[sync] claude ground-truth repair: scan failed:", e?.message || e);
     return false;

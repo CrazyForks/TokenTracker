@@ -48,6 +48,9 @@ const {
   resolveKimiCodeWireFiles,
   resolveKiroCliDbPath,
   resolveKiroCliSessionFiles,
+  resolveKiroBasePath,
+  resolveKiroDbPath,
+  resolveKiroJsonlPath,
   resolveCodebuddyHome,
   resolveCodebuddyProjectFiles,
   resolveWorkbuddyHome,
@@ -235,10 +238,100 @@ async function cmdStatus(argv = []) {
   // event sessions. End-user dashboards show them merged under "Kiro"; this
   // status line surfaces which passive sources are actually present.
   const kiroCliDbPath = resolveKiroCliDbPath(process.env);
-  const kiroCliDbExists = fssync.existsSync(kiroCliDbPath);
   const kiroCliSessionFiles = resolveKiroCliSessionFiles(process.env);
-  const kiroCliInstalled =
-    kiroCliDbExists || kiroCliSessionFiles.length > 0;
+  const kiroCliNativePresent =
+    fssync.existsSync(kiroCliDbPath) || kiroCliSessionFiles.length > 0;
+  // WSL install discovery mirrors sync: overrides pin a single install.
+  let kiroCliWsl = null; // { db, sessionFiles }
+  if (
+    process.platform === "win32" &&
+    !process.env.KIRO_CLI_DB_PATH && !process.env.KIRO_HOME &&
+    wsl.shouldProbeWsl(process.env)
+  ) {
+    const wslKiroHomeDir = wsl.discoverWslHome(".kiro");
+    const wslCliDataDir = wsl.discoverWslHome(".local/share/kiro-cli");
+    const wslHomeRoot = wslKiroHomeDir
+      ? path.dirname(wslKiroHomeDir)
+      : (wslCliDataDir ? path.dirname(path.dirname(path.dirname(wslCliDataDir))) : null);
+    if (wslHomeRoot) {
+      const wslDb = path.join(wslHomeRoot, ".local", "share", "kiro-cli", "data.sqlite3");
+      const wslFiles = resolveKiroCliSessionFiles({
+        ...process.env,
+        KIRO_CLI_DB_PATH: wslDb,
+        KIRO_HOME: path.join(wslHomeRoot, ".kiro"),
+      });
+      if (fssync.existsSync(wslDb) || wslFiles.length > 0) {
+        kiroCliWsl = { db: wslDb, sessionFiles: wslFiles };
+      }
+    }
+  }
+  const kiroCliPaths = process.platform === "win32"
+    ? wsl.resolveAllWin32Paths({
+      nativeValue: kiroCliNativePresent ? kiroCliDbPath : null,
+      wslValue: kiroCliWsl ? kiroCliWsl.db : null,
+      env: process.env,
+      platform: "win32",
+    })
+    : { native: kiroCliNativePresent ? kiroCliDbPath : null, wsl: null };
+  // Non-both modes park the picked value in the native slot — label by
+  // marker identity, not slot name. A session-files-only install has no DB
+  // on disk; show the sessions dir instead of a nonexistent DB path.
+  const kiroCliMarkers = [kiroCliPaths.native, kiroCliPaths.wsl].filter(Boolean);
+  const kiroCliActive = kiroCliMarkers.map((m) => {
+    if (kiroCliWsl && m === kiroCliWsl.db) {
+      const shown = fssync.existsSync(m) || kiroCliWsl.sessionFiles.length === 0
+        ? m
+        : path.dirname(kiroCliWsl.sessionFiles[0]);
+      return `WSL: ${shown}`;
+    }
+    const shown = fssync.existsSync(m) || kiroCliSessionFiles.length === 0
+      ? m
+      : path.dirname(kiroCliSessionFiles[0]);
+    return `native: ${shown}`;
+  });
+  const kiroCliFileCount =
+    (kiroCliMarkers.includes(kiroCliDbPath) ? kiroCliSessionFiles.length : 0) +
+    (kiroCliWsl && kiroCliMarkers.includes(kiroCliWsl.db) ? kiroCliWsl.sessionFiles.length : 0);
+  const kiroCliDbFound = kiroCliMarkers.some((m) => {
+    try { return fssync.existsSync(m); } catch (_e) { return false; }
+  });
+  const kiroCliInstalled = kiroCliMarkers.length > 0;
+
+  // Kiro IDE — passive scan of globalStorage dev_data (SQLite or JSONL).
+  const kiroIdeNativeBase = resolveKiroBasePath(process.env);
+  const wslKiroIdeBase = process.platform === "win32" && wsl.shouldProbeWsl(process.env)
+    ? wsl.discoverWslHome(".config/Kiro/User/globalStorage/kiro.kiroagent")
+    : null;
+  const kiroIdePaths = resolveInstallPaths({ nativeValue: kiroIdeNativeBase, wslValue: wslKiroIdeBase });
+  const kiroIdeHasData = (base) => Boolean(base)
+    && (fssync.existsSync(resolveKiroDbPath(base)) || fssync.existsSync(resolveKiroJsonlPath(base)));
+  const kiroIdeActive = [kiroIdePaths.native, kiroIdePaths.wsl]
+    .filter((base) => kiroIdeHasData(base))
+    .map((base) => (wslKiroIdeBase && base === wslKiroIdeBase ? `WSL: ${base}` : `native: ${base}`));
+  const kiroIdeInstalled = kiroIdeActive.length > 0;
+
+  // Claude Code — dual-install aware projects scan (#307). Mirrors sync:
+  // installs are UNIONED (not single-picked by mode) so a WSL ~/.claude
+  // never hides the native one from view, and labels come from install
+  // identity rather than resolveAllWin32Paths' slot names.
+  const claudeCodeActive = [];
+  {
+    const claudeHomesStatus = [];
+    if (process.platform !== "win32" || wsl.shouldProbeNative(process.env)) {
+      claudeHomesStatus.push({ dir: path.join(home, ".claude"), label: "native" });
+    }
+    const wslClaudeHomeStatus = process.platform === "win32" && wsl.shouldProbeWsl(process.env)
+      ? wsl.discoverWslHome(".claude")
+      : null;
+    if (wslClaudeHomeStatus) claudeHomesStatus.push({ dir: wslClaudeHomeStatus, label: "WSL" });
+    for (const { dir, label } of claudeHomesStatus) {
+      const projects = path.join(dir, "projects");
+      try {
+        if (fssync.existsSync(projects)) claudeCodeActive.push(`${label}: ${projects}`);
+      } catch (_e) {}
+    }
+  }
+  const claudeCodeInstalled = claudeCodeActive.length > 0;
 
   // AnythingLLM Desktop — per-message token metrics in workspace_chats.
   const anythingllmDbPath = resolveAnythingllmDbPath(process.env);
@@ -650,12 +743,18 @@ async function cmdStatus(argv = []) {
         kiro_cli: kiroCliInstalled
           ? {
               installed: true,
-              detail: kiroCliDbExists
-                ? kiroCliDbPath
-                : path.dirname(kiroCliSessionFiles[0]),
-              database: kiroCliDbExists ? kiroCliDbPath : null,
-              files: kiroCliSessionFiles.length,
+              detail: kiroCliActive.join(" | "),
+              database: kiroCliMarkers.find((m) => {
+                try { return fssync.existsSync(m); } catch (_e) { return false; }
+              }) || null,
+              files: kiroCliFileCount,
             }
+          : { installed: false },
+        kiro_ide: kiroIdeInstalled
+          ? { installed: true, detail: kiroIdeActive.join(" | ") }
+          : { installed: false },
+        claude_code: claudeCodeInstalled
+          ? { installed: true, detail: claudeCodeActive.join(" | ") }
           : { installed: false },
         codebuddy: codebuddyInstalled
           ? { installed: true, files: codebuddyFiles.length }
@@ -761,6 +860,9 @@ async function cmdStatus(argv = []) {
       `- Codex notify: ${notifyConfigured ? JSON.stringify(codexNotify) : "unset"}`,
       `- Every Code notify: ${everyCodeConfigured ? JSON.stringify(everyCodeNotify) : "unset"}`,
       `- Claude hooks: ${claudeHookConfigured ? "set" : "unset"}`,
+      claudeCodeInstalled
+        ? `- Claude Code: projects found (${claudeCodeActive.join(" | ")})`
+        : null,
       `- Gemini hooks: ${geminiHookConfigured ? "set" : "unset"}`,
       `- Opencode plugin: ${opencodePluginConfigured ? "set" : "unset"}`,
       `- OpenClaw session plugin: ${openclawSessionPluginState?.configured ? "set" : "unset"}`,
@@ -770,7 +872,10 @@ async function cmdStatus(argv = []) {
         ? `- Kimi Code: passive reader (${kimiWireFiles.length + kimiCodeWireFiles.length} wire.jsonl file${(kimiWireFiles.length + kimiCodeWireFiles.length) !== 1 ? "s" : ""} found, directories: ${kimiActive.join(" | ") || "none"})`
         : null,
       kiroCliInstalled
-        ? `- Kiro CLI: passive reader (${kiroCliSessionFiles.length} session file${kiroCliSessionFiles.length !== 1 ? "s" : ""} found, SQLite ${kiroCliDbExists ? "found" : "not found"}; tokens approximated from char lengths and merged under 'kiro')`
+        ? `- Kiro CLI: passive reader (${kiroCliFileCount} session file${kiroCliFileCount !== 1 ? "s" : ""} found, SQLite ${kiroCliDbFound ? "found" : "not found"}, installs: ${kiroCliActive.join(" | ")}; tokens approximated from char lengths and merged under 'kiro')`
+        : null,
+      kiroIdeInstalled
+        ? `- Kiro IDE: passive reader (${kiroIdeActive.join(" | ")})`
         : null,
       codebuddyInstalled
         ? `- CodeBuddy hooks: ${codebuddyHookConfigured ? "set" : "unset"} (${codebuddyFiles.length} usage file${codebuddyFiles.length !== 1 ? "s" : ""} found)`
