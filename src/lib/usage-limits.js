@@ -3095,7 +3095,6 @@ async function fetchUsageLimitsUncached({
         home,
         env,
         platform,
-        securityRunner,
         fetchImpl: providerFetch,
       }),
       "Qoder",

@@ -1,16 +1,10 @@
 "use strict";
 
-const cp = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
-const { promisify } = require("node:util");
-
-const { readSqliteJsonRowsAsync } = require("./sqlite-reader");
-
-const execFileAsync = promisify(cp.execFile);
 
 const QODER_SITES = {
   international: {
@@ -49,53 +43,6 @@ MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDA8iMH5c02LilrsERw9t6Pv5Nc
 6HRkPJ7S236FZz73In/KVuLnwI8JJ2CbuJap8kvheCCZpmAWpb/cPx/3Vr/J6I17
 XcW+ML9FoCI6AOvOzwIDAQAB
 -----END PUBLIC KEY-----`;
-
-const MACOS_CHROMIUM_BROWSERS = [
-  {
-    name: "Google Chrome",
-    root: ["Library", "Application Support", "Google", "Chrome"],
-    service: "Chrome Safe Storage",
-    account: "Chrome",
-  },
-  {
-    name: "Brave",
-    root: ["Library", "Application Support", "BraveSoftware", "Brave-Browser"],
-    service: "Brave Safe Storage",
-    account: "Brave",
-  },
-  {
-    name: "Microsoft Edge",
-    root: ["Library", "Application Support", "Microsoft Edge"],
-    service: "Microsoft Edge Safe Storage",
-    account: "Microsoft Edge",
-  },
-  {
-    name: "Arc",
-    root: ["Library", "Application Support", "Arc", "User Data"],
-    service: "Arc Safe Storage",
-    account: "Arc",
-  },
-  {
-    name: "Chromium",
-    root: ["Library", "Application Support", "Chromium"],
-    service: "Chromium Safe Storage",
-    account: "Chromium",
-  },
-];
-
-const CHROMIUM_COOKIE_SQL = `
-SELECT
-  host_key,
-  name,
-  value,
-  hex(encrypted_value) AS encrypted_hex
-FROM cookies
-WHERE lower(host_key) IN (
-  '.qoder.com', 'qoder.com', 'www.qoder.com',
-  '.qoder.com.cn', 'qoder.com.cn', 'www.qoder.com.cn'
-)
-ORDER BY host_key, name
-`;
 
 function finiteNumber(value, field) {
   const number = Number(value);
@@ -550,147 +497,6 @@ async function fetchQoderActivity(authStatus, fetchImpl = fetch, options = {}) {
   return normalizeQoderActivityResponse(await response.json(), options);
 }
 
-function normalizeCookieDomain(hostKey) {
-  return String(hostKey || "").trim().toLowerCase().replace(/^\./, "");
-}
-
-function decryptChromiumCookie({ encryptedHex, plaintextValue, hostKey, password }) {
-  if (typeof plaintextValue === "string" && plaintextValue) return plaintextValue;
-  if (!encryptedHex || !password) return null;
-  let encrypted;
-  try {
-    encrypted = Buffer.from(encryptedHex, "hex");
-  } catch (_error) {
-    return null;
-  }
-  if (encrypted.length <= 3) return null;
-  const version = encrypted.subarray(0, 3).toString("ascii");
-  if (version !== "v10" && version !== "v11") return null;
-
-  try {
-    const key = crypto.pbkdf2Sync(password, "saltysalt", 1003, 16, "sha1");
-    const decipher = crypto.createDecipheriv(
-      "aes-128-cbc",
-      key,
-      Buffer.alloc(16, 0x20),
-    );
-    let decrypted = Buffer.concat([
-      decipher.update(encrypted.subarray(3)),
-      decipher.final(),
-    ]);
-    const hostDigest = crypto.createHash("sha256").update(String(hostKey || "")).digest();
-    if (decrypted.length >= hostDigest.length && decrypted.subarray(0, 32).equals(hostDigest)) {
-      decrypted = decrypted.subarray(32);
-    }
-    const value = decrypted.toString("utf8");
-    return value || null;
-  } catch (_error) {
-    return null;
-  }
-}
-
-async function readMacosSafeStoragePassword({
-  service,
-  account,
-  securityRunner,
-} = {}) {
-  const runner = securityRunner || (async (args) => {
-    const result = await execFileAsync("/usr/bin/security", args, {
-      timeout: 5000,
-      maxBuffer: 1024 * 1024,
-    });
-    return result.stdout;
-  });
-  try {
-    const output = await runner([
-      "find-generic-password",
-      "-w",
-      "-s",
-      service,
-      "-a",
-      account,
-    ]);
-    const password = String(output || "").trim();
-    return password || null;
-  } catch (_error) {
-    return null;
-  }
-}
-
-function chromiumProfileDirs(browserRoot) {
-  if (!fs.existsSync(browserRoot)) return [];
-  let entries = [];
-  try {
-    entries = fs.readdirSync(browserRoot, { withFileTypes: true });
-  } catch (_error) {
-    return [];
-  }
-  return entries
-    .filter((entry) => entry.isDirectory() && (entry.name === "Default" || /^Profile \d+$/.test(entry.name)))
-    .map((entry) => path.join(browserRoot, entry.name))
-    .filter((profileDir) => fs.existsSync(path.join(profileDir, "Cookies")));
-}
-
-function cookieHeaderFromRows(rows, password, site) {
-  const pairs = [];
-  for (const row of Array.isArray(rows) ? rows : []) {
-    const domain = normalizeCookieDomain(row?.host_key);
-    if (!site.domains.has(domain)) continue;
-    const name = typeof row?.name === "string" ? row.name.trim() : "";
-    if (!name) continue;
-    const value = decryptChromiumCookie({
-      encryptedHex: row.encrypted_hex,
-      plaintextValue: row.value,
-      hostKey: row.host_key,
-      password,
-    });
-    if (value) pairs.push(`${name}=${value}`);
-  }
-  return pairs.length > 0 ? pairs.join("; ") : null;
-}
-
-async function importMacosQoderSessions({
-  home = os.homedir(),
-  platform = process.platform,
-  securityRunner,
-  sqliteReader = readSqliteJsonRowsAsync,
-} = {}) {
-  if (platform !== "darwin") return [];
-  const sessions = [];
-  for (const browser of MACOS_CHROMIUM_BROWSERS) {
-    const browserRoot = path.join(home, ...browser.root);
-    const profiles = chromiumProfileDirs(browserRoot);
-    if (profiles.length === 0) continue;
-    const password = await readMacosSafeStoragePassword({
-      service: browser.service,
-      account: browser.account,
-      securityRunner,
-    });
-    if (!password) continue;
-    for (const profileDir of profiles) {
-      let rows;
-      try {
-        rows = await sqliteReader(path.join(profileDir, "Cookies"), CHROMIUM_COOKIE_SQL, {
-          label: `${browser.name} cookies`,
-        });
-      } catch (_error) {
-        continue;
-      }
-      for (const site of Object.values(QODER_SITES)) {
-        const cookieHeader = cookieHeaderFromRows(rows, password, site);
-        if (cookieHeader) {
-          sessions.push({
-            cookieHeader,
-            site,
-            sourceLabel: `${browser.name} ${path.basename(profileDir)}`,
-          });
-        }
-      }
-    }
-  }
-  return sessions;
-}
-
 function qoderRequestHeaders(cookieHeader, site) {
   return {
     Cookie: cookieHeader,
@@ -834,8 +640,6 @@ async function fetchQoderLimits({
   home = os.homedir(),
   env = process.env,
   platform = process.platform,
-  securityRunner,
-  sqliteReader,
   fetchImpl = fetch,
   rpcRequest = qoderRpcRequest,
   nowMs = Date.now(),
@@ -884,10 +688,7 @@ async function fetchQoderLimits({
   }
 
   // Match the Antigravity last-good behavior: once the local service is
-  // unavailable, prefer a bounded disk snapshot before attempting the much
-  // slower browser-cookie fallback. On macOS, probing Chromium profiles may
-  // involve multiple Keychain reads; letting those run first can consume the
-  // provider timeout and make a perfectly valid cache look intermittent.
+  // unavailable, prefer a bounded disk snapshot before any provider fallback.
   const cachedLimits = readQoderLimitsCache({ home, nowMs });
   if (cachedLimits) {
     if (activityWindow) cachedLimits.secondary_window = activityWindow;
@@ -897,7 +698,7 @@ async function fetchQoderLimits({
   const manualCookie = typeof env.QODER_COOKIE === "string" ? env.QODER_COOKIE.trim() : "";
   const sessions = manualCookie
     ? [{ cookieHeader: manualCookie, site: siteFromEnv(env.QODER_SITE), sourceLabel: "QODER_COOKIE" }]
-    : await importMacosQoderSessions({ home, platform, securityRunner, sqliteReader });
+    : [];
 
   let lastError = null;
   for (const session of sessions) {
@@ -963,13 +764,9 @@ async function fetchQoderLimits({
 
 module.exports = {
   QODER_SITES,
-  CHROMIUM_COOKIE_SQL,
   normalizeQoderUsageResponse,
   normalizeQoderRpcUsage,
   normalizeQoderActivityResponse,
-  decryptChromiumCookie,
-  cookieHeaderFromRows,
-  importMacosQoderSessions,
   qoderRequestHeaders,
   fetchQoderUsage,
   qoderRpcRequest,

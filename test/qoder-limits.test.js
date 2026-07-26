@@ -1,7 +1,6 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -10,7 +9,6 @@ const test = require("node:test");
 const {
   QODER_SITES,
   normalizeQoderUsageResponse,
-  decryptChromiumCookie,
   qoderRequestHeaders,
   fetchQoderUsage,
   normalizeQoderRpcUsage,
@@ -97,32 +95,6 @@ test("normalizeQoderUsageResponse rejects invalid quota values", () => {
   );
 });
 
-test("decryptChromiumCookie handles Chromium v10 host-digest payload", () => {
-  const password = "test-safe-storage";
-  const hostKey = ".qoder.com";
-  const plaintext = "session-value";
-  const key = crypto.pbkdf2Sync(password, "saltysalt", 1003, 16, "sha1");
-  const cipher = crypto.createCipheriv("aes-128-cbc", key, Buffer.alloc(16, 0x20));
-  const payload = Buffer.concat([
-    crypto.createHash("sha256").update(hostKey).digest(),
-    Buffer.from(plaintext),
-  ]);
-  const encrypted = Buffer.concat([
-    Buffer.from("v10"),
-    cipher.update(payload),
-    cipher.final(),
-  ]);
-
-  assert.equal(
-    decryptChromiumCookie({
-      encryptedHex: encrypted.toString("hex"),
-      hostKey,
-      password,
-    }),
-    plaintext,
-  );
-});
-
 test("fetchQoderUsage sends the CodeXbar-compatible browser request", async () => {
   let captured;
   const fetchImpl = async (url, options) => {
@@ -154,6 +126,44 @@ test("fetchQoderUsage sends the CodeXbar-compatible browser request", async () =
   );
   assert.equal(captured.options.headers["Bx-V"], "2.5.35");
   assert.equal(captured.options.headers["X-Requested-With"], "XMLHttpRequest");
+});
+
+test("fetchQoderLimits keeps explicit QODER_COOKIE provider access", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-qoder-manual-cookie-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  let observedCookie = null;
+
+  const result = await fetchQoderLimits({
+    home,
+    platform: "darwin",
+    env: { QODER_COOKIE: "session=manual-secret" },
+    rpcRequest: async () => {
+      throw new Error("Qoder local service is not running.");
+    },
+    fetchImpl: async (_url, options) => {
+      observedCookie = options.headers.Cookie;
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            totalQuota: {
+              quotaSummary: {
+                usedValue: 25,
+                limitValue: 100,
+                remainingValue: 75,
+                usagePercentage: 25,
+              },
+            },
+          };
+        },
+      };
+    },
+  });
+
+  assert.equal(observedCookie, "session=manual-secret");
+  assert.equal(result.primary_window.remaining_credits, 75);
+  assert.equal(result.cookie_source, "QODER_COOKIE");
 });
 
 test("parseQoderQuotaLog reads the latest personal quota snapshot without filling a 0/0 bar", () => {
@@ -405,7 +415,7 @@ test("fetchQoderLimits preserves the last unexpired activity window while Qoder 
       throw new Error("Qoder local service is not running.");
     },
     fetchImpl: async () => {
-      throw new Error("Browser session unavailable.");
+      throw new Error("Provider unavailable.");
     },
   });
 
@@ -512,7 +522,7 @@ test("fetchQoderLimits persists a provider-level last-good cache for app restart
   assert.equal(cached.source, "disk-cache");
 });
 
-test("fetchQoderLimits returns last-good before slow macOS browser-session probing", async (t) => {
+test("fetchQoderLimits returns last-good before explicit provider fallback", async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-qoder-cache-first-"));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const nowMs = Date.parse("2030-07-29T00:00:00.000Z");
@@ -538,6 +548,30 @@ test("fetchQoderLimits returns last-good before slow macOS browser-session probi
     },
   }, { home, nowMs });
 
+  let providerFetches = 0;
+
+  const cached = await fetchQoderLimits({
+    home,
+    platform: "darwin",
+    env: { QODER_COOKIE: "session=manual-secret" },
+    nowMs: nowMs + 60_000,
+    rpcRequest: async () => {
+      throw new Error("Qoder local service is not running.");
+    },
+    fetchImpl: async () => {
+      providerFetches += 1;
+      throw new Error("Provider fallback must not run before the last-good cache.");
+    },
+  });
+
+  assert.equal(cached.source, "disk-cache");
+  assert.equal(cached.secondary_window.remaining_credits, 300);
+  assert.equal(providerFetches, 0);
+});
+
+test("fetchQoderLimits does not probe the macOS browser Keychain by default", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-qoder-keychain-default-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const cookiePath = path.join(
     home,
     "Library",
@@ -552,10 +586,10 @@ test("fetchQoderLimits returns last-good before slow macOS browser-session probi
   let keychainReads = 0;
   let cookieReads = 0;
 
-  const cached = await fetchQoderLimits({
+  const result = await fetchQoderLimits({
     home,
     platform: "darwin",
-    nowMs: nowMs + 60_000,
+    env: {},
     rpcRequest: async () => {
       throw new Error("Qoder local service is not running.");
     },
@@ -569,8 +603,12 @@ test("fetchQoderLimits returns last-good before slow macOS browser-session probi
     },
   });
 
-  assert.equal(cached.source, "disk-cache");
-  assert.equal(cached.secondary_window.remaining_credits, 300);
+  assert.deepEqual(result, { configured: false });
   assert.equal(keychainReads, 0);
   assert.equal(cookieReads, 0);
+});
+
+test("Qoder limits source contains no browser credential-store access", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "src", "lib", "qoder-limits.js"), "utf8");
+  assert.doesNotMatch(source, /\/usr\/bin\/security|find-generic-password|Safe Storage/);
 });
