@@ -1241,10 +1241,13 @@ const LINEAGE_TRUE_TOTAL = 380;
 
 async function writeLineageCodexFile(home, {
   archived = false,
+  baseInstructionsBytes = 96 * 1024,
   cwd = null,
   interleaved = true,
   lineagePaddingLines = 0,
+  multiAgentVersion = "v2",
   resumedMultiAgent = false,
+  tailPaddingLines = 0,
   uuid = "dddddddd-eeee-ffff-aaaa-bbbbbbbbbbbb",
 } = {}) {
   const dir = archived
@@ -1257,14 +1260,16 @@ async function writeLineageCodexFile(home, {
     // fixture above the old 64 KiB fork-head window to lock in the wider gate.
     JSON.stringify({
       type: "session_meta",
-      payload: { id: uuid, base_instructions: { text: "x".repeat(96 * 1024) } },
+      payload: { id: uuid, base_instructions: { text: "x".repeat(baseInstructionsBytes) } },
     }),
     JSON.stringify({
       type: "turn_context",
       payload: {
         cwd,
         model: "gpt-5.6",
-        multi_agent_version: resumedMultiAgent ? "none" : "v2",
+        ...(resumedMultiAgent || multiAgentVersion != null
+          ? { multi_agent_version: resumedMultiAgent ? "none" : multiAgentVersion }
+          : {}),
       },
     }),
   ];
@@ -1300,6 +1305,12 @@ async function writeLineageCodexFile(home, {
       tokenCountLine({ ts: "2025-12-18T00:00:00.000Z", last: lineageUsage(100), total: lineageUsage(100) }),
       tokenCountLine({ ts: "2025-12-18T00:00:01.000Z", last: lineageUsage(150), total: lineageUsage(250) }),
     );
+  }
+  for (let index = 0; index < tailPaddingLines; index += 1) {
+    lines.push(JSON.stringify({
+      type: "event_msg",
+      payload: { type: "note", text: "x".repeat(32 * 1024) },
+    }));
   }
   await fs.writeFile(fp, lines.join("\n") + "\n", "utf8");
   return fp;
@@ -1344,6 +1355,147 @@ async function seedInflatedLineageInstall(home, codexFile) {
 }
 
 describe("repairCodexInterleavedUsageInflation — cumulative lineage repair", () => {
+  it("repairs interleaved counters without relying on multi_agent_version metadata", async () => {
+    const home = await makeTempHome();
+    try {
+      const codexFile = await writeLineageCodexFile(home, {
+        multiAgentVersion: null,
+      });
+      const { queuePath, queueStatePath } = await seedInflatedLineageInstall(home, codexFile);
+      const cursors = JSON.parse(
+        await fs.readFile(path.join(home, ".tokentracker", "tracker", "cursors.json"), "utf8"),
+      );
+
+      assert.equal(
+        await repairCodexInterleavedUsageInflation({
+          cursors,
+          queuePath,
+          queueStatePath,
+          rolloutFiles: [{ path: codexFile, source: "codex" }],
+        }),
+        true,
+      );
+      assert.equal(codexBucketTotal(cursors), LINEAGE_TRUE_TOTAL);
+      assert.equal((await queueRowsBySource(queuePath)).codex.total, LINEAGE_TRUE_TOTAL);
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("finds interleaved counters in the middle of a file larger than both old metadata windows", async () => {
+    const home = await makeTempHome();
+    try {
+      const codexFile = await writeLineageCodexFile(home, {
+        baseInstructionsBytes: 1100 * 1024,
+        tailPaddingLines: 40,
+      });
+      const { queuePath, queueStatePath } = await seedInflatedLineageInstall(home, codexFile);
+      const cursors = JSON.parse(
+        await fs.readFile(path.join(home, ".tokentracker", "tracker", "cursors.json"), "utf8"),
+      );
+
+      assert.equal(
+        await repairCodexInterleavedUsageInflation({
+          cursors,
+          queuePath,
+          queueStatePath,
+          rolloutFiles: [{ path: codexFile, source: "codex" }],
+        }),
+        true,
+      );
+      assert.equal(codexBucketTotal(cursors), LINEAGE_TRUE_TOTAL);
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("defers an affected rebuild when any contributing rollout is malformed", async () => {
+    const home = await makeTempHome();
+    try {
+      const codexFile = await writeLineageCodexFile(home);
+      const malformedFile = path.join(
+        home,
+        ".codex",
+        "sessions",
+        "2025",
+        "12",
+        "18",
+        "rollout-2025-12-18T00-01-00-eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee.jsonl",
+      );
+      await fs.writeFile(malformedFile, '{"type":"turn_context","payload":\n', "utf8");
+      const { queuePath, queueStatePath } = await seedInflatedLineageInstall(home, codexFile);
+      const cursors = JSON.parse(
+        await fs.readFile(path.join(home, ".tokentracker", "tracker", "cursors.json"), "utf8"),
+      );
+      cursors.files[malformedFile] = { inode: 2, offset: 5 };
+      const originalQueue = await fs.readFile(queuePath, "utf8");
+
+      assert.equal(
+        await repairCodexInterleavedUsageInflation({
+          cursors,
+          queuePath,
+          queueStatePath,
+          rolloutFiles: [
+            { path: codexFile, source: "codex" },
+            { path: malformedFile, source: "codex" },
+          ],
+        }),
+        false,
+      );
+      assert.equal(codexBucketTotal(cursors), 4_700_000_000);
+      assert.equal(await fs.readFile(queuePath, "utf8"), originalQueue);
+      assert.equal(
+        cursors.migrations[CODEX_USAGE_LINEAGE_REPAIR_KEY].reason,
+        "usage_lineage_scan_indeterminate",
+      );
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("defers without mutation when a contributing rollout changes during rebuild", async () => {
+    const home = await makeTempHome();
+    try {
+      const codexFile = await writeLineageCodexFile(home);
+      const { queuePath, queueStatePath } = await seedInflatedLineageInstall(home, codexFile);
+      const cursors = JSON.parse(
+        await fs.readFile(path.join(home, ".tokentracker", "tracker", "cursors.json"), "utf8"),
+      );
+      const originalQueue = await fs.readFile(queuePath, "utf8");
+      const realStat = fs.stat;
+      let targetStats = 0;
+      fs.stat = async function changedAfterScan(target, ...args) {
+        const stat = await realStat.call(this, target, ...args);
+        if (String(target) !== codexFile) return stat;
+        targetStats += 1;
+        if (targetStats <= 2) return stat;
+        return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, {
+          mtimeMs: Number(stat.mtimeMs) + 1,
+        });
+      };
+      try {
+        assert.equal(
+          await repairCodexInterleavedUsageInflation({
+            cursors,
+            queuePath,
+            queueStatePath,
+            rolloutFiles: [{ path: codexFile, source: "codex" }],
+          }),
+          false,
+        );
+      } finally {
+        fs.stat = realStat;
+      }
+
+      assert.ok(targetStats > 2, "repair must revalidate the rollout after rebuilding");
+      assert.equal(codexBucketTotal(cursors), 4_700_000_000);
+      assert.equal(await fs.readFile(queuePath, "utf8"), originalQueue);
+      assert.equal(cursors.migrations[CODEX_USAGE_LINEAGE_REPAIR_KEY], undefined);
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("rebuilds affected main and project history, preserves other sources, resets uploads, and is idempotent", async () => {
     const home = await makeTempHome();
     try {
@@ -1443,8 +1595,8 @@ describe("repairCodexInterleavedUsageInflation — cumulative lineage repair", (
       const projectUploadState = JSON.parse(await fs.readFile(projectQueueStatePath, "utf8"));
       assert.equal(uploadState.offset, 0);
       assert.equal(projectUploadState.offset, 0);
-      assert.equal(uploadState.note, "reset_after_codex_usage_lineage_2026_07");
-      assert.equal(projectUploadState.note, "reset_after_codex_usage_lineage_2026_07");
+      assert.equal(uploadState.note, "reset_after_codex_usage_lineage_2026_07_v2");
+      assert.equal(projectUploadState.note, "reset_after_codex_usage_lineage_2026_07_v2");
       assert.equal(cursors.files[codexFile].tokenUsageBaselines.length, 2);
       assert.equal(typeof cursors.migrations[CODEX_USAGE_LINEAGE_REPAIR_KEY], "string");
 
@@ -1682,7 +1834,7 @@ describe("repairCodexInterleavedUsageInflation — cumulative lineage repair", (
       assert.equal((await queueRowsBySource(queuePath)).codex.total, LINEAGE_TRUE_TOTAL);
       assert.equal(
         JSON.parse(await fs.readFile(queueStatePath, "utf8")).note,
-        "reset_after_codex_usage_lineage_2026_07",
+        "reset_after_codex_usage_lineage_2026_07_v2",
       );
 
       const archiveRoot = path.join(home, ".codex", "archived_sessions");

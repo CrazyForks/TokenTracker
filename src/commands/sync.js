@@ -198,7 +198,10 @@ const CODEX_FORK_REPLAY_REPAIR_KEY = "codexForkReplayRepair_2026_07";
 // interleaved SessionState instances. Older parsers subtracted each cumulative
 // total from the most recently observed total, even when it belonged to another
 // state, which could turn an ordinary turn into a multi-billion-token delta.
-const CODEX_USAGE_LINEAGE_REPAIR_KEY = "codexUsageLineageRepair_2026_07";
+// v2 removes the unreliable multi_agent_version pre-gate and validates every
+// contributing rollout before committing the rebuild. The new key is required
+// so installs that finalized the original migration on a false negative retry.
+const CODEX_USAGE_LINEAGE_REPAIR_KEY = "codexUsageLineageRepair_2026_07_v2";
 // Keep the one escalated desktop refresh bounded; explicit full syncs can retry
 // the same migration without this ceiling when the history needs a deeper scan.
 const CODEX_BACKGROUND_LINEAGE_SCAN_MAX_BYTES = 1024 * 1024;
@@ -3479,6 +3482,7 @@ async function repairCodexRescanInflation({
   projectQueuePath,
   projectQueueStatePath,
   rolloutFiles,
+  expectedCodexFileSnapshots = null,
   // The fork-replay repair (#169 follow-up) re-runs this exact rebuild under
   // its own key: the rebuild always uses the CURRENT parser, so any parser fix
   // shipped since the last run is applied to the rebuilt history.
@@ -3665,6 +3669,16 @@ async function repairCodexRescanInflation({
       );
       return false;
     }
+  }
+
+  const rebuildValidation = expectedCodexFileSnapshots instanceof Map
+    ? await validateCodexRebuildFileSnapshots(rebuilt.files, expectedCodexFileSnapshots)
+    : { ok: true };
+  if (!rebuildValidation.ok) {
+    console.error(
+      `[sync] codex rescan repair: ${rebuildValidation.reason} — skipping to avoid data loss`,
+    );
+    return false;
   }
 
   // COMMIT (only after a verified rebuild). A crash partway just leaves the
@@ -3903,10 +3917,11 @@ async function repairCodexForkReplayInflation({
 }
 
 // Rebuild historical Codex usage only when a rollout proves that the old
-// single-baseline parser crossed cumulative SessionState lineages. The cheap
-// head gate keeps the one-time migration from fully reading installations that
-// predate Codex multi-agent support; the rebuild itself retains the existing
-// missing-history, project-queue, atomic-swap, and upload-reset guards.
+// single-baseline parser crossed cumulative SessionState lineages. Detection is
+// based on the token counter stream itself, not multi_agent_version metadata:
+// affected legacy rollouts can predate that marker or carry it only in the
+// middle of a large file. Every contributing rollout must also be valid and
+// stable before the atomic rebuild can replace live history.
 async function repairCodexInterleavedUsageInflation({
   cursors,
   queuePath,
@@ -3961,8 +3976,9 @@ async function repairCodexInterleavedUsageInflation({
     projectQueuePath,
     projectQueueStatePath,
     rolloutFiles,
+    expectedCodexFileSnapshots: scan.fileSnapshots,
     migrationKey: CODEX_USAGE_LINEAGE_REPAIR_KEY,
-    uploadNote: "reset_after_codex_usage_lineage_2026_07",
+    uploadNote: "reset_after_codex_usage_lineage_2026_07_v2",
   });
 }
 
@@ -3970,138 +3986,41 @@ async function scanForInterleavedCodexUsage(
   rolloutFiles,
   { maxLineageScanBytes = Infinity } = {},
 ) {
+  let affected = false;
+  let remainingBytes = Number.isFinite(maxLineageScanBytes)
+    ? Math.max(0, maxLineageScanBytes)
+    : Infinity;
+  const fileSnapshots = new Map();
+  const seenPaths = new Set();
+
   for (const entry of Array.isArray(rolloutFiles) ? rolloutFiles : []) {
     const fp = typeof entry === "string" ? entry : entry?.path;
     const src = typeof entry === "string" ? "codex" : String(entry?.source || "codex");
-    if (!fp || src !== "codex") continue;
+    if (!fp || src !== "codex" || seenPaths.has(fp)) continue;
+    seenPaths.add(fp);
 
-    const head = await scanCodexMultiAgentHead(fp);
-    if (head.indeterminate) return { affected: false, indeterminate: true };
-    if (!head.candidate) continue;
-
-    const lineage = await scanCodexUsageLineages(fp, maxLineageScanBytes);
-    if (lineage.indeterminate) return { affected: false, indeterminate: true };
-    if (lineage.affected) return { affected: true, indeterminate: false };
-  }
-  return { affected: false, indeterminate: false };
-}
-
-// New rollouts emit multi_agent_version in the initial turn_context. A session
-// created by an older Codex build can later be resumed under a multi-agent
-// build, though, so an inactive initial context also checks the final context
-// from a bounded tail read. The 1 MiB ceilings protect this one-time migration
-// from malformed metadata; an inconclusive bound is retryable, never a final
-// "not affected" verdict.
-async function scanCodexMultiAgentHead(filePath) {
-  const MAX_BYTES = 1024 * 1024;
-  let stream = null;
-  let rl = null;
-  let needsTail = false;
-  try {
-    stream = fssync.createReadStream(filePath, {
-      encoding: "utf8",
-      highWaterMark: 32 * 1024,
-    });
-    rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-    let bytesRead = 0;
-    for await (const line of rl) {
-      bytesRead += Buffer.byteLength(line, "utf8") + 1;
-      if (line.includes('"turn_context"')) {
-        let obj;
-        try {
-          obj = JSON.parse(line);
-        } catch (_e) {
-          return { candidate: false, indeterminate: true };
-        }
-        if (obj?.type === "turn_context") {
-          if (isActiveMultiAgentVersion(obj?.payload?.multi_agent_version)) {
-            return { candidate: true, indeterminate: false };
-          }
-          needsTail = true;
-        }
-      }
-      if (line.includes('"token_count"')) {
-        needsTail = true;
-        break;
-      }
-      if (bytesRead >= MAX_BYTES) return { candidate: false, indeterminate: true };
+    const lineage = await scanCodexUsageLineages(fp, remainingBytes);
+    if (lineage.indeterminate) {
+      return { affected: false, indeterminate: true, fileSnapshots: new Map() };
     }
-  } catch (_e) {
-    return { candidate: false, indeterminate: true };
-  } finally {
-    if (rl) rl.close();
-    if (stream) stream.destroy();
-  }
-  if (needsTail) return scanCodexMultiAgentTail(filePath);
-  return { candidate: false, indeterminate: false };
-}
-
-async function scanCodexMultiAgentTail(filePath) {
-  const MAX_BYTES = 1024 * 1024;
-  let handle = null;
-  try {
-    handle = await fs.open(filePath, "r");
-    const stat = await handle.stat();
-    const size = Number(stat.size || 0);
-    const start = Math.max(0, size - MAX_BYTES);
-    const length = Math.max(0, size - start);
-    const buffer = Buffer.alloc(length);
-    let bytesRead = 0;
-    while (bytesRead < length) {
-      const result = await handle.read(
-        buffer,
-        bytesRead,
-        length - bytesRead,
-        start + bytesRead,
-      );
-      if (result.bytesRead <= 0) break;
-      bytesRead += result.bytesRead;
+    affected ||= lineage.affected;
+    fileSnapshots.set(fp, lineage.fileSnapshot);
+    if (Number.isFinite(remainingBytes)) {
+      remainingBytes = Math.max(0, remainingBytes - lineage.bytesRead);
     }
-    if (bytesRead !== length) return { candidate: false, indeterminate: true };
-    const lines = buffer.toString("utf8").split("\n");
-    if (start > 0) lines.shift(); // discard a line truncated by the tail boundary
-    for (let index = lines.length - 1; index >= 0; index -= 1) {
-      const line = lines[index];
-      if (!line.includes('"turn_context"')) continue;
-      let obj;
-      try {
-        obj = JSON.parse(line);
-      } catch (_e) {
-        return { candidate: false, indeterminate: true };
-      }
-      if (obj?.type !== "turn_context") continue;
-      return {
-        candidate: isActiveMultiAgentVersion(obj?.payload?.multi_agent_version),
-        indeterminate: false,
-      };
-    }
-    return { candidate: false, indeterminate: start > 0 };
-  } catch (_e) {
-    return { candidate: false, indeterminate: true };
-  } finally {
-    if (handle) await handle.close().catch(() => {});
   }
-}
-
-function isActiveMultiAgentVersion(value) {
-  if (value === true) return true;
-  if (typeof value !== "string") return false;
-  const normalized = value.trim().toLowerCase();
-  return Boolean(
-    normalized &&
-      normalized !== "off" &&
-      normalized !== "none" &&
-      normalized !== "disabled",
-  );
+  return { affected, indeterminate: false, fileSnapshots };
 }
 
 async function scanCodexUsageLineages(filePath, maxBytes = Infinity) {
   let stream = null;
   let rl = null;
   try {
+    const before = await readCodexFileSnapshot(filePath);
     const state = createUsageDeltaState();
     const byteLimit = Number.isFinite(maxBytes) ? Math.max(0, maxBytes) : Infinity;
     let bytesRead = 0;
+    let affected = false;
     stream = fssync.createReadStream(filePath, {
       encoding: "utf8",
       highWaterMark: 32 * 1024,
@@ -4110,28 +4029,82 @@ async function scanCodexUsageLineages(filePath, maxBytes = Infinity) {
     for await (const line of rl) {
       bytesRead += Buffer.byteLength(line, "utf8") + 1;
       if (bytesRead > byteLimit) return { affected: false, indeterminate: true };
-      if (!line.includes('"token_count"')) continue;
+      if (!line.trim()) continue;
       let obj;
       try {
         obj = JSON.parse(line);
       } catch (_e) {
-        continue;
+        return { affected: false, indeterminate: true };
       }
       const token = extractTokenCount(obj);
       const info = token?.info;
       if (!info || typeof info !== "object") continue;
       consumeUsageDelta(state, info.last_token_usage, info.total_token_usage);
       if (state.sawInterleaved || state.sawDivergentCumulative) {
-        return { affected: true, indeterminate: false };
+        affected = true;
       }
     }
-    return { affected: false, indeterminate: false };
+    const after = await readCodexFileSnapshot(filePath);
+    if (!sameCodexFileSnapshot(before, after)) {
+      return { affected: false, indeterminate: true };
+    }
+    return {
+      affected,
+      indeterminate: false,
+      bytesRead,
+      fileSnapshot: after,
+    };
   } catch (_e) {
     return { affected: false, indeterminate: true };
   } finally {
     if (rl) rl.close();
     if (stream) stream.destroy();
   }
+}
+
+async function readCodexFileSnapshot(filePath) {
+  const stat = await fs.stat(filePath);
+  return {
+    size: Number(stat.size),
+    mtimeMs: Number(stat.mtimeMs),
+    ctimeMs: Number(stat.ctimeMs),
+    ino: Number(stat.ino),
+    dev: Number(stat.dev),
+  };
+}
+
+function sameCodexFileSnapshot(left, right) {
+  return Boolean(
+    left &&
+      right &&
+      left.size === right.size &&
+      left.mtimeMs === right.mtimeMs &&
+      left.ctimeMs === right.ctimeMs &&
+      left.ino === right.ino &&
+      left.dev === right.dev
+  );
+}
+
+async function validateCodexRebuildFileSnapshots(rebuiltFiles, expectedSnapshots) {
+  for (const [filePath, expected] of expectedSnapshots) {
+    let actual;
+    try {
+      actual = await readCodexFileSnapshot(filePath);
+    } catch (_e) {
+      return { ok: false, reason: "a scanned rollout became unreadable during rebuild" };
+    }
+    if (!sameCodexFileSnapshot(expected, actual)) {
+      return { ok: false, reason: "a scanned rollout changed during rebuild" };
+    }
+    const rebuiltCursor = rebuiltFiles?.[filePath];
+    if (!rebuiltCursor) {
+      return { ok: false, reason: "the rebuild omitted a scanned rollout cursor" };
+    }
+    if (Number(rebuiltCursor.offset) !== expected.size) {
+      return { ok: false, reason: "the rebuild did not consume a scanned rollout through EOF" };
+    }
+  }
+  return { ok: true };
 }
 
 function isCodexHistoryCovered(cursors, rolloutFiles) {
