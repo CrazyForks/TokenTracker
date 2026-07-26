@@ -64,6 +64,7 @@ const CODEX_LIMITS_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 // restart — stops calling until it expires. Hammering during the cooldown just renews the
 // penalty, which is what kept the panel stuck on the error.
 const CLAUDE_RATE_LIMIT_FILE = "claude-usage-rate-limit.json";
+const KIRO_CREDITS_SIDECAR_FILE = "kiro-credits.json";
 const CLAUDE_RATE_LIMIT_DEFAULT_COOLDOWN_SEC = 5 * 60;
 const CLAUDE_RATE_LIMIT_MAX_COOLDOWN_SEC = 60 * 60;
 
@@ -1553,6 +1554,43 @@ function parseKiroUsageOutput(output, { now = new Date() } = {}) {
   };
 }
 
+function readKiroCreditsSummary({ home = os.homedir() } = {}) {
+  const sidecarPath = path.join(
+    home,
+    ".tokentracker",
+    "tracker",
+    KIRO_CREDITS_SIDECAR_FILE,
+  );
+  try {
+    const parsed = JSON.parse(fs.readFileSync(sidecarPath, "utf8"));
+    if (parsed?.version !== 1) return null;
+    const totalCredits = Number(parsed.total_credits);
+    const recordCount = Number(parsed.record_count);
+    const sessionCount = Number(parsed.session_count);
+    if (
+      !Number.isFinite(totalCredits) ||
+      totalCredits < 0 ||
+      !Number.isSafeInteger(recordCount) ||
+      recordCount <= 0 ||
+      !Number.isSafeInteger(sessionCount) ||
+      sessionCount <= 0
+    ) {
+      return null;
+    }
+    return {
+      tracked_credits: totalCredits,
+      tracked_credit_records: recordCount,
+      tracked_credit_sessions: sessionCount,
+      tracked_credits_latest_at:
+        typeof parsed.latest_at === "string" ? parsed.latest_at : null,
+      tracked_credits_updated_at:
+        typeof parsed.updated_at === "string" ? parsed.updated_at : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // GitHub Copilot — `GET https://api.github.com/copilot_internal/user`
 // Reuses the OAuth token from the user's existing Copilot install. Older clients
@@ -1982,10 +2020,14 @@ async function fetchKiroLimits({
   commandRunner,
   now = new Date(),
   platform = process.platform,
+  home = os.homedir(),
 } = {}) {
+  const trackedCredits = readKiroCreditsSummary({ home });
   const binaryPath = await whichBinary("kiro-cli", { commandRunner });
   if (!binaryPath) {
-    return { configured: false };
+    return trackedCredits
+      ? { configured: true, error: null, ...trackedCredits }
+      : { configured: false };
   }
 
   const versionResult = await runCommand(
@@ -2042,6 +2084,7 @@ async function fetchKiroLimits({
           configured: true,
           error: null,
           ...parseKiroCommandResult(result, { now }),
+          ...(trackedCredits || {}),
         };
       } catch (error) {
         lastError = error;
@@ -2052,6 +2095,7 @@ async function fetchKiroLimits({
     return {
       configured: true,
       error: error?.message || "Unknown error",
+      ...(trackedCredits || {}),
     };
   }
 }
@@ -3077,7 +3121,7 @@ async function fetchUsageLimitsUncached({
       .catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
     withProviderTimeout(fetchGeminiLimits({ home, env, fetchImpl: providerFetch, commandRunner }), "Gemini", providerTimeoutMs)
       .catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
-    fetchKiroLimits({ commandRunner, now, platform }),
+    fetchKiroLimits({ commandRunner, now, platform, home }),
     fetchAntigravityLimits({ home, commandRunner, requestFn, fetchImpl: providerFetch, nowMs }),
     withProviderTimeout(fetchCopilotLimits({ home, env, fetchImpl: providerFetch, platform, securityRunner }), "GitHub Copilot", providerTimeoutMs)
       .catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
@@ -3283,6 +3327,7 @@ module.exports = {
   normalizeGeminiQuotaResponse,
   normalizeKimiUsageResponse,
   parseKiroUsageOutput,
+  readKiroCreditsSummary,
   fetchKiroLimits,
   normalizeAntigravityResponse,
   parseListeningPorts,

@@ -59,12 +59,16 @@ function formatPercentValue(value) {
   return String(rounded);
 }
 
-function formatCreditAmount(value, { useGrouping = true } = {}) {
+function formatCreditAmount(
+  value,
+  { useGrouping = true, maximumFractionDigits } = {},
+) {
   const n = Number(value);
   if (!Number.isFinite(n)) return null;
   return new Intl.NumberFormat(undefined, {
     minimumFractionDigits: 0,
-    maximumFractionDigits: n >= 100 ? 0 : 2,
+    maximumFractionDigits:
+      maximumFractionDigits ?? (n >= 100 ? 0 : 2),
     useGrouping,
   }).format(n);
 }
@@ -430,6 +434,23 @@ function renderProviderExtra(kind, data) {
   if (kind === "kimi_parallel" && data.parallel_limit) {
     return <StatusLine>{copy("limits.label.kimi_parallel", { count: data.parallel_limit })}</StatusLine>;
   }
+  if (
+    kind === "kiro_credits" &&
+    Number.isFinite(Number(data.tracked_credits)) &&
+    Number(data.tracked_credit_records) > 0
+  ) {
+    const credits = formatCreditAmount(data.tracked_credits, {
+      maximumFractionDigits: 2,
+    });
+    return (
+      <StatusLine>
+        {copy("limits.label.kiro_tracked_credits", {
+          credits,
+          count: Number(data.tracked_credit_records),
+        })}
+      </StatusLine>
+    );
+  }
   if (kind === "copilot_otel" && !data.otel_has_files && !data.otel_enabled) {
     return <CopilotOtelHint defaultDir={data.otel_default_dir} />;
   }
@@ -467,6 +488,9 @@ function renderProviderGroup(id, data, mode, expanded, onToggle) {
     return (
       <ToolGroup key={id} name={limitProviderName(id)} providerId={id}>
         <StatusLine tone="error">{copy("shared.error.prefix", { error: data.error })}</StatusLine>
+        {id === "kiro"
+          ? renderProviderExtra(PROVIDER_LIMIT_SPECS.kiro.extra, data)
+          : null}
         {id === "opencodeGo" ? <OpenCodeGoSetupHint /> : null}
       </ToolGroup>
     );

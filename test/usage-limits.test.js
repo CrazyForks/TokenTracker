@@ -2533,54 +2533,78 @@ Estimated Usage | resets on 2026-08-01 | KIRO PRO
 `;
 
   it("uses a PTY first for kiro-cli 2.13 so /usage is not sent as a model prompt", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-kiro-credits-"));
     const calls = [];
-    const commandRunner = (command, args) => {
-      calls.push({ command, args });
-      if (command === "which") {
-        return { status: 0, stdout: "/opt/kiro-cli\n", stderr: "" };
-      }
-      if (command === "/opt/kiro-cli" && args[0] === "--version") {
-        return {
-          status: 0,
-          stdout: "kiro-cli 2.13.0\n",
-          stderr: "",
-        };
-      }
-      if (command === "/usr/bin/script") {
-        assert.deepEqual(args, [
-          "-q",
-          "/dev/null",
-          "/opt/kiro-cli",
-          "chat",
-          "--no-interactive",
-          "/usage",
-        ]);
-        return { status: 0, stdout: usageOutput, stderr: "" };
-      }
-      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
-    };
+    try {
+      const trackerDir = path.join(tmp, ".tokentracker", "tracker");
+      fs.mkdirSync(trackerDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(trackerDir, "kiro-credits.json"),
+        JSON.stringify({
+          version: 1,
+          total_credits: 1796.45,
+          record_count: 193,
+          session_count: 19,
+          file_count: 19,
+          latest_at: "2026-07-22T15:28:20.659Z",
+          updated_at: "2026-07-25T00:00:00.000Z",
+        }),
+      );
+      const commandRunner = (command, args) => {
+        calls.push({ command, args });
+        if (command === "which") {
+          return { status: 0, stdout: "/opt/kiro-cli\n", stderr: "" };
+        }
+        if (command === "/opt/kiro-cli" && args[0] === "--version") {
+          return {
+            status: 0,
+            stdout: "kiro-cli 2.13.0\n",
+            stderr: "",
+          };
+        }
+        if (command === "/usr/bin/script") {
+          assert.deepEqual(args, [
+            "-q",
+            "/dev/null",
+            "/opt/kiro-cli",
+            "chat",
+            "--no-interactive",
+            "/usage",
+          ]);
+          return { status: 0, stdout: usageOutput, stderr: "" };
+        }
+        throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+      };
 
-    const result = await fetchKiroLimits({
-      commandRunner,
-      now,
-      platform: "darwin",
-    });
+      const result = await fetchKiroLimits({
+        commandRunner,
+        now,
+        platform: "darwin",
+        home: tmp,
+      });
 
-    assert.equal(result.error, null);
-    assert.equal(result.plan_name, "KIRO PRO");
-    assert.equal(result.primary_window.used_percent, 25);
-    assert.equal(
-      result.primary_window.reset_at,
-      "2026-08-01T00:00:00.000Z",
-    );
-    assert.equal(
-      calls.some(
-        ({ command, args }) =>
-          command === "/opt/kiro-cli" && args[0] === "chat",
-      ),
-      false,
-      "2.13 must not run the unsafe pipe transport",
-    );
+      assert.equal(result.error, null);
+      assert.equal(result.plan_name, "KIRO PRO");
+      assert.equal(result.primary_window.used_percent, 25);
+      assert.equal(
+        result.primary_window.reset_at,
+        "2026-08-01T00:00:00.000Z",
+      );
+      assert.equal(result.tracked_credits, 1796.45);
+      assert.equal(result.tracked_credit_records, 193);
+      assert.equal(result.tracked_credit_sessions, 19);
+      assert.equal(result.tracked_credits_latest_at, "2026-07-22T15:28:20.659Z");
+      assert.equal(
+        calls.some(
+          ({ command, args }) =>
+            command === "/opt/kiro-cli" && args[0] === "chat",
+        ),
+        false,
+        "2.13 must not run the unsafe pipe transport",
+      );
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it("falls back from unparseable pipe output to the PTY on older Kiro versions", async () => {
@@ -2629,6 +2653,42 @@ Estimated Usage | resets on 2026-08-01 | KIRO PRO
       calls.filter(({ command }) => command === "/usr/bin/script").length,
       1,
     );
+  });
+
+  it("keeps local usage_summary credits visible when kiro-cli is unavailable", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-kiro-local-credits-"));
+    try {
+      const trackerDir = path.join(tmp, ".tokentracker", "tracker");
+      fs.mkdirSync(trackerDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(trackerDir, "kiro-credits.json"),
+        JSON.stringify({
+          version: 1,
+          total_credits: 12.75,
+          record_count: 4,
+          session_count: 2,
+          latest_at: "2026-07-22T15:28:20.659Z",
+          updated_at: "2026-07-25T00:00:00.000Z",
+        }),
+      );
+
+      const result = await fetchKiroLimits({
+        home: tmp,
+        commandRunner(command, args) {
+          assert.equal(command, "which");
+          assert.deepEqual(args, ["kiro-cli"]);
+          return { status: 1, stdout: "", stderr: "" };
+        },
+      });
+
+      assert.equal(result.configured, true);
+      assert.equal(result.error, null);
+      assert.equal(result.tracked_credits, 12.75);
+      assert.equal(result.tracked_credit_records, 4);
+      assert.equal(result.tracked_credit_sessions, 2);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 

@@ -685,6 +685,7 @@ limits.label.cursor_auto,ui,LimitsPage,UsageLimitsPanel,cursor_auto,"Auto",,acti
 limits.label.cursor_api,ui,LimitsPage,UsageLimitsPanel,cursor_api,"API",,active
 limits.label.kiro_month,ui,LimitsPage,UsageLimitsPanel,kiro_month,"Month",,active
 limits.label.kiro_bonus,ui,LimitsPage,UsageLimitsPanel,kiro_bonus,"Bonus",,active
+limits.label.kiro_tracked_credits,ui,LimitsPage,UsageLimitsPanel,kiro_tracked_credits,"Local usage: {{credits}} credits · {{count}} turns",,active
 limits.label.kimi_weekly,ui,LimitsPage,UsageLimitsPanel,kimi_weekly,"Weekly",,active
 limits.label.kimi_5h,ui,LimitsPage,UsageLimitsPanel,kimi_5h,"5h",,active
 limits.label.kimi_total,ui,LimitsPage,UsageLimitsPanel,kimi_total,"Total",,active

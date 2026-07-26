@@ -5,7 +5,7 @@ const path = require("node:path");
 const readline = require("node:readline");
 
 const crypto = require("node:crypto");
-const { ensureDir } = require("./fs");
+const { ensureDir, writeJson, chmod600IfPossible } = require("./fs");
 const { readSqliteJsonRows, readSqliteJsonRowsAsync } = require("./sqlite-reader");
 const wsl = require("./wsl-probe");
 const { resolveInstallPaths } = require("./install-resolver");
@@ -5302,6 +5302,7 @@ function resolveKimiDefaultModel(env = process.env) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const KIRO_CLI_CHARS_PER_TOKEN = 4;
+const KIRO_CLI_CREDITS_SIDECAR = "kiro-credits.json";
 
 function resolveKiroCliDbPath(env = process.env) {
   if (env.KIRO_CLI_DB_PATH) return env.KIRO_CLI_DB_PATH;
@@ -5619,18 +5620,45 @@ function kiroCliV2ContentChars(value) {
   return 0;
 }
 
+function kiroCliV2UsageCredits(payload) {
+  const summaries = Array.isArray(payload?.promptTurnSummaries)
+    ? payload.promptTurnSummaries
+    : [];
+  let totalCredits = 0;
+  let hasCreditEntry = false;
+  for (const summary of summaries) {
+    if (!summary || typeof summary !== "object") continue;
+    const unit = String(summary.unit || "").trim().toLowerCase();
+    if (unit !== "credit" && unit !== "credits") continue;
+    const usage = Number(summary.usage);
+    if (!Number.isFinite(usage) || usage < 0) continue;
+    totalCredits += usage;
+    hasCreditEntry = true;
+  }
+  return {
+    totalCredits,
+    recordCount: hasCreditEntry ? 1 : 0,
+  };
+}
+
 // Kiro CLI 2.13+ writes event-sourced sessions under
 // ~/.kiro/sessions/<workspaceHash>/sess_<uuid>/messages.jsonl. The records do
-// not carry token counts, but user/assistant text, turn boundaries, timestamps,
-// and assistant reasoningModelId are sufficient for the same 4 chars/token
-// approximation used by the legacy CLI reader.
+// not carry token counts, but user/assistant text, tool_result payloads, turn
+// boundaries, timestamps, and assistant reasoningModelId are sufficient for
+// the same 4 chars/token approximation used by the legacy CLI reader.
+// tool_result content counts as INPUT: tool output (file reads, command
+// output, search results) is fed back to the model as context on the next
+// request — skipping it undercounted tool-heavy sessions by ~67% (#366).
 async function readKiroCliV2SessionTurns(messagesPath) {
   if (
     !messagesPath ||
     path.basename(messagesPath) !== "messages.jsonl" ||
     !fssync.existsSync(messagesPath)
   ) {
-    return [];
+    return {
+      turns: [],
+      credits: { totalCredits: 0, recordCount: 0, latestAt: null },
+    };
   }
 
   const sessionDir = path.dirname(messagesPath);
@@ -5658,7 +5686,10 @@ async function readKiroCliV2SessionTurns(messagesPath) {
   try {
     stream = fssync.createReadStream(messagesPath, { encoding: "utf8" });
   } catch {
-    return flat;
+    return {
+      turns: flat,
+      credits: { totalCredits: 0, recordCount: 0, latestAt: null },
+    };
   }
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
 
@@ -5666,6 +5697,10 @@ async function readKiroCliV2SessionTurns(messagesPath) {
   let pendingUserTimestampMs = NaN;
   let turn = null;
   let fallbackTurnIndex = 0;
+  const seenCreditEvents = new Set();
+  let totalCredits = 0;
+  let creditRecordCount = 0;
+  let latestCreditAt = null;
 
   const flushTurn = () => {
     if (!turn) return;
@@ -5747,8 +5782,35 @@ async function readKiroCliV2SessionTurns(messagesPath) {
         continue;
       }
 
+      if (type === "usage_summary") {
+        const creditEventKey =
+          typeof event.id === "string" && event.id
+            ? event.id
+            : `${payload.executionId || ""}:${event.timestamp || ""}:${creditRecordCount}`;
+        if (!seenCreditEvents.has(creditEventKey)) {
+          seenCreditEvents.add(creditEventKey);
+          const usage = kiroCliV2UsageCredits(payload);
+          if (usage.recordCount > 0) {
+            totalCredits += usage.totalCredits;
+            creditRecordCount += usage.recordCount;
+            if (
+              Number.isFinite(timestampMs) &&
+              (
+                !latestCreditAt ||
+                timestampMs > Date.parse(latestCreditAt)
+              )
+            ) {
+              latestCreditAt = new Date(timestampMs).toISOString();
+            }
+          }
+        }
+        // Billing summaries are independent metadata. They can arrive after
+        // turn_end, so they must not create or mutate token turns.
+        continue;
+      }
+
       if (
-        ["assistant", "tool_call", "tool_result", "usage_summary"].includes(
+        ["assistant", "tool_call", "tool_result"].includes(
           type,
         ) &&
         !turn
@@ -5784,6 +5846,10 @@ async function readKiroCliV2SessionTurns(messagesPath) {
         ) {
           turn.modelId = payload.reasoningModelId;
         }
+      } else if (type === "tool_result") {
+        // #366: tool output re-enters the model as input context on the
+        // next request within the turn. Same ÷4 heuristic as user text.
+        turn.inputChars += kiroCliV2ContentChars(payload.content);
       } else if (type === "turn_end") {
         flushTurn();
       }
@@ -5792,7 +5858,45 @@ async function readKiroCliV2SessionTurns(messagesPath) {
     // Return complete turns parsed before a concurrent truncate/delete.
   }
   flushTurn();
-  return flat;
+  return {
+    turns: flat,
+    credits: {
+      totalCredits,
+      recordCount: creditRecordCount,
+      latestAt: latestCreditAt,
+    },
+  };
+}
+
+async function writeKiroCliCreditsSidecar({
+  queuePath,
+  totalCredits,
+  recordCount,
+  sessionCount,
+  fileCount,
+  latestAt,
+} = {}) {
+  if (!queuePath || !(fileCount > 0)) return;
+  const sidecarPath = path.join(
+    path.dirname(queuePath),
+    KIRO_CLI_CREDITS_SIDECAR,
+  );
+  try {
+    await writeJson(sidecarPath, {
+      version: 1,
+      source: "kiro-cli-usage-summary",
+      total_credits: Number(totalCredits.toFixed(12)),
+      record_count: recordCount,
+      session_count: sessionCount,
+      file_count: fileCount,
+      latest_at: latestAt,
+      updated_at: new Date().toISOString(),
+    });
+    await chmod600IfPossible(sidecarPath);
+  } catch {
+    // Credits are supplemental billing metadata. A sidecar write failure must
+    // never block the canonical token queue.
+  }
 }
 
 // Canonicalize a Kiro-CLI-emitted model id so IDE and CLI rows collapse when
@@ -5923,13 +6027,43 @@ async function parseKiroCliIncremental({ sessionFiles, cursors, queuePath, onPro
     : [];
   const sessionFilesList = resolveKiroCliSessionFiles(resolvedEnv);
   let flatSessions = [];
+  let kiroCreditTotal = 0;
+  let kiroCreditRecords = 0;
+  let kiroCreditSessions = 0;
+  let kiroCreditFiles = 0;
+  let latestKiroCreditAt = null;
   for (const sessionPath of sessionFilesList) {
-    const turns =
-      path.basename(sessionPath) === "messages.jsonl"
-        ? await readKiroCliV2SessionTurns(sessionPath)
-        : await readKiroCliSessionTurns(sessionPath);
+    let turns;
+    if (path.basename(sessionPath) === "messages.jsonl") {
+      kiroCreditFiles++;
+      const parsed = await readKiroCliV2SessionTurns(sessionPath);
+      turns = parsed.turns;
+      const credits = parsed.credits;
+      kiroCreditTotal += credits.totalCredits;
+      kiroCreditRecords += credits.recordCount;
+      if (credits.recordCount > 0) kiroCreditSessions++;
+      if (
+        credits.latestAt &&
+        (
+          !latestKiroCreditAt ||
+          Date.parse(credits.latestAt) > Date.parse(latestKiroCreditAt)
+        )
+      ) {
+        latestKiroCreditAt = credits.latestAt;
+      }
+    } else {
+      turns = await readKiroCliSessionTurns(sessionPath);
+    }
     for (const turn of turns) flatSessions.push(turn);
   }
+  await writeKiroCliCreditsSidecar({
+    queuePath,
+    totalCredits: kiroCreditTotal,
+    recordCount: kiroCreditRecords,
+    sessionCount: kiroCreditSessions,
+    fileCount: kiroCreditFiles,
+    latestAt: latestKiroCreditAt,
+  });
   // Per-request state replaces the old seenIds set. Each entry captures
   // what we contributed for that request_id last time, so a later mutation
   // (same request_id, different fingerprint) can subtract-old/add-new

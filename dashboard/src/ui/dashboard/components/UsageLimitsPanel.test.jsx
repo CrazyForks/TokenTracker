@@ -119,6 +119,54 @@ describe("UsageLimitsPanel", () => {
     expect(screen.getByText("Not connected")).toBeInTheDocument();
   });
 
+  it("shows Kiro credits observed from local usage_summary records", () => {
+    const { rerender } = render(
+      <UsageLimitsPanel
+        kiro={{
+          configured: true,
+          error: null,
+          tracked_credits: 1796.45,
+          tracked_credit_records: 193,
+          tracked_credit_sessions: 19,
+          primary_window: { used_percent: 25, reset_at: "2026-08-01T00:00:00.000Z" },
+        }}
+        order={["kiro"]}
+      />,
+    );
+
+    expect(screen.getByText("Kiro")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        copy("limits.label.kiro_tracked_credits", {
+          credits: "1,796.45",
+          count: 193,
+        }),
+      ),
+    ).toBeInTheDocument();
+
+    rerender(
+      <UsageLimitsPanel
+        kiro={{
+          configured: true,
+          error: "Kiro CLI timed out.",
+          tracked_credits: 1796.45,
+          tracked_credit_records: 193,
+          tracked_credit_sessions: 19,
+        }}
+        order={["kiro"]}
+      />,
+    );
+    expect(screen.getByText(/Kiro CLI timed out/)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        copy("limits.label.kiro_tracked_credits", {
+          credits: "1,796.45",
+          count: 193,
+        }),
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("renders OpenCode Go 5h / Weekly / Monthly windows", () => {
     const { rerender } = render(
       <UsageLimitsPanel

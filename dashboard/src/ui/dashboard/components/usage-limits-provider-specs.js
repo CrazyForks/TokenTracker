@@ -66,6 +66,7 @@ export const PROVIDER_LIMIT_SPECS = {
     },
   },
   kiro: {
+    extra: "kiro_credits",
     windows(data) {
       return [
         { key: "month", labelKey: "limits.label.kiro_month", window: data.primary_window },

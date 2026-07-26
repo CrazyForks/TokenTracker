@@ -7440,6 +7440,26 @@ test("parseKiroCliIncremental parses Kiro CLI 2.13 event sessions with per-turn 
           },
         },
         {
+          id: "exec-1-tool-call",
+          timestamp: "2026-07-22T03:24:05.200Z",
+          payload: {
+            type: "tool_call",
+            executionId: "exec-1",
+            toolName: "execute_bash",
+          },
+        },
+        // #366: tool_result output is real input context for the next
+        // model request — must be counted as input chars, not skipped.
+        {
+          id: "exec-1-tool-result",
+          timestamp: "2026-07-22T03:24:05.500Z",
+          payload: {
+            type: "tool_result",
+            executionId: "exec-1",
+            content: "t".repeat(240),
+          },
+        },
+        {
           id: "exec-1-say",
           timestamp: "2026-07-22T03:24:06.000Z",
           payload: {
@@ -7453,6 +7473,20 @@ test("parseKiroCliIncremental parses Kiro CLI 2.13 event sessions with per-turn 
           id: "exec-1-turn-end",
           timestamp: "2026-07-22T03:24:07.000Z",
           payload: { type: "turn_end", executionId: "exec-1" },
+        },
+        // Credits are billing metadata and may arrive after turn_end. Keep
+        // their attribution independent from the token turn state machine.
+        {
+          id: "exec-1-usage",
+          timestamp: "2026-07-22T03:24:07.500Z",
+          payload: {
+            type: "usage_summary",
+            executionId: "exec-1",
+            promptTurnSummaries: [
+              { unit: "credits", usage: 0.25, usedTools: ["execute_bash"] },
+            ],
+            status: "success",
+          },
         },
         {
           id: "user-2",
@@ -7473,6 +7507,23 @@ test("parseKiroCliIncremental parses Kiro CLI 2.13 event sessions with per-turn 
             executionId: "exec-2",
             reasoningModelId: "qdev::minimax-m2.1",
             content: "b".repeat(20),
+          },
+        },
+        // usage_summary carries billing credits, not content — it must not
+        // perturb the char approximation (#366 Problem 2 is tracked apart).
+        {
+          id: "exec-2-usage",
+          timestamp: "2026-07-22T03:25:03.000Z",
+          payload: {
+            type: "usage_summary",
+            executionId: "exec-2",
+            promptTurnSummaries: [
+              { unit: "credit", usage: 0.132, usedTools: ["execute_bash"] },
+              { unit: "tokens", usage: 999 },
+              { unit: "credit", usage: -1 },
+            ],
+            elapsedTime: 7911,
+            status: "success",
           },
         },
         // A malformed concurrent tail must not discard prior complete data.
@@ -7514,14 +7565,24 @@ test("parseKiroCliIncremental parses Kiro CLI 2.13 event sessions with per-turn 
     );
     const minimax = firstRows.find((row) => row.model === "minimax-m2.1");
     assert.ok(claude);
-    assert.equal(claude.input_tokens, 100);
+    assert.equal(claude.input_tokens, 160, "input = user 400/4 + tool_result 240/4");
     assert.equal(claude.output_tokens, 10);
     assert.equal(claude.reasoning_output_tokens, 20);
-    assert.equal(claude.total_tokens, 130);
+    assert.equal(claude.total_tokens, 190);
     assert.ok(minimax);
     assert.equal(minimax.input_tokens, 50);
     assert.equal(minimax.output_tokens, 5);
     assert.equal(minimax.reasoning_output_tokens, 0);
+
+    const creditsPath = path.join(tmp, "kiro-credits.json");
+    const firstCredits = JSON.parse(await fs.readFile(creditsPath, "utf8"));
+    assert.equal(firstCredits.version, 1);
+    assert.ok(Math.abs(firstCredits.total_credits - 0.382) < 1e-12);
+    assert.equal(firstCredits.record_count, 2);
+    assert.equal(firstCredits.session_count, 1);
+    assert.equal(firstCredits.file_count, 1);
+    assert.equal(firstCredits.latest_at, "2026-07-22T03:25:03.000Z");
+    assert.equal((await fs.stat(creditsPath)).mode & 0o777, 0o600);
 
     const second = await rolloutModule.parseKiroCliIncremental({
       cursors,
@@ -7529,6 +7590,12 @@ test("parseKiroCliIncremental parses Kiro CLI 2.13 event sessions with per-turn 
       env,
     });
     assert.equal(second.eventsAggregated, 0, "unchanged rerun is idempotent");
+    const secondCredits = JSON.parse(await fs.readFile(creditsPath, "utf8"));
+    assert.ok(
+      Math.abs(secondCredits.total_credits - 0.382) < 1e-12,
+      "credit summaries are absolute and do not inflate on rerun",
+    );
+    assert.equal(secondCredits.record_count, 2);
 
     await writeMessages({ firstAnswerChars: 80 });
     const third = await rolloutModule.parseKiroCliIncremental({
@@ -7546,7 +7613,10 @@ test("parseKiroCliIncremental parses Kiro CLI 2.13 event sessions with per-turn 
       .filter((row) => row.model === "claude-sonnet-4.6")
       .pop();
     assert.equal(latestClaude.output_tokens, 20);
-    assert.equal(latestClaude.total_tokens, 140);
+    assert.equal(latestClaude.total_tokens, 200);
+    const thirdCredits = JSON.parse(await fs.readFile(creditsPath, "utf8"));
+    assert.ok(Math.abs(thirdCredits.total_credits - 0.382) < 1e-12);
+    assert.equal(thirdCredits.record_count, 2);
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
