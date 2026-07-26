@@ -321,6 +321,7 @@ const PROVIDER_LOGO_MAP = {
   MIMO: "/brand-logos/mimo.svg",
   OPENCLAW: "/brand-logos/openclaw.svg",
   OPENCODE: "/brand-logos/opencode.svg",
+  QODER: "/brand-logos/qoder.svg",
 };
 
 // AnythingLLM publishes this compact mark in white. Keep the official asset
@@ -328,6 +329,7 @@ const PROVIDER_LOGO_MAP = {
 // (which may differ from the OS preference) always has sufficient contrast.
 const PROVIDER_LOGO_CLASS_MAP = {
   ANYTHINGLLM: "brightness-0 dark:brightness-100",
+  QODER: "dark:invert",
 };
 
 function PlaceholderIcon({ size = 16, className = "" }) {

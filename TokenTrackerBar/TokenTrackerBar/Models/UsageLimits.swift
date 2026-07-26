@@ -13,10 +13,11 @@ struct UsageLimitsResponse: Codable, Equatable {
     let copilot: CopilotLimits?
     let zcode: ZcodeLimits?
     let opencodeGo: OpencodeGoLimits?
+    let qoder: QoderLimits?
 
     enum CodingKeys: String, CodingKey {
         case fetchedAt = "fetched_at"
-        case claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot, zcode
+        case claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot, zcode, qoder
         case opencodeGo = "opencodeGo"
     }
 }
@@ -58,6 +59,10 @@ struct ClaudeLimits: Codable, Equatable {
     /// the happy path. Lets the UI show when the next refresh is due and lets the app
     /// schedule a one-shot refresh the moment the cool-down lifts.
     let retryAt: String?
+    /// Active status-page incident (status.anthropic.com), present only while the
+    /// provider reports a non-"none" indicator. Optional so responses from older
+    /// server builds (and the incident-free happy path) still decode.
+    let serviceStatus: ProviderServiceStatus?
 
     enum CodingKeys: String, CodingKey {
         case configured, error, stale
@@ -69,6 +74,22 @@ struct ClaudeLimits: Codable, Equatable {
         case extraUsage = "extra_usage"
         case cachedAt = "cached_at"
         case retryAt = "retry_at"
+        case serviceStatus = "service_status"
+    }
+}
+
+/// A provider's public status-page reading (Statuspage.io shape), attached by the
+/// local server only while an incident is active. `indicator` is one of
+/// minor/major/critical ("none" is filtered server-side).
+struct ProviderServiceStatus: Codable, Equatable {
+    let indicator: String
+    let description: String?
+    let updatedAt: String?
+    let url: String?
+
+    enum CodingKeys: String, CodingKey {
+        case indicator, description, url
+        case updatedAt = "updated_at"
     }
 }
 
@@ -373,6 +394,24 @@ struct OpencodeGoLimits: Codable, Equatable {
     }
 }
 
+struct QoderLimits: Codable, Equatable {
+    let configured: Bool
+    let error: String?
+    let planLabel: String?
+    let primaryWindow: GenericLimitWindow?
+    let secondaryWindow: GenericLimitWindow?
+    let cachedAt: String?
+    let stale: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case configured, error, stale
+        case planLabel = "plan_label"
+        case primaryWindow = "primary_window"
+        case secondaryWindow = "secondary_window"
+        case cachedAt = "cached_at"
+    }
+}
+
 struct AntigravityLimits: Codable, Equatable {
     let configured: Bool
     let error: String?
@@ -414,6 +453,7 @@ extension UsageLimitsResponse {
             (copilot?.configured ?? false, copilot?.error),
             (zcode?.configured ?? false, zcode?.error),
             (opencodeGo?.configured ?? false, opencodeGo?.error),
+            (qoder?.configured ?? false, qoder?.error),
         ]
         return providers.contains { $0.0 && $0.1 == nil }
     }

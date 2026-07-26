@@ -34,6 +34,8 @@ enum MenuBarDisplayMetric: String, CaseIterable {
     case antigravityGemini5h
     case zcodeGlm52
     case zcodeGlm5Turbo
+    case qoderQuota
+    case qoderUltimate
 
     var menuLabel: String {
         switch self {
@@ -72,6 +74,8 @@ enum MenuBarDisplayMetric: String, CaseIterable {
         case .antigravityGemini5h: return "Ag Gm 5h"
         case .zcodeGlm52: return "ZC Pri"
         case .zcodeGlm5Turbo: return "ZC Sec"
+        case .qoderQuota: return "Qd Cred"
+        case .qoderUltimate: return "Qd Ult"
         }
     }
 
@@ -110,6 +114,8 @@ enum MenuBarDisplayMetric: String, CaseIterable {
         case .antigravityGemini5h: return "Antigravity Gemini 5h Limit"
         case .zcodeGlm52: return "ZCode Primary Limit"
         case .zcodeGlm5Turbo: return "ZCode Secondary Limit"
+        case .qoderQuota: return "Qoder Credits Limit"
+        case .qoderUltimate: return "Qoder Ultimate Free Calls"
         }
     }
 
@@ -127,7 +133,8 @@ enum MenuBarDisplayMetric: String, CaseIterable {
              .grokMonth, .grokOndemand,
              .copilotPremium, .copilotChat,
              .antigravityClaudeWeekly, .antigravityClaude5h, .antigravityGeminiWeekly, .antigravityGemini5h,
-             .zcodeGlm52, .zcodeGlm5Turbo:
+             .zcodeGlm52, .zcodeGlm5Turbo,
+             .qoderQuota, .qoderUltimate:
             return "limits"
         }
     }
@@ -149,6 +156,7 @@ enum MenuBarDisplayMetric: String, CaseIterable {
         case .copilotPremium, .copilotChat: return "copilot"
         case .antigravityClaudeWeekly, .antigravityClaude5h, .antigravityGeminiWeekly, .antigravityGemini5h: return "antigravity"
         case .zcodeGlm52, .zcodeGlm5Turbo: return "zcode"
+        case .qoderQuota, .qoderUltimate: return "qoder"
         }
     }
 }
@@ -177,6 +185,7 @@ private extension UsageLimitsResponse {
         case "copilot": return (copilot?.configured == true) && (copilot?.error == nil)
         case "antigravity": return antigravity.configured && antigravity.error == nil
         case "zcode": return (zcode?.configured == true) && (zcode?.error == nil)
+        case "qoder": return (qoder?.configured == true) && (qoder?.error == nil)
         default: return false
         }
     }
@@ -213,6 +222,8 @@ private extension UsageLimitsResponse {
         case .antigravityGemini5h: return antigravity.quaternaryWindow != nil
         case .zcodeGlm52: return zcode?.primaryWindow != nil
         case .zcodeGlm5Turbo: return zcode?.secondaryWindow != nil
+        case .qoderQuota: return qoder?.primaryWindow != nil
+        case .qoderUltimate: return qoder?.secondaryWindow != nil
         }
     }
 }
@@ -307,7 +318,8 @@ enum MenuBarDisplayPreferences {
                  .copilotPremium, .copilotChat,
                  .antigravityClaudeWeekly, .antigravityClaude5h,
                  .antigravityGeminiWeekly, .antigravityGemini5h,
-                 .zcodeGlm52, .zcodeGlm5Turbo:
+                 .zcodeGlm52, .zcodeGlm5Turbo,
+                 .qoderQuota, .qoderUltimate:
                 break
             }
         }

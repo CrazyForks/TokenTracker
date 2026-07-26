@@ -62,6 +62,7 @@ const {
   resolveKilocodeTaskFiles,
   resolveRoocodeTaskFiles,
   resolveZedDbPath,
+  resolveQoderDbPaths,
   resolveAnythingllmDbPath,
   resolveGooseDbPath,
   listDroidSettingsFiles,
@@ -320,6 +321,16 @@ async function cmdStatus(argv = []) {
   const zcodeActive = formatResolvedPaths(zcodePaths);
   const zcodeInstalled = zcodeActive.length > 0;
   const zcodeDbPath = zcodeActive.join(" | ");
+
+  // Qoder Desktop 1.18+ — token usage lives in SharedClientCache/local.db.
+  const qoderPaths = resolveQoderDbPaths({
+    home,
+    env: process.env,
+    platform: process.platform,
+  });
+  const qoderActive = formatResolvedPaths(qoderPaths);
+  const qoderInstalled = qoderActive.length > 0;
+  const qoderDbPath = qoderActive.join(" | ");
 
   // OpenCode (JSON files + SQLite DB) — passive scan of storage/message/ and opencode.db.
   const opencodeStorageNativeValue = process.env.OPENCODE_HOME || path.join(xdgDataHome, "opencode");
@@ -673,6 +684,9 @@ async function cmdStatus(argv = []) {
         zcode: zcodeInstalled
           ? { installed: true, detail: zcodeDbPath }
           : { installed: false },
+        qoder: qoderInstalled
+          ? { installed: true, detail: qoderDbPath }
+          : { installed: false },
         kilocode: kilocodeInstalled
           ? { installed: true, files: kilocodeTaskFiles.length }
           : { installed: false },
@@ -784,6 +798,9 @@ async function cmdStatus(argv = []) {
         : null,
       zcodeInstalled
         ? `- ZCode: passive reader (${zcodeDbPath})`
+        : null,
+      qoderInstalled
+        ? `- Qoder: passive reader (${qoderDbPath})`
         : null,
       opencodeInstalled
         ? `- OpenCode: passive reader (storage: ${opencodeStorageActive.join(" | ") || "not found"}, DB: ${opencodeDbActive.join(" | ") || "not found"})`

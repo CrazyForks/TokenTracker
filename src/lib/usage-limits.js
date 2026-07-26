@@ -27,6 +27,8 @@ const {
 const { fetchGrokLimits } = require("./grok-limits");
 const { fetchZcodeLimits } = require("./zcode-limits");
 const { fetchOpencodeGoLimits } = require("./opencode-go-limits");
+const { fetchQoderLimits } = require("./qoder-limits");
+const { fetchProviderServiceStatus } = require("./provider-status");
 const { readSqliteJsonRows, readSqliteJsonRowsAsync } = require("./sqlite-reader");
 
 const execFileAsync = promisify(cp.execFile);
@@ -2909,7 +2911,7 @@ function toTitleCase(s) {
 // leading brand word and Title Case the rest.
 function normalizePlanLabel(raw, brand) {
   if (raw == null) return null;
-  let s = String(raw).trim();
+  let s = String(raw).replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
   if (!s) return null;
   const lower = s.toLowerCase();
   if (["free", "none", "unknown"].includes(lower)) return null;
@@ -3052,7 +3054,7 @@ async function fetchUsageLimitsUncached({
     : null;
 
   const providerFetch = withFetchTimeout(fetchImpl, providerTimeoutMs);
-  const [claudeResult, codexResult, cursor, kimi, gemini, kiro, antigravity, copilot, grok, zcode, opencodeGo] = await Promise.all([
+  const [claudeResult, codexResult, cursor, kimi, gemini, kiro, antigravity, copilot, grok, zcode, opencodeGo, qoder, claudeServiceStatus] = await Promise.all([
     claudeToken && !freshClaudeCache && !claudeRetryAtMs
       ? withProviderTimeout(fetchClaudeUsageLimits(claudeToken, { fetchImpl: providerFetch, maxAttempts: 1 }), "Claude", providerTimeoutMs).then(
           (value) => ({ status: "fulfilled", value }),
@@ -3088,6 +3090,23 @@ async function fetchUsageLimitsUncached({
     // OPENCODE_GO_AUTH_COOKIE is set. See src/lib/opencode-go-limits.js.
     withProviderTimeout(fetchOpencodeGoLimits({ home, env, fetchImpl: providerFetch }), "OpenCode Go", providerTimeoutMs)
       .catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
+    withProviderTimeout(
+      fetchQoderLimits({
+        home,
+        env,
+        platform,
+        securityRunner,
+        fetchImpl: providerFetch,
+      }),
+      "Qoder",
+      providerTimeoutMs,
+    ).catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
+    // Public status-page probe (fail-soft, own 5-min cache in provider-status.js).
+    // Only probed for configured accounts — without a token the Claude section
+    // never renders, so the reading would have nowhere to go.
+    claudeToken
+      ? fetchProviderServiceStatus("claude", { fetchImpl, nowMs })
+      : Promise.resolve(null),
   ]);
 
   let claude;
@@ -3154,6 +3173,15 @@ async function fetchUsageLimitsUncached({
     }
   }
 
+  // Attach the service-status reading AFTER assembly so it rides on every path
+  // (live, fresh-cache, stale-cache, error) but never gets persisted by
+  // writeClaudeLimitsCache above — a disk cache must not resurrect an incident
+  // banner hours later. Only active incidents ship; "none" is omitted so the
+  // client renders nothing in the happy path.
+  if (claude.configured && claudeServiceStatus && claudeServiceStatus.indicator !== "none") {
+    claude.service_status = claudeServiceStatus;
+  }
+
   let codex;
   if (!codexToken) {
     codex = { configured: false };
@@ -3212,6 +3240,7 @@ async function fetchUsageLimitsUncached({
     grok: withPlanLabel(grok, null, "Grok"),
     zcode: withPlanLabel(zcode, zcode.plan_label, "ZCode"),
     opencodeGo: withPlanLabel(opencodeGo, opencodeGo?.plan_label, "OpenCode Go"),
+    qoder: withPlanLabel(qoder, qoder?.plan_label, "Qoder"),
   };
 
   for (const [providerName, provider] of Object.entries(data)) {
@@ -3270,4 +3299,5 @@ module.exports = {
   fetchGrokLimits,
   fetchZcodeLimits,
   fetchOpencodeGoLimits,
+  fetchQoderLimits,
 };

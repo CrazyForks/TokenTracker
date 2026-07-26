@@ -2684,7 +2684,10 @@ function createLocalApiHandler({ queuePath }) {
             json(res, { importable, codexDetected: importable.length > 0 });
             return true;
           }
-          json(res, { pets: pets.listInstalledPets() });
+          json(res, {
+            pets: pets.listInstalledPets(),
+            hiddenBuiltinIds: pets.readHiddenBuiltinIds(),
+          });
           return true;
         }
         if (method === "POST") {

@@ -163,6 +163,20 @@ test("V2 look directions use the same 16-cell row mapping on web, macOS, and Win
   assert.match(windowsPetSource, /pet:look/);
 });
 
+test("removed bundled pets disappear from both native character menus while Clawd remains", () => {
+  assert.match(macControllerSource, /hiddenBuiltinsFilename = "\.hidden-builtins\.json"/);
+  assert.match(
+    macControllerSource,
+    /\$0 == \.clawd \|\| !hiddenBuiltinIDs\.contains\(\$0\.rawValue\)/,
+  );
+  assert.match(windowsPetSource, /HiddenBuiltinsFilename = "\.hidden-builtins\.json"/);
+  assert.match(windowsPetSource, /IsBuiltinCharacterHidden\(normalized\)/);
+  assert.match(
+    windowsTraySource,
+    /_petCharacterSprout\.Visible = !PetWindow\.IsBuiltinCharacterHidden/,
+  );
+});
+
 test("Windows edge tuck keeps the sprite visible instead of hiding window padding", () => {
   // The tucked target must be based on the centered sprite's inset, not just
   // `workArea.Right - EdgePeek` (which leaves only transparent padding visible).

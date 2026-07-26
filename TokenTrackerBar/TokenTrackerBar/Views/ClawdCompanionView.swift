@@ -1542,6 +1542,12 @@ struct ClawdCompanionView: View {
                 ("5h", opencodeGo.primaryWindow), ("Weekly", opencodeGo.secondaryWindow), ("Month", opencodeGo.tertiaryWindow)
             ])
         }
+        if let qoder = limits.qoder {
+            generic("qoder", configured: qoder.configured, error: qoder.error, windows: [
+                ("Credits", qoder.primaryWindow),
+                ("Ultimate Free Calls", qoder.secondaryWindow)
+            ])
+        }
 
         return readings
             .filter { $0.usedPercent > 0 && $0.usedPercent < 100 }

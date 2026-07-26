@@ -20,6 +20,8 @@ const {
   readOpencodeDbMessages,
   readMimoDbMessages,
   readZcodeDbMessages,
+  resolveQoderDbPaths,
+  readQoderDbMessages,
   resolveKiroDbPath,
   resolveKiroJsonlPath,
   resolveHermesPath,
@@ -35,6 +37,7 @@ const {
   parseGeminiIncremental,
   parseOpencodeIncremental,
   parseOpencodeDbIncremental,
+  parseQoderDbIncremental,
   parseOpenclawIncremental,
   parseCursorApiIncremental,
   parseKiroIncremental,
@@ -252,6 +255,7 @@ const AUTO_SYNC_SOURCES = new Set([
   "opencode",
   "openclaw",
   "pi",
+  "qoder",
   "roocode",
   "workbuddy",
   "zcode",
@@ -975,6 +979,47 @@ async function cmdSync(argv, context = {}) {
         eventsAggregated: multiResult.eventsAggregated,
         bucketsQueued: multiResult.bucketsQueued,
       };
+    }
+
+    let qoderResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+    if (sourceAllowed("qoder")) {
+      const qoderPaths = resolveQoderDbPaths({
+        home,
+        env: process.env,
+        platform: process.platform,
+      });
+      if (qoderPaths.native || qoderPaths.wsl) {
+        if (progress?.enabled) {
+          progress.start(`Parsing Qoder ${renderBar(0)} | buckets 0`);
+        }
+        try {
+          const result = await multiInstallParse({
+            paths: qoderPaths,
+            parserFn: async ({ dbPath, ...rest }) => {
+              const dbMessages = await readQoderDbMessages(dbPath);
+              const parsed = await parseQoderDbIncremental({ dbMessages, ...rest });
+              return {
+                recordsProcessed: parsed.messagesProcessed || 0,
+                eventsAggregated: parsed.eventsAggregated || 0,
+                bucketsQueued: parsed.bucketsQueued || 0,
+              };
+            },
+            providerName: "qoder",
+            cursors,
+            queuePath,
+            projectQueuePath,
+            getParams: (dbPath) => ({ dbPath }),
+            onProgress: makeProviderProgress("Qoder"),
+          });
+          qoderResult = {
+            recordsProcessed: result.recordsProcessed || 0,
+            eventsAggregated: result.eventsAggregated || 0,
+            bucketsQueued: result.bucketsQueued || 0,
+          };
+        } catch (err) {
+          warnProviderParseFailure("Qoder", err, opts);
+        }
+      }
     }
 
     async function parseOpencodeDbForInstall({ dbPath, readFn, source, cursorKey, ...rest }) {
@@ -2071,6 +2116,7 @@ async function cmdSync(argv, context = {}) {
       geminiResult.filesProcessed +
       antigravityResult.filesProcessed +
       opencodeResult.filesProcessed +
+      qoderResult.recordsProcessed +
       cursorResult.recordsProcessed +
       kiroResult.recordsProcessed +
       kiroCliResult.recordsProcessed +
@@ -2100,6 +2146,7 @@ async function cmdSync(argv, context = {}) {
       geminiResult.bucketsQueued +
       antigravityResult.bucketsQueued +
       opencodeResult.bucketsQueued +
+      qoderResult.bucketsQueued +
       cursorResult.bucketsQueued +
       kiroResult.bucketsQueued +
       kiroCliResult.bucketsQueued +

@@ -1,5 +1,6 @@
 const fs = require("node:fs/promises");
 const fssync = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
 
@@ -2904,6 +2905,15 @@ function normalizeOpencodeState(raw) {
   };
 }
 
+function normalizeQoderState(raw) {
+  const state = raw && typeof raw === "object" ? raw : {};
+  const messages = state.messages && typeof state.messages === "object" ? state.messages : {};
+  return {
+    messages,
+    updatedAt: typeof state.updatedAt === "string" ? state.updatedAt : null,
+  };
+}
+
 function normalizeMessageKeyPart(value) {
   if (typeof value !== "string") return "";
   return value.trim();
@@ -2995,6 +3005,33 @@ function addTotals(target, delta) {
   target.total_tokens += delta.total_tokens || 0;
   target.billable_total_tokens += delta.billable_total_tokens ?? delta.total_tokens ?? 0;
   target.conversation_count += delta.conversation_count || 0;
+}
+
+function subtractTotals(target, totals) {
+  target.input_tokens = Math.max(0, target.input_tokens - (totals.input_tokens || 0));
+  target.cached_input_tokens = Math.max(
+    0,
+    target.cached_input_tokens - (totals.cached_input_tokens || 0),
+  );
+  target.cache_creation_input_tokens = Math.max(
+    0,
+    target.cache_creation_input_tokens - (totals.cache_creation_input_tokens || 0),
+  );
+  target.output_tokens = Math.max(0, target.output_tokens - (totals.output_tokens || 0));
+  target.reasoning_output_tokens = Math.max(
+    0,
+    target.reasoning_output_tokens - (totals.reasoning_output_tokens || 0),
+  );
+  target.total_tokens = Math.max(0, target.total_tokens - (totals.total_tokens || 0));
+  target.billable_total_tokens = Math.max(
+    0,
+    target.billable_total_tokens -
+      (totals.billable_total_tokens ?? totals.total_tokens ?? 0),
+  );
+  target.conversation_count = Math.max(
+    0,
+    target.conversation_count - (totals.conversation_count || 0),
+  );
 }
 
 function totalsKey(totals) {
@@ -4037,6 +4074,349 @@ async function parseOpencodeDbIncremental({
     cursors.projectHourly = projectState;
   }
 
+  return { messagesProcessed, eventsAggregated, bucketsQueued, projectBucketsQueued };
+}
+
+const QODER_USAGE_SQL = `
+SELECT
+  cm.rowid AS row_id,
+  cm.id,
+  cm.session_id,
+  cm.request_id,
+  cm.token_info,
+  cm.model_info,
+  cm.gmt_create,
+  cr.extra AS record_extra,
+  cs.preferred_model_info,
+  cs.project_uri,
+  cs.project_name
+FROM chat_message AS cm
+LEFT JOIN chat_record AS cr ON cr.request_id = cm.request_id
+LEFT JOIN chat_session AS cs ON cs.session_id = cm.session_id
+WHERE cm.role = 'assistant'
+  AND cm.token_info IS NOT NULL
+  AND trim(cm.token_info) NOT IN ('', '{}')
+ORDER BY cm.gmt_create, cm.rowid
+`;
+
+function resolveQoderDbPath({
+  home = os.homedir(),
+  env = process.env,
+  platform = process.platform,
+} = {}) {
+  if (typeof env.QODER_DB_PATH === "string" && env.QODER_DB_PATH.trim()) {
+    return path.resolve(env.QODER_DB_PATH.trim());
+  }
+  let root;
+  if (typeof env.QODER_HOME === "string" && env.QODER_HOME.trim()) {
+    root = path.resolve(env.QODER_HOME.trim());
+  } else if (platform === "darwin") {
+    root = path.join(home, "Library", "Application Support", "Qoder");
+  } else if (platform === "win32") {
+    root = path.join(
+      env.APPDATA || path.join(home, "AppData", "Roaming"),
+      "Qoder",
+    );
+  } else {
+    root = path.join(home, ".config", "Qoder");
+  }
+  return path.join(root, "SharedClientCache", "cache", "db", "local.db");
+}
+
+function resolveQoderDbPaths({
+  home = os.homedir(),
+  env = process.env,
+  platform = process.platform,
+  deps = {},
+} = {}) {
+  const nativeValue = resolveQoderDbPath({ home, env, platform });
+  if (platform !== "win32" || env.QODER_DB_PATH || env.QODER_HOME) {
+    return { native: nativeValue, wsl: null };
+  }
+  const existsSync = deps.existsSync || fssync.existsSync;
+  const native = wsl.shouldProbeNative(env) && existsSync(nativeValue) ? nativeValue : null;
+  const discoverWslHome = deps.discoverWslHome || wsl.discoverWslHome;
+  const wslRoot = wsl.shouldProbeWsl(env)
+    ? discoverWslHome(".config/Qoder", { ...deps, env })
+    : null;
+  const wslValue = wslRoot
+    ? path.join(wslRoot, "SharedClientCache", "cache", "db", "local.db")
+    : null;
+  const wslDb = wslValue && existsSync(wslValue) ? wslValue : null;
+  return wsl.resolveAllWin32Paths({
+    nativeValue: native,
+    wslValue: wslDb,
+    env,
+    platform: "win32",
+  });
+}
+
+async function readQoderDbMessages(dbPath, sqliteOptions = {}) {
+  if (!dbPath || !fssync.existsSync(dbPath)) return [];
+  return readSqliteJsonRowsAsync(dbPath, QODER_USAGE_SQL, {
+    label: "Qoder",
+    ...sqliteOptions,
+  });
+}
+
+function parseJsonObject(value) {
+  if (!value) return null;
+  if (value && typeof value === "object" && !Buffer.isBuffer(value)) return value;
+  try {
+    const parsed = JSON.parse(String(value));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function normalizeQoderTokens(tokenInfo) {
+  const tokens = parseJsonObject(tokenInfo);
+  if (!tokens) return null;
+  const prompt = Number(tokens.prompt_tokens);
+  const cached = Number(tokens.cached_tokens || 0);
+  const completion = Number(tokens.completion_tokens);
+  if (
+    !Number.isFinite(prompt) ||
+    !Number.isFinite(cached) ||
+    !Number.isFinite(completion) ||
+    prompt < 0 ||
+    cached < 0 ||
+    completion < 0
+  ) {
+    return null;
+  }
+  // Qoder's prompt_tokens already includes cached_tokens. Keep cached input in
+  // its own column and report only the remainder as ordinary input, otherwise
+  // cached context is counted twice in dashboards and cost calculations.
+  const input = Math.max(0, Math.trunc(prompt) - Math.trunc(cached));
+  const cachedInput = Math.min(Math.trunc(prompt), Math.trunc(cached));
+  const output = Math.trunc(completion);
+  return {
+    input_tokens: input,
+    cached_input_tokens: cachedInput,
+    cache_creation_input_tokens: 0,
+    output_tokens: output,
+    reasoning_output_tokens: 0,
+    total_tokens: Math.trunc(prompt) + output,
+    billable_total_tokens: Math.trunc(prompt) + output,
+  };
+}
+
+function qoderModelFromRow(row) {
+  const direct = parseJsonObject(row?.model_info);
+  const recordExtra = parseJsonObject(row?.record_extra);
+  const preferred = parseJsonObject(row?.preferred_model_info);
+  return (
+    normalizeModelInput(direct?.model_key || direct?.modelKey) ||
+    normalizeModelInput(recordExtra?.modelConfig?.key || recordExtra?.model_config?.key) ||
+    normalizeModelInput(
+      preferred?.model_key ||
+      preferred?.modelKey ||
+      preferred?.preferred_model ||
+      preferred?.preferredModel,
+    ) ||
+    "qoder-agent"
+  );
+}
+
+function qoderMessageKey(row) {
+  const id = normalizeMessageKeyPart(row?.id);
+  const sessionId = normalizeMessageKeyPart(row?.session_id);
+  if (sessionId && id) return `${sessionId}|${id}`;
+  if (id) return id;
+  const rowId = row?.row_id;
+  return rowId === null || rowId === undefined ? null : `row:${rowId}`;
+}
+
+function qoderProjectPath(row) {
+  const raw = typeof row?.project_uri === "string" ? row.project_uri.trim() : "";
+  if (!raw) return null;
+  if (!raw.startsWith("file://")) return raw;
+  try {
+    return decodeURIComponent(new URL(raw).pathname);
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function parseQoderDbIncremental({
+  dbMessages,
+  cursors,
+  queuePath,
+  projectQueuePath,
+  onProgress,
+  publicRepoResolver,
+} = {}) {
+  await ensureDir(path.dirname(queuePath));
+  const rows = Array.isArray(dbMessages) ? dbMessages : [];
+  const hourlyState = normalizeHourlyState(cursors?.hourly);
+  const qoderState = normalizeQoderState(cursors?.qoder);
+  const touchedBuckets = new Set();
+  const projectEnabled = typeof projectQueuePath === "string" && projectQueuePath.length > 0;
+  const projectState = projectEnabled ? normalizeProjectState(cursors?.projectHourly) : null;
+  const projectTouchedBuckets = projectEnabled ? new Set() : null;
+  const projectMetaCache = projectEnabled ? new Map() : null;
+  const publicRepoCache = projectEnabled ? new Map() : null;
+  const requestOwners = new Map();
+  for (const row of rows) {
+    const messageKey = qoderMessageKey(row);
+    if (
+      !messageKey ||
+      !normalizeQoderTokens(row?.token_info) ||
+      !coerceEpochMs(row?.gmt_create)
+    ) {
+      continue;
+    }
+    const requestKey =
+      normalizeMessageKeyPart(row?.request_id) ||
+      normalizeMessageKeyPart(row?.session_id) ||
+      messageKey;
+    if (!requestOwners.has(requestKey)) requestOwners.set(requestKey, messageKey);
+  }
+  const cb = typeof onProgress === "function" ? onProgress : null;
+  let messagesProcessed = 0;
+  let eventsAggregated = 0;
+
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index];
+    const messageKey = qoderMessageKey(row);
+    const currentBase = normalizeQoderTokens(row?.token_info);
+    const timestampMs = coerceEpochMs(row?.gmt_create);
+    const bucketStart = timestampMs
+      ? toUtcHalfHourStart(new Date(timestampMs).toISOString())
+      : null;
+    if (!messageKey || !currentBase || !bucketStart) {
+      messagesProcessed += 1;
+      continue;
+    }
+
+    const requestKey =
+      normalizeMessageKeyPart(row?.request_id) ||
+      normalizeMessageKeyPart(row?.session_id) ||
+      messageKey;
+    const previous = qoderState.messages[messageKey];
+    // Recompute request ownership from the complete ordered DB snapshot on
+    // every pass. Qoder can attach token_info to an earlier assistant row only
+    // after a later row was already counted; retaining the old per-message
+    // owner in that case inflates one request to two conversations.
+    const conversationCount = requestOwners.get(requestKey) === messageKey ? 1 : 0;
+
+    const currentTotals = {
+      ...currentBase,
+      conversation_count: conversationCount,
+    };
+    const model = qoderModelFromRow(row);
+    let projectKey = null;
+    let projectRef = null;
+    if (projectEnabled) {
+      const projectPath = qoderProjectPath(row);
+      if (projectPath) {
+        const context = await resolveProjectContextForPath({
+          startDir: projectPath,
+          projectMetaCache,
+          publicRepoCache,
+          publicRepoResolver,
+          projectState,
+        });
+        projectKey = context?.projectKey || null;
+        projectRef = context?.projectRef || null;
+      }
+    }
+
+    const previousTotals =
+      previous?.totals && typeof previous.totals === "object" ? previous.totals : null;
+    const unchanged =
+      previousTotals &&
+      totalsKey(previousTotals) === totalsKey(currentTotals) &&
+      previous.bucketStart === bucketStart &&
+      previous.model === model &&
+      (previous.projectKey || null) === projectKey;
+    if (!unchanged) {
+      if (previousTotals && previous.bucketStart && previous.model) {
+        const oldBucket = getHourlyBucket(
+          hourlyState,
+          "qoder",
+          previous.model,
+          previous.bucketStart,
+        );
+        subtractTotals(oldBucket.totals, previousTotals);
+        touchedBuckets.add(bucketKey("qoder", previous.model, previous.bucketStart));
+        if (projectEnabled && previous.projectKey) {
+          const oldProjectBucket = getProjectBucket(
+            projectState,
+            previous.projectKey,
+            "qoder",
+            previous.bucketStart,
+            previous.projectRef || null,
+          );
+          subtractTotals(oldProjectBucket.totals, previousTotals);
+          projectTouchedBuckets.add(
+            projectBucketKey(previous.projectKey, "qoder", previous.bucketStart),
+          );
+        }
+      }
+
+      const bucket = getHourlyBucket(hourlyState, "qoder", model, bucketStart);
+      addTotals(bucket.totals, currentTotals);
+      touchedBuckets.add(bucketKey("qoder", model, bucketStart));
+      if (projectEnabled && projectKey) {
+        const projectBucket = getProjectBucket(
+          projectState,
+          projectKey,
+          "qoder",
+          bucketStart,
+          projectRef,
+        );
+        addTotals(projectBucket.totals, currentTotals);
+        projectTouchedBuckets.add(projectBucketKey(projectKey, "qoder", bucketStart));
+      }
+      qoderState.messages[messageKey] = {
+        totals: currentTotals,
+        conversationCount,
+        requestKey,
+        bucketStart,
+        model,
+        projectKey,
+        projectRef,
+        updatedAt: new Date().toISOString(),
+      };
+      eventsAggregated += 1;
+    }
+
+    messagesProcessed += 1;
+    if (cb) {
+      cb({
+        index: index + 1,
+        total: rows.length,
+        messagesProcessed,
+        eventsAggregated,
+        bucketsQueued: touchedBuckets.size,
+      });
+    }
+  }
+
+  const bucketsQueued = await enqueueTouchedBuckets({
+    queuePath,
+    hourlyState,
+    touchedBuckets,
+  });
+  const projectBucketsQueued = projectEnabled
+    ? await enqueueTouchedProjectBuckets({
+        projectQueuePath,
+        projectState,
+        projectTouchedBuckets,
+      })
+    : 0;
+  const updatedAt = new Date().toISOString();
+  hourlyState.updatedAt = updatedAt;
+  qoderState.updatedAt = updatedAt;
+  cursors.hourly = hourlyState;
+  cursors.qoder = qoderState;
+  if (projectState) {
+    projectState.updatedAt = updatedAt;
+    cursors.projectHourly = projectState;
+  }
   return { messagesProcessed, eventsAggregated, bucketsQueued, projectBucketsQueued };
 }
 
@@ -13854,6 +14234,9 @@ module.exports = {
   readOpencodeDbMessages,
   readMimoDbMessages,
   readZcodeDbMessages,
+  resolveQoderDbPath,
+  resolveQoderDbPaths,
+  readQoderDbMessages,
   resolveKiroDbPath,
   resolveKiroJsonlPath,
   resolveHermesPath,
@@ -13878,6 +14261,7 @@ module.exports = {
   parseGeminiIncremental,
   parseOpencodeIncremental,
   parseOpencodeDbIncremental,
+  parseQoderDbIncremental,
   openclawCursorKey,
   parseOpenclawIncremental,
   parseCursorApiIncremental,
@@ -13965,6 +14349,7 @@ module.exports = {
   // Exposed for regression tests covering cache-token accounting.
   normalizeGeminiTokens,
   normalizeOpencodeTokens,
+  normalizeQoderTokens,
   sameGeminiTotals,
   diffGeminiTotals,
   // Exposed so the queue-repair migration can mutate cursors state in the

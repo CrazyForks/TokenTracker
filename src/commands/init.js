@@ -124,6 +124,7 @@ const SUPPORTED_PROVIDERS = [
   "Droid",
   "Mimo",
   "ZCode",
+  "Qoder",
   "AnythingLLM Desktop",
 ];
 

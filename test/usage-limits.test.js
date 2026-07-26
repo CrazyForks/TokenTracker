@@ -3157,6 +3157,10 @@ describe("normalizePlanLabel", () => {
     assert.equal(normalizePlanLabel("business", "Codex"), "Business");
   });
 
+  it("normalizes machine-readable separators in provider plan ids", () => {
+    assert.equal(normalizePlanLabel("personal_standard", "Qoder"), "Personal Standard");
+  });
+
   it("returns null for a null tier", () => {
     assert.equal(normalizePlanLabel(null, "Codex"), null);
   });

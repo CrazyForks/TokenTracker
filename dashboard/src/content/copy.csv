@@ -745,6 +745,7 @@ limits.label.antigravity_live,ui,LimitsPage,UsageLimitsPanel,antigravity_live,"l
 limits.label.antigravity_cached,ui,LimitsPage,UsageLimitsPanel,antigravity_cached,"cached",,active
 limits.tooltip.antigravity_live,ui,LimitsPage,UsageLimitsPanel,antigravity_live_tooltip,"Real-time limits retrieved directly from the running Antigravity process.",,active
 limits.tooltip.antigravity_cached,ui,LimitsPage,UsageLimitsPanel,antigravity_cached_tooltip,"Cached limits. Run Antigravity IDE/CLI to refresh.",,active
+limits.tooltip.qoder_cached,ui,LimitsPage,UsageLimitsPanel,qoder_cached_tooltip,"Cached limits. Run Qoder to refresh.",,active
 limits.bar.sub_one_percent,ui,LimitsPage,UsageLimitsPanel,bar_sub_one_percent,"<1",,active
 limits.status.not_connected,ui,LimitsPage,UsageLimitsPanel,status_not_connected,"Not connected",,active
 limits.status.no_data,ui,LimitsPage,UsageLimitsPanel,status_no_data,"No live limit data returned",,active
@@ -754,6 +755,18 @@ shared.time.m_ago,shared,*,Shared,time_m_ago,"{{n}}m",,active
 shared.time.h_ago,shared,*,Shared,time_h_ago,"{{n}}h",,active
 shared.time.d_ago,shared,*,Shared,time_d_ago,"{{n}}d",,active
 nav.ip_check,shared,*,Sidebar,nav_ip_check,Claude IP Check,,active
+nav.service_status,shared,*,Sidebar,nav_service_status,Service Status,,active
+status.page.subtitle,ui,ServiceStatusPage,ServiceStatusPage,subtitle,"Live incident status from your AI providers' official status pages.",,active
+status.page.source_note,ui,ServiceStatusPage,ServiceStatusPage,source_note,"Read directly from each provider's public status page in your browser. Auto-refreshes every minute.",,active
+status.state.checking,ui,ServiceStatusPage,StatusCard,state_checking,"Checking…",,active
+status.state.none,ui,ServiceStatusPage,StatusCard,state_none,"Operational",,active
+status.state.minor,ui,ServiceStatusPage,StatusCard,state_minor,"Minor incident",,active
+status.state.major,ui,ServiceStatusPage,StatusCard,state_major,"Major incident",,active
+status.state.critical,ui,ServiceStatusPage,StatusCard,state_critical,"Critical outage",,active
+status.state.unknown,ui,ServiceStatusPage,StatusCard,state_unknown,"Unreachable",,active
+status.open_page,ui,ServiceStatusPage,StatusCard,open_page,"Open {{provider}} status page",,active
+status.refresh,ui,ServiceStatusPage,ServiceStatusPage,refresh,"Refresh",,active
+status.last_checked,ui,ServiceStatusPage,ServiceStatusPage,last_checked,"Checked at {{time}}",,active
 nav.skills,shared,*,Sidebar,nav_skills,Skills,,active
 nav.sessions,shared,*,Sidebar,nav_sessions,Sessions,,active
 skills.page.title,ui,SkillsPage,SkillsPage,title,Skills,,active
@@ -1157,6 +1170,11 @@ limits.provider.opencode_go,ui,LimitsPage,UsageLimitsPanel,provider_opencode_go,
 limits.label.opencode_go_5h,ui,LimitsPage,UsageLimitsPanel,opencode_go_5h,"5h",,active
 limits.label.opencode_go_weekly,ui,LimitsPage,UsageLimitsPanel,opencode_go_weekly,"Weekly",,active
 limits.label.opencode_go_monthly,ui,LimitsPage,UsageLimitsPanel,opencode_go_monthly,"Monthly",,active
+limits.provider.qoder,ui,LimitsPage,UsageLimitsPanel,provider_qoder,"Qoder",,active
+limits.label.qoder_credits,ui,LimitsPage,UsageLimitsPanel,qoder_credits,"Credits",,active
+limits.label.qoder_ultimate,ui,LimitsPage,UsageLimitsPanel,qoder_ultimate,"Ultimate Free Calls",,active
+limits.qoder_calls.detail,ui,LimitsPage,UsageLimitsPanel,qoder_calls_detail,"{{used}} / {{limit}} calls used · {{remaining}} left",,active
+limits.hover.expires_at,ui,LimitsPage,UsageLimitsPanel,hover_expires_at,"Expires {{time}}",,active
 limits.opencodeGo.setupHint.title,ui,LimitsPage,UsageLimitsPanel,opencode_go_hint_title,"Connect OpenCode Go",,active
 limits.opencodeGo.setupHint.subtitle,ui,LimitsPage,UsageLimitsPanel,opencode_go_hint_subtitle,"Limits read from your signed-in opencode.ai session (no public API).",,active
 limits.opencodeGo.setupHint.step1,ui,LimitsPage,UsageLimitsPanel,opencode_go_hint_step1,"Sign in and open your Go workspace.",,active
@@ -1210,12 +1228,12 @@ pet.import.title,dashboard,PetPage,PetPage,import_title,"Import Codex Pet",,acti
 pet.import.subtitle,dashboard,PetPage,PetPage,import_subtitle,"Paste a codex-pets.net link or choose a .zip package.",,active
 pet.import.add,dashboard,PetPage,PetPage,import_add,"Add",,active
 pet.import.zip,dashboard,PetPage,PetPage,import_zip,"Choose package",,active
-pet.import.remove,dashboard,PetPage,PetPage,import_remove,"Remove imported pet",,active
+pet.import.remove,dashboard,PetPage,PetPage,import_remove,"Remove pet",,active
 pet.import.success,dashboard,PetPage,PetPage,import_success,"Pet imported and selected.",,active
 pet.import.failed,dashboard,PetPage,PetPage,import_failed,"Could not import this pet.",,active
 pet.import.busy,dashboard,PetPage,PetPage,import_busy,"Importing…",,active
 pet.format.v2,dashboard,PetPage,PetPage,format_v2,"V2",,active
-pet.import.removed,dashboard,PetPage,PetPage,import_removed,"Imported pet removed.",,active
+pet.import.removed,dashboard,PetPage,PetPage,import_removed,"Pet removed.",,active
 pet.import.url_label,dashboard,PetPage,PetPage,import_url_label,"Codex Pets URL or pet id",,active
 pet.codex.title,dashboard,PetPage,PetPage,codex_title,"From Codex",,active
 pet.codex.subtitle,dashboard,PetPage,PetPage,codex_subtitle,"Import pets you already have in the Codex app — including its built-in companions.",,active

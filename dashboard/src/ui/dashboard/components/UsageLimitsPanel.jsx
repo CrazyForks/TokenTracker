@@ -59,22 +59,28 @@ function formatPercentValue(value) {
   return String(rounded);
 }
 
-function formatCreditAmount(value) {
+function formatCreditAmount(value, { useGrouping = true } = {}) {
   const n = Number(value);
   if (!Number.isFinite(n)) return null;
   return new Intl.NumberFormat(undefined, {
     minimumFractionDigits: 0,
     maximumFractionDigits: n >= 100 ? 0 : 2,
+    useGrouping,
   }).format(n);
 }
 
-function buildCodexCreditDetail(window) {
+function buildQuotaDetail(window) {
   if (!window || typeof window !== "object") return null;
-  const used = formatCreditAmount(window.used_credits);
-  const limit = formatCreditAmount(window.limit_credits);
-  const remaining = formatCreditAmount(window.remaining_credits);
+  if (!(Number(window.limit_credits) > 0)) return null;
+  const formatOptions = { useGrouping: window.unit !== "calls" };
+  const used = formatCreditAmount(window.used_credits, formatOptions);
+  const limit = formatCreditAmount(window.limit_credits, formatOptions);
+  const remaining = formatCreditAmount(window.remaining_credits, formatOptions);
   if (!used || !limit || !remaining) return null;
-  return copy("limits.codex_credits.detail", { used, limit, remaining });
+  const key = window.unit === "calls"
+    ? "limits.qoder_calls.detail"
+    : "limits.codex_credits.detail";
+  return copy(key, { used, limit, remaining });
 }
 
 /** Pace + projection for one window spec, in the active display mode. */
@@ -108,11 +114,11 @@ function buildWindowHoverDetail(spec, pace, mode) {
   const lines = [explainLineFor(spec, pace, mode)];
   const resetMs = resetToMs(readWindowReset(spec.window, spec.resetField));
   const exact = formatExactReset(resetMs);
-  if (exact) lines.push(copy("limits.hover.resets_at", { time: exact }));
-  if (spec.key === "credits") {
-    const credits = buildCodexCreditDetail(spec.window);
-    if (credits) lines.push(credits);
+  if (exact) {
+    lines.push(copy(spec.timeKind === "expiry" ? "limits.hover.expires_at" : "limits.hover.resets_at", { time: exact }));
   }
+  const quota = buildQuotaDetail(spec.window);
+  if (quota) lines.push(quota);
   return lines.join("\n");
 }
 
@@ -212,7 +218,7 @@ function LimitDetail({ rows, mode }) {
             {exact ? (
               <span className="text-oai-gray-400 dark:text-oai-gray-500">
                 {" · "}
-                {copy("limits.hover.resets_at", { time: exact })}
+                {copy(spec.timeKind === "expiry" ? "limits.hover.expires_at" : "limits.hover.resets_at", { time: exact })}
               </span>
             ) : null}
           </div>
@@ -477,6 +483,16 @@ function renderProviderGroup(id, data, mode, expanded, onToggle) {
       badge = <StatusBadge label={copy("limits.label.antigravity_live")} tone="live" tooltip={copy("limits.tooltip.antigravity_live")} />;
     }
   }
+  if (id === "qoder" && data.cached) {
+    badge = (
+      <StatusBadge
+        label={copy("limits.label.antigravity_cached")}
+        age={ago(data.cached_at)}
+        tone="cached"
+        tooltip={copy("limits.tooltip.qoder_cached")}
+      />
+    );
+  }
   // An expired sign-in means every live fetch fails the same way and the bars
   // silently freeze on the cached snapshot (issue 330) — more actionable than
   // the generic stale badge below, so it takes precedence.
@@ -665,8 +681,8 @@ function useWidestLabelWidth(containerRef) {
   return labelWidth;
 }
 
-export function UsageLimitsPanel({ claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot, zcode, opencodeGo, order, visibility, displayMode }) {
-  const dataById = { claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot, zcode, opencodeGo };
+export function UsageLimitsPanel({ claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot, zcode, opencodeGo, qoder, order, visibility, displayMode }) {
+  const dataById = { claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot, zcode, opencodeGo, qoder };
   const containerRef = useRef(null);
   const labelWidth = useWidestLabelWidth(containerRef);
   const [expandedId, setExpandedId] = useState(null);

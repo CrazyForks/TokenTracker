@@ -88,6 +88,8 @@ final class NativeBridge {
             pushSettings()
         case "getPetSettings":
             pushPetSettings()
+        case "refreshPetCatalog":
+            PetCatalog.shared.refresh()
         case "getSystemAppearance":
             DashboardWindowController.shared.pushCurrentSystemAppearanceToWeb()
         case "setChromeAppearance":

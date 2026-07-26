@@ -57,6 +57,8 @@ enum Strings {
     }
 
     static var usageLimitsTitle: String { t("Limits", "限额", "限額", "上限", "한도") }
+    static var providerServiceIssue: String { t("Service issue reported", "服务异常", "服務異常", "サービス障害が報告されています", "서비스 장애가 보고됨") }
+    static var providerStatusOpenPage: String { t("Open status page", "打开状态页", "打開狀態頁", "ステータスページを開く", "상태 페이지 열기") }
     static var sessionExpired: String { t("Session expired", "会话已过期", "會話已過期", "セッションが期限切れです", "세션이 만료되었습니다") }
     static var allProvidersHidden: String { t("All providers hidden", "所有提供方均已隐藏", "所有提供方均已隱藏", "すべてのプロバイダーが非表示です", "모든 제공자가 숨겨졌습니다") }
     static var cursorPlanLabel: String { t("Plan", "套餐", "套餐", "プラン", "플랜") }
