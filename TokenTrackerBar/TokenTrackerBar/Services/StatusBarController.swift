@@ -727,6 +727,15 @@ final class StatusBarController: NSObject {
 
         // Keep keyboard focus inside the popover while it is visible.
         if let window = popover.contentViewController?.view.window {
+            // The _NSPopoverWindow is reused across shows and its default
+            // collectionBehavior is only .ignoresCycle — it does NOT inherit the
+            // anchor window's .canJoinAllSpaces, so it stays pinned to the Space it
+            // was first ordered in on and reopens on the wrong desktop (#372).
+            // Use .canJoinAllSpaces (not .moveToActiveSpace, which only migrates on
+            // app *activation* and is a no-op when the app is already active, e.g.
+            // while the Dashboard window is frontmost). .fullScreenAuxiliary matches
+            // the anchor window so the popover also shows over full-screen Spaces.
+            window.collectionBehavior.insert([.canJoinAllSpaces, .fullScreenAuxiliary])
             NSApp.activate(ignoringOtherApps: true)
             window.makeKey()
         }
