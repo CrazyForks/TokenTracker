@@ -46,8 +46,8 @@ test("physicalJsonlRecords reports exact CRLF and unterminated byte spans", asyn
   }
 
   assert.deepEqual(records, [
-    { line: "first", physicalBytes: 7, terminated: true },
-    { line: "last", physicalBytes: 4, terminated: false },
+    { line: "first", utf8Valid: true, physicalBytes: 7, terminated: true },
+    { line: "last", utf8Valid: true, physicalBytes: 4, terminated: false },
   ]);
 });
 
@@ -147,6 +147,7 @@ test("physicalJsonlRecords counts multibyte UTF-8 exactly", async () => {
 
   assert.deepEqual(records, [{
     line: '{"text":"中\u2028文"}',
+    utf8Valid: true,
     physicalBytes: content.length,
     terminated: true,
   }]);
@@ -162,7 +163,34 @@ test("physicalJsonlRecords counts multibyte UTF-8 exactly", async () => {
   );
 });
 
-test("physicalJsonlRecords rejects invalid UTF-8", async () => {
+test("physicalJsonlRecords preserves invalid UTF-8 record spans in record mode", async () => {
+  const invalid = Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d]);
+  const input = Buffer.concat([Buffer.from("first\n"), invalid, Buffer.from("\nlast\n")]);
+  const records = [];
+
+  for await (const record of physicalJsonlRecords([input], { invalidUtf8: "record" })) {
+    records.push(record);
+  }
+
+  assert.deepEqual(records, [
+    { line: "first", utf8Valid: true, physicalBytes: 6, terminated: true },
+    { line: null, utf8Valid: false, physicalBytes: invalid.length + 1, terminated: true },
+    { line: "last", utf8Valid: true, physicalBytes: 5, terminated: true },
+  ]);
+  assert.equal(records.reduce((sum, record) => sum + record.physicalBytes, 0), input.length);
+});
+
+test("physicalJsonlLines skips invalid UTF-8 only when explicitly requested", async () => {
+  const invalid = Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d]);
+  const input = Buffer.concat([Buffer.from("first\n"), invalid, Buffer.from("\nlast\n")]);
+  const lines = [];
+
+  for await (const line of physicalJsonlLines([input], { invalidUtf8: "skip" })) lines.push(line);
+
+  assert.deepEqual(lines, ["first", "last"]);
+});
+
+test("physicalJsonlRecords rejects invalid UTF-8 by default", async () => {
   const invalid = Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d, 0x0a]);
 
   await assert.rejects(async () => {

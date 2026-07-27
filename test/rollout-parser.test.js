@@ -199,6 +199,187 @@ test("parseRolloutIncremental preserves Unicode line separators inside physical 
   }
 });
 
+test("parseRolloutIncremental skips an invalid UTF-8 record and keeps surrounding usage", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-rollout-invalid-utf8-"));
+  try {
+    const rolloutPath = path.join(tmp, "rollout-test.jsonl");
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1, files: {}, updatedAt: null };
+    const usage = (totalTokens) => ({
+      input_tokens: totalTokens,
+      cached_input_tokens: 0,
+      output_tokens: 0,
+      reasoning_output_tokens: 0,
+      total_tokens: totalTokens,
+    });
+    const first = buildTokenCountLine({
+      ts: "2025-12-17T00:00:00.000Z",
+      last: usage(100),
+      total: usage(100),
+    });
+    const second = buildTokenCountLine({
+      ts: "2025-12-17T00:00:01.000Z",
+      last: usage(50),
+      total: usage(150),
+    });
+    const invalidLine = buildTokenCountLine({
+      ts: "2025-12-17T00:00:00.500Z",
+      last: usage(9_900),
+      total: usage(10_000),
+      annotation: "BROKEN",
+    });
+    const invalid = Buffer.from(invalidLine);
+    invalid[invalid.indexOf(Buffer.from("BROKEN"))] = 0xff;
+    const content = Buffer.concat([
+      Buffer.from(`${first}\n`),
+      invalid,
+      Buffer.from(`\n${second}\n`),
+    ]);
+    await fs.writeFile(rolloutPath, content);
+
+    const result = await parseRolloutIncremental({ rolloutFiles: [rolloutPath], cursors, queuePath });
+
+    assert.equal(result.eventsAggregated, 2);
+    assert.equal(cursors.files[rolloutPath].offset, content.length);
+    const queued = await readJsonLines(queuePath);
+    assert.equal(queued.reduce((sum, row) => sum + Number(row.total_tokens || 0), 0), 150);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("parseRolloutIncremental retries incomplete trailing JSONL records", async (t) => {
+  const cases = [
+    {
+      name: "ASCII JSON truncation",
+      splitOffset(line) {
+        return line.indexOf(Buffer.from('"total_token_usage"')) + 8;
+      },
+    },
+    {
+      name: "UTF-8 character truncation",
+      splitOffset(line) {
+        return line.indexOf(Buffer.from("中")) + 1;
+      },
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-rollout-partial-jsonl-"));
+      try {
+        const rolloutPath = path.join(tmp, "rollout-test.jsonl");
+        const queuePath = path.join(tmp, "queue.jsonl");
+        const cursors = { version: 1, files: {}, updatedAt: null };
+        const usage = (totalTokens) => ({
+          input_tokens: totalTokens,
+          cached_input_tokens: 0,
+          output_tokens: 0,
+          reasoning_output_tokens: 0,
+          total_tokens: totalTokens,
+        });
+        const firstLine = Buffer.from(`${buildTokenCountLine({
+          ts: "2025-12-17T00:00:00.000Z",
+          last: usage(100),
+          total: usage(100),
+        })}\n`);
+        const secondLine = Buffer.from(buildTokenCountLine({
+          ts: "2025-12-17T00:00:01.000Z",
+          last: usage(50),
+          total: usage(150),
+          annotation: "中",
+        }));
+        const splitOffset = testCase.splitOffset(secondLine);
+        assert.ok(splitOffset > 0 && splitOffset < secondLine.length);
+        await fs.writeFile(
+          rolloutPath,
+          Buffer.concat([firstLine, secondLine.subarray(0, splitOffset)]),
+        );
+
+        const first = await parseRolloutIncremental({
+          rolloutFiles: [rolloutPath],
+          cursors,
+          queuePath,
+        });
+        assert.equal(first.eventsAggregated, 1);
+        assert.equal(cursors.files[rolloutPath].offset, firstLine.length);
+
+        await fs.appendFile(
+          rolloutPath,
+          Buffer.concat([secondLine.subarray(splitOffset), Buffer.from("\n")]),
+        );
+        const second = await parseRolloutIncremental({
+          rolloutFiles: [rolloutPath],
+          cursors,
+          queuePath,
+        });
+        assert.equal(second.eventsAggregated, 1);
+        const finalSize = (await fs.stat(rolloutPath)).size;
+        assert.equal(cursors.files[rolloutPath].offset, finalSize);
+        const queued = await readJsonLines(queuePath);
+        assert.equal(queued.length, 2);
+        assert.equal(Number(queued.at(-1)?.total_tokens || 0), 150);
+      } finally {
+        await fs.rm(tmp, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("parseRolloutIncremental recovers from a legacy cursor inside a UTF-8 character", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-rollout-legacy-utf8-"));
+  try {
+    const rolloutPath = path.join(tmp, "rollout-test.jsonl");
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const usage = (totalTokens) => ({
+      input_tokens: totalTokens,
+      cached_input_tokens: 0,
+      output_tokens: 0,
+      reasoning_output_tokens: 0,
+      total_tokens: totalTokens,
+    });
+    const first = buildTokenCountLine({
+      ts: "2025-12-17T00:00:00.000Z",
+      last: usage(100),
+      total: usage(100),
+      annotation: "中",
+    });
+    const second = buildTokenCountLine({
+      ts: "2025-12-17T00:00:01.000Z",
+      last: usage(50),
+      total: usage(150),
+    });
+    const content = Buffer.from(`${first}\n${second}\n`);
+    await fs.writeFile(rolloutPath, content);
+    const stat = await fs.stat(rolloutPath);
+    const markerStart = content.indexOf(Buffer.from("中"));
+    const legacyOffset = markerStart + 1;
+    assert.ok(markerStart > 0);
+    assert.equal(content[legacyOffset] & 0xc0, 0x80);
+    const cursors = {
+      version: 1,
+      files: {
+        [rolloutPath]: {
+          inode: stat.ino,
+          offset: legacyOffset,
+          lastTotal: usage(100),
+          lastModel: "unknown",
+        },
+      },
+      updatedAt: null,
+    };
+
+    const result = await parseRolloutIncremental({ rolloutFiles: [rolloutPath], cursors, queuePath });
+
+    assert.equal(result.eventsAggregated, 1);
+    assert.equal(cursors.files[rolloutPath].offset, content.length);
+    const queued = await readJsonLines(queuePath);
+    assert.equal(queued.reduce((sum, row) => sum + Number(row.total_tokens || 0), 0), 50);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("parseRolloutIncremental separates interleaved cumulative usage lineages", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-rollout-"));
   try {
@@ -742,7 +923,7 @@ test("parseRolloutIncremental recovers legacy Codex EOF cursor project freshness
     await fs.writeFile(
       rolloutPath,
       [
-        buildTurnContextLine({ model: "gpt-4", cwd: repoRoot }),
+        buildTurnContextLine({ model: "gpt-4", cwd: repoRoot, annotation: "left\u2028right" }),
         buildTokenCountLine({ ts: "2026-01-26T00:10:00.000Z", last: usage, total: usage }),
       ].join("\n") + "\n",
       "utf8",
@@ -778,6 +959,90 @@ test("parseRolloutIncremental recovers legacy Codex EOF cursor project freshness
     assert.equal(third.filesProcessed, 0);
     assert.equal(third.eventsAggregated, 0);
     assert.equal(third.projectBucketsQueued, 0);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("parseRolloutIncremental retries a partial legacy project-context-only tail", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-rollout-project-partial-"));
+  try {
+    const repoRoot = path.join(tmp, "repo");
+    await fs.mkdir(path.join(repoRoot, ".git"), { recursive: true });
+    await fs.writeFile(
+      path.join(repoRoot, ".git", "config"),
+      `[remote "origin"]\n\turl = https://github.com/acme/alpha.git\n`,
+      "utf8",
+    );
+    const sessionsDir = path.join(tmp, ".codex", "sessions", "2026", "01", "26");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const rolloutPath = path.join(
+      sessionsDir,
+      "rollout-2026-01-26T00-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl",
+    );
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const projectQueuePath = path.join(tmp, "project.queue.jsonl");
+    const usage = {
+      input_tokens: 2,
+      cached_input_tokens: 0,
+      output_tokens: 3,
+      reasoning_output_tokens: 0,
+      total_tokens: 5,
+    };
+    const completePrefix = Buffer.from(`${buildTokenCountLine({
+      ts: "2026-01-26T00:10:00.000Z",
+      last: usage,
+      total: usage,
+    })}\n`);
+    const contextLine = Buffer.from(buildTurnContextLine({
+      model: "gpt-4",
+      cwd: repoRoot,
+      annotation: "left\u2028right",
+    }));
+    const splitOffset = contextLine.indexOf(Buffer.from(repoRoot)) + 3;
+    assert.ok(splitOffset > 0 && splitOffset < contextLine.length);
+    const initialContent = Buffer.concat([completePrefix, contextLine.subarray(0, splitOffset)]);
+    await fs.writeFile(rolloutPath, initialContent);
+    const stat = await fs.stat(rolloutPath);
+    const cursors = {
+      version: 1,
+      files: {
+        [rolloutPath]: {
+          inode: stat.ino,
+          offset: initialContent.length,
+          lastTotal: usage,
+          lastModel: "gpt-4",
+        },
+      },
+      updatedAt: null,
+    };
+
+    const first = await parseRolloutIncremental({
+      rolloutFiles: [rolloutPath],
+      cursors,
+      queuePath,
+      projectQueuePath,
+    });
+    assert.equal(first.filesProcessed, 1);
+    assert.equal(first.eventsAggregated, 0);
+    assert.equal(cursors.files[rolloutPath].offset, completePrefix.length);
+    assert.equal(cursors.files[rolloutPath].projectOffset, completePrefix.length);
+    assert.equal(Boolean(cursors.files[rolloutPath].projectFileContext?.configPath), false);
+
+    await fs.appendFile(
+      rolloutPath,
+      Buffer.concat([contextLine.subarray(splitOffset), Buffer.from("\n")]),
+    );
+    const second = await parseRolloutIncremental({
+      rolloutFiles: [rolloutPath],
+      cursors,
+      queuePath,
+      projectQueuePath,
+    });
+    assert.equal(second.filesProcessed, 1);
+    assert.equal(second.eventsAggregated, 0);
+    assert.equal(cursors.files[rolloutPath].offset, (await fs.stat(rolloutPath)).size);
+    assert.equal(cursors.files[rolloutPath].projectFileContext.configPath.endsWith("config"), true);
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
@@ -4587,13 +4852,16 @@ test("parseClaudeIncremental defaults missing model to unknown", async () => {
   }
 });
 
-function buildTurnContextLine({ model, cwd, currentDate }) {
+function buildTurnContextLine({ model, cwd, currentDate, annotation }) {
   const payload = { model };
   if (typeof cwd === "string" && cwd.length > 0) {
     payload.cwd = cwd;
   }
   if (typeof currentDate === "string" && currentDate.length > 0) {
     payload.current_date = currentDate;
+  }
+  if (typeof annotation === "string") {
+    payload.annotation = annotation;
   }
   return JSON.stringify({
     type: "turn_context",
@@ -4615,7 +4883,7 @@ function buildSessionMetaLine({ model, cwd, forkedFromId }) {
   });
 }
 
-function buildTokenCountLine({ ts, last, total, contextWindow }) {
+function buildTokenCountLine({ ts, last, total, contextWindow, annotation }) {
   const info = {
     last_token_usage: last,
     total_token_usage: total,
@@ -4627,6 +4895,7 @@ function buildTokenCountLine({ ts, last, total, contextWindow }) {
     payload: {
       type: "token_count",
       info,
+      ...(typeof annotation === "string" ? { annotation } : {}),
     },
   });
 }

@@ -23,7 +23,13 @@ function decodePhysicalLine(buffer, { stripCr = false } = {}) {
   return fatalUtf8Decoder.decode(content);
 }
 
-async function* physicalJsonlRecords(input, { maxPhysicalBytes = Infinity } = {}) {
+async function* physicalJsonlRecords(input, {
+  invalidUtf8 = "throw",
+  maxPhysicalBytes = Infinity,
+} = {}) {
+  if (invalidUtf8 !== "throw" && invalidUtf8 !== "record") {
+    throw new TypeError(`unsupported invalidUtf8 policy: ${invalidUtf8}`);
+  }
   const byteLimit = Number.isFinite(maxPhysicalBytes)
     ? Math.max(0, Number(maxPhysicalBytes))
     : Infinity;
@@ -53,13 +59,17 @@ async function* physicalJsonlRecords(input, { maxPhysicalBytes = Infinity } = {}
       fragments.length = 0;
       fragmentsBytes = 0;
       physicalBytesRead += physicalBytes;
-      yield {
-        line: decodePhysicalLine(lineBuffer, { stripCr: true }),
-        physicalBytes,
-        terminated: true,
-      };
       start = newline + 1;
       newline = chunk.indexOf(0x0a, start);
+      let line;
+      try {
+        line = decodePhysicalLine(lineBuffer, { stripCr: true });
+      } catch (error) {
+        if (invalidUtf8 === "throw") throw error;
+        yield { line: null, utf8Valid: false, physicalBytes, terminated: true };
+        continue;
+      }
+      yield { line, utf8Valid: true, physicalBytes, terminated: true };
     }
 
     if (start < chunk.length) {
@@ -76,16 +86,35 @@ async function* physicalJsonlRecords(input, { maxPhysicalBytes = Infinity } = {}
     const lineBuffer = fragments.length === 1
       ? fragments[0]
       : Buffer.concat(fragments, fragmentsBytes);
-    yield {
-      line: decodePhysicalLine(lineBuffer),
-      physicalBytes: fragmentsBytes,
-      terminated: false,
-    };
+    try {
+      yield {
+        line: decodePhysicalLine(lineBuffer),
+        utf8Valid: true,
+        physicalBytes: fragmentsBytes,
+        terminated: false,
+      };
+    } catch (error) {
+      if (invalidUtf8 === "throw") throw error;
+      yield {
+        line: null,
+        utf8Valid: false,
+        physicalBytes: fragmentsBytes,
+        terminated: false,
+      };
+    }
   }
 }
 
-async function* physicalJsonlLines(input) {
-  for await (const record of physicalJsonlRecords(input)) {
+async function* physicalJsonlLines(input, { invalidUtf8 = "throw", ...options } = {}) {
+  if (invalidUtf8 !== "throw" && invalidUtf8 !== "skip") {
+    throw new TypeError(`unsupported invalidUtf8 policy: ${invalidUtf8}`);
+  }
+  const recordPolicy = invalidUtf8 === "skip" ? "record" : "throw";
+  for await (const record of physicalJsonlRecords(input, {
+    ...options,
+    invalidUtf8: recordPolicy,
+  })) {
+    if (!record.utf8Valid) continue;
     yield record.line;
   }
 }
