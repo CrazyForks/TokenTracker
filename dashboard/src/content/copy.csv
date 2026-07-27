@@ -90,6 +90,7 @@ landing.v2.distill.body,landing,LandingPage,MarketingLanding,distill_body,"100% 
 landing.v2.footer.line,landing,LandingPage,MarketingLanding,footer_line,"Token Tracker — Made by developers, for developers.",,active
 landing.v2.nav.status,landing,LandingPage,MarketingLanding,nav_status,"Status",,active
 landing.v2.nav.github,landing,LandingPage,MarketingLanding,nav_github,"GitHub",,active
+landing.v2.nav.privacy,landing,LandingPage,MarketingLanding,nav_privacy,"Privacy",,active
 landing.v2.cta.primary,landing,LandingPage,MarketingLanding,cta_primary,"Dashboard",,active
 landing.v2.hero.subtagline,landing,LandingPage,MarketingLanding,hero_subtagline,"Automatically monitor token usage across Claude Code, Cursor, Codex, and more. Local-first, privacy-focused, and zero manual configuration.",,active
 landing.v3.hero.kicker,landing,LandingPage,HeroSection,hero_kicker,"Desktop pet · 4 widgets · Achievements",,active

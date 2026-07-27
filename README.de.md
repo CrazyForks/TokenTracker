@@ -247,6 +247,8 @@ flowchart LR
 
 ## 🛡️ Datenschutz
 
+> 📄 **[Vollständige Datenschutzerklärung](docs/PRIVACY.md)** (englisch) — jede Netzwerkanfrage, die die App stellen kann, was dabei gesendet wird und wie man sie abschaltet.
+
 | Schutz | Beschreibung |
 |---|---|
 | **Kein Content-Upload** | Nur Token-Zahlen und Zeitstempel. Nie Prompts, Responses oder Dateiinhalte. |

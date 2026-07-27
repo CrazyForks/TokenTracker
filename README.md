@@ -297,6 +297,8 @@ flowchart LR
 
 ## 🛡️ Privacy
 
+> 📄 **[Full Privacy Policy](docs/PRIVACY.md)** — every network request the app can make, what each one sends, and how to switch it off.
+
 | Protection | Description |
 |---|---|
 | **No content upload** | Only token counts and timestamps. Never prompts, responses, or file contents. |
