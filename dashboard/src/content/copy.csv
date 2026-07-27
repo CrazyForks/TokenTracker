@@ -465,6 +465,9 @@ settings.limits.providers,ui,SettingsPage,SettingsPage,limits_providers,"Provide
 settings.labs.island.label,ui,SettingsPage,LabsSection,island_label,"Dynamic Island",,active
 settings.labs.island.hint,ui,SettingsPage,LabsSection,island_hint,"Turn the MacBook notch into a Dynamic Island: today's tokens and spend at a glance, hover for spend and limit details.",,active
 settings.labs.island.aria,ui,SettingsPage,LabsSection,island_aria,"Toggle Dynamic Island",,active
+settings.labs.island_hide_menubar.label,ui,SettingsPage,LabsSection,island_hide_menubar_label,"Hide Menu Bar Item",,active
+settings.labs.island_hide_menubar.hint,ui,SettingsPage,LabsSection,island_hide_menubar_hint,"Hide top menu bar icon and use Dynamic Island exclusively.",,active
+settings.labs.island_hide_menubar.aria,ui,SettingsPage,LabsSection,island_hide_menubar_aria,"Toggle hide menu bar item",,active
 settings.labs.qpd.label,ui,SettingsPage,LabsSection,qpd_label,"Analyze PR cost-efficiency",,active
 settings.labs.qpd.hint,ui,SettingsPage,LabsSection,qpd_hint,"Analyze average delivery costs and effective Tokens per model from merged PRs and AI-attributed commits.",,active
 settings.labs.qpd.aria,ui,SettingsPage,LabsSection,qpd_aria,"Toggle PR cost-efficiency analysis",,active

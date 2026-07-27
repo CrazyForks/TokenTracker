@@ -116,7 +116,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             viewModel: viewModel,
             serverManager: serverManager,
             launchAtLoginManager: launchAtLoginManager,
-            desktopPetController: desktopPetController
+            desktopPetController: desktopPetController,
+            dynamicIslandController: dynamicIslandController
         )
 
         // Bring the desktop pet back if it was showing when the app last quit.

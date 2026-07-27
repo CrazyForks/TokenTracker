@@ -238,6 +238,7 @@ final class NativeBridge {
             "launchAtLogin": launchAtLoginValue,
             "launchAtLoginSupported": launchAtLoginSupported,
             "dynamicIslandEnabled": UserDefaults.standard.bool(forKey: DynamicIslandController.enabledDefaultsKey),
+            "hideMenuBarIcon": UserDefaults.standard.bool(forKey: StatusBarController.hideMenuBarIconKey),
             // macOS-only feature flag: the Windows bridge never sends this, so
             // the dashboard can gate the Labs toggle on its presence.
             "dynamicIslandSupported": true,
@@ -319,6 +320,17 @@ final class NativeBridge {
                 // Controller persists the flag itself (single write path shared
                 // with the popover menu), then shows/hides the island panel.
                 dynamicIslandController?.setEnabled(bool)
+                if !bool {
+                    // Match the native menu path: disabling the island also
+                    // clears the hide-icon flag, so re-enabling the island
+                    // never silently re-hides the menu bar icon.
+                    StatusBarController.setMenuBarIconHidden(false)
+                }
+                NotificationCenter.default.post(name: .nativeSettingsChanged, object: nil)
+            }
+        case "hideMenuBarIcon":
+            if let bool = value as? Bool {
+                StatusBarController.setMenuBarIconHidden(bool)
                 NotificationCenter.default.post(name: .nativeSettingsChanged, object: nil)
             }
         case "locale":

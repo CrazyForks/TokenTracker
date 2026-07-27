@@ -178,6 +178,7 @@ struct UsageLimitsView: View {
         }
         .modifier(ProviderClickableStyle(isActive: explainingProvider == id, isStale: isStale))
         .onTapGesture { explainingProvider = (explainingProvider == id) ? nil : id }
+        .pointingHandCursor()
         .popover(isPresented: isOpen, arrowEdge: .trailing) {
             // Keep on one line: codex-reset-bank guardrail tests assert this exact
             // call shape to prove reset-bank rows never leak into the explanation.
@@ -679,9 +680,12 @@ private struct SettingsGearButton<Popover: View>: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .pointingHandCursor()
         .onHover { isHovered = $0 }
         .popover(isPresented: $isPresented, arrowEdge: .trailing) {
             popover()
+                .preferredColorScheme(.dark)
+                .environment(\.colorScheme, .dark)
         }
     }
 }
@@ -786,9 +790,9 @@ private struct ProviderClickableStyle: ViewModifier {
                 .allowsHitTesting(false)
             }
             .contentShape(RoundedRectangle(cornerRadius: 8))
+            .pointingHandCursor()
             .onHover { hovering in
                 self.hovering = hovering
-                if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
             }
             .padding(.horizontal, -6)
     }
@@ -855,6 +859,8 @@ private struct LimitsExplainContent: View {
         }
         .padding(14)
         .frame(width: 256)
+        .preferredColorScheme(.dark)
+        .environment(\.colorScheme, .dark)
     }
 
     /// "Updated 2h ago · 7/7 10:26" — relative age (matches the reset rows' style)
