@@ -1007,6 +1007,7 @@ async function cmdSync(argv, context = {}) {
             dbResult = await parseOpencodeDbIncremental({
               ...options,
               dbMessages,
+              dbPath,
             });
           }
         }
@@ -1066,7 +1067,7 @@ async function cmdSync(argv, context = {}) {
             paths: qoderPaths,
             parserFn: async ({ dbPath, ...rest }) => {
               const dbMessages = await readQoderDbMessages(dbPath);
-              const parsed = await parseQoderDbIncremental({ dbMessages, ...rest });
+              const parsed = await parseQoderDbIncremental({ dbMessages, dbPath, ...rest });
               return {
                 recordsProcessed: parsed.messagesProcessed || 0,
                 eventsAggregated: parsed.eventsAggregated || 0,
@@ -1136,7 +1137,7 @@ async function cmdSync(argv, context = {}) {
       }
       const dbMessages = readFn(dbPath);
       if (dbMessages.length === 0) return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
-      const result = await parseOpencodeDbIncremental({ dbMessages, source, cursorKey, ...rest });
+      const result = await parseOpencodeDbIncremental({ dbMessages, dbPath, source, cursorKey, ...rest });
       return {
         recordsProcessed: result.messagesProcessed || 0,
         eventsAggregated: result.eventsAggregated || 0,

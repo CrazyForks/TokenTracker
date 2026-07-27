@@ -760,6 +760,11 @@ async function parseClaudeIncremental({
   const projectTouchedBuckets = projectEnabled ? new Set() : null;
   const projectMetaCache = projectEnabled ? new Map() : null;
   const publicRepoCache = projectEnabled ? new Map() : null;
+  // Sessions cluster into few repos, so the per-file freshness checks below
+  // keep stat-ing the same handful of .git/config paths. Share one stat per
+  // config per run, as the Codex path does — it matters most for WSL installs,
+  // where every stat crosses the \\wsl$ bridge (#374).
+  const projectFreshnessCache = projectEnabled ? new Map() : null;
   const touchedBuckets = new Set();
   // Persist seenMessageHashes across syncs to prevent cross-file duplicates
   // (e.g. subagent file created after main session was already parsed).
@@ -878,7 +883,9 @@ async function parseClaudeIncremental({
     const cachedContextAbsent = cachedProjectFileContext?.absent === true;
     const projectContextFresh =
       projectEnabled && cachedProjectFileContext && !cachedContextAbsent
-        ? await isProjectFileContextFresh(cachedProjectFileContext)
+        ? await isProjectFileContextFresh(cachedProjectFileContext, {
+            freshnessCache: projectFreshnessCache,
+          })
         : false;
     const projectKnownAbsent = cachedCwd === null || cachedContextAbsent;
     const projectSettled =
@@ -909,7 +916,7 @@ async function parseClaudeIncremental({
       }
       if (nextCwd) {
         const projectContext = await resolveProjectContextForPath({
-          startDir: nextCwd,
+          startDir: wsl.mapWslCwdToUnc(nextCwd, filePath),
           projectMetaCache,
           publicRepoCache,
           publicRepoResolver,
@@ -2025,7 +2032,7 @@ async function parseRolloutFile({
         const nextCwd = obj.payload.cwd.trim();
         if (nextCwd && nextCwd !== currentCwd) {
           const context = await resolveProjectContextForPath({
-            startDir: nextCwd,
+            startDir: wsl.mapWslCwdToUnc(nextCwd, filePath),
             projectMetaCache,
             publicRepoCache,
             publicRepoResolver,
@@ -2219,7 +2226,7 @@ async function scanRolloutProjectFileContexts({
     const nextCwd = obj.payload.cwd.trim();
     if (!nextCwd || nextCwd === currentCwd) continue;
     const context = await resolveProjectContextForPath({
-      startDir: nextCwd,
+      startDir: wsl.mapWslCwdToUnc(nextCwd, filePath),
       projectMetaCache,
       publicRepoCache,
       publicRepoResolver,
@@ -4129,6 +4136,7 @@ function readZcodeDbMessages(dbPath, sqliteOptions = {}) {
 
 async function parseOpencodeDbIncremental({
   dbMessages,
+  dbPath,
   cursors,
   queuePath,
   projectQueuePath,
@@ -4225,6 +4233,7 @@ async function parseOpencodeDbIncremental({
     if (projectEnabled) {
       const projectContext = await resolveProjectContextForDb({
         msg,
+        dbPath,
         projectMetaCache,
         publicRepoCache,
         publicRepoResolver,
@@ -4444,6 +4453,7 @@ function qoderProjectPath(row) {
 
 async function parseQoderDbIncremental({
   dbMessages,
+  dbPath,
   cursors,
   queuePath,
   projectQueuePath,
@@ -4515,7 +4525,7 @@ async function parseQoderDbIncremental({
       const projectPath = qoderProjectPath(row);
       if (projectPath) {
         const context = await resolveProjectContextForPath({
-          startDir: projectPath,
+          startDir: wsl.mapWslCwdToUnc(projectPath, dbPath),
           projectMetaCache,
           publicRepoCache,
           publicRepoResolver,
@@ -4975,6 +4985,7 @@ async function parseClaudeScienceIncremental({
 // Resolve project context from DB message (no file path available)
 async function resolveProjectContextForDb({
   msg,
+  dbPath,
   projectMetaCache,
   publicRepoCache,
   publicRepoResolver,
@@ -4983,7 +4994,9 @@ async function resolveProjectContextForDb({
   const cwd = msg?.path?.cwd;
   if (!cwd || typeof cwd !== "string") return null;
   return resolveProjectContextForPath({
-    startDir: cwd,
+    // The DB itself is read over the distro's UNC bridge on Windows, so its
+    // path carries the prefix the recorded POSIX cwd needs (#374).
+    startDir: wsl.mapWslCwdToUnc(cwd, dbPath),
     projectMetaCache,
     publicRepoCache,
     publicRepoResolver,
@@ -11141,7 +11154,7 @@ async function parseOmpIncremental({
       const cwd = await resolveOmpFileCwd(filePath);
       const projectContext = cwd
         ? await resolveProjectContextForPath({
-            startDir: cwd,
+            startDir: wsl.mapWslCwdToUnc(cwd, filePath),
             projectMetaCache,
             publicRepoCache,
             publicRepoResolver,
