@@ -19,6 +19,7 @@ final class NativeBridge {
     private weak var viewModel: DashboardViewModel?
     private weak var launchAtLoginManager: LaunchAtLoginManager?
     private weak var desktopPetController: DesktopPetWindowController?
+    private weak var dynamicIslandController: DynamicIslandController?
     private var cancellables = Set<AnyCancellable>()
 
     private init() {}
@@ -26,11 +27,13 @@ final class NativeBridge {
     func configure(
         viewModel: DashboardViewModel,
         launchAtLoginManager: LaunchAtLoginManager,
-        desktopPetController: DesktopPetWindowController
+        desktopPetController: DesktopPetWindowController,
+        dynamicIslandController: DynamicIslandController? = nil
     ) {
         self.viewModel = viewModel
         self.launchAtLoginManager = launchAtLoginManager
         self.desktopPetController = desktopPetController
+        self.dynamicIslandController = dynamicIslandController
 
         cancellables.removeAll()
         // Re-push settings whenever selectable menu-bar items change so the
@@ -234,6 +237,10 @@ final class NativeBridge {
             "confettiOnReset": WeeklyLimitResetDetector.confettiEnabled(),
             "launchAtLogin": launchAtLoginValue,
             "launchAtLoginSupported": launchAtLoginSupported,
+            "dynamicIslandEnabled": UserDefaults.standard.bool(forKey: DynamicIslandController.enabledDefaultsKey),
+            // macOS-only feature flag: the Windows bridge never sends this, so
+            // the dashboard can gate the Labs toggle on its presence.
+            "dynamicIslandSupported": true,
             "version": UpdateChecker.shared.currentVersion(),
             "updateStatus": UpdateChecker.shared.statusText ?? NSNull(),
             "updateBusy": UpdateChecker.shared.isBusy,
@@ -306,6 +313,13 @@ final class NativeBridge {
         case "launchAtLogin":
             if let bool = value as? Bool {
                 setLaunchAtLogin(bool)
+            }
+        case "dynamicIslandEnabled":
+            if let bool = value as? Bool {
+                // Controller persists the flag itself (single write path shared
+                // with the popover menu), then shows/hides the island panel.
+                dynamicIslandController?.setEnabled(bool)
+                NotificationCenter.default.post(name: .nativeSettingsChanged, object: nil)
             }
         case "locale":
             LocalizationObserver.shared.storePreference(value)
