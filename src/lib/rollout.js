@@ -1962,7 +1962,7 @@ async function parseRolloutFile({
     };
   }
 
-  const stream = fssync.createReadStream(filePath, { encoding: "utf8", start: startOffset });
+  const stream = fssync.createReadStream(filePath, { start: startOffset });
 
   let model = typeof lastModel === "string" ? lastModel : null;
   const usageDeltaState = createUsageDeltaState({

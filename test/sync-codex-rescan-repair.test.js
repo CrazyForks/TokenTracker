@@ -1453,6 +1453,18 @@ describe("repairCodexInterleavedUsageInflation — cumulative lineage repair", (
         "usage_lineage_scan_indeterminate",
       );
       assert.equal(await fs.readFile(queuePath, "utf8"), originalQueue);
+
+      assert.equal(
+        await repairCodexInterleavedUsageInflation({
+          cursors,
+          queuePath,
+          queueStatePath,
+          rolloutFiles: [{ path: codexFile, source: "codex" }],
+          maxLineageScanBytes: stat.size,
+        }),
+        true,
+      );
+      assert.equal(codexBucketTotal(cursors), LINEAGE_TRUE_TOTAL);
     } finally {
       await fs.rm(home, { recursive: true, force: true });
     }
@@ -1528,17 +1540,32 @@ describe("repairCodexInterleavedUsageInflation — cumulative lineage repair", (
       );
       await fs.writeFile(malformedFile, '{"type":"turn_context","payload":\n', "utf8");
       const { queuePath, queueStatePath } = await seedInflatedLineageInstall(home, codexFile);
+      const projectQueuePath = path.join(home, "project.queue.jsonl");
+      const projectQueueStatePath = path.join(home, "project.queue.state.json");
+      await fs.writeFile(projectQueuePath, '{"source":"codex","total_tokens":17}\n', "utf8");
+      await fs.writeFile(projectQueueStatePath, '{"offset":321}', "utf8");
       const cursors = JSON.parse(
         await fs.readFile(path.join(home, ".tokentracker", "tracker", "cursors.json"), "utf8"),
       );
       cursors.files[malformedFile] = { inode: 2, offset: 5 };
       const originalQueue = await fs.readFile(queuePath, "utf8");
+      const originalQueueState = await fs.readFile(queueStatePath, "utf8");
+      const originalProjectQueue = await fs.readFile(projectQueuePath, "utf8");
+      const originalProjectQueueState = await fs.readFile(projectQueueStatePath, "utf8");
+      const originalCursorState = structuredClone({
+        files: cursors.files,
+        hourly: cursors.hourly,
+        projectHourly: cursors.projectHourly,
+        codexHashes: cursors.codexHashes,
+      });
 
       assert.equal(
         await repairCodexInterleavedUsageInflation({
           cursors,
           queuePath,
           queueStatePath,
+          projectQueuePath,
+          projectQueueStatePath,
           rolloutFiles: [
             { path: codexFile, source: "codex" },
             { path: malformedFile, source: "codex" },
@@ -1548,6 +1575,62 @@ describe("repairCodexInterleavedUsageInflation — cumulative lineage repair", (
       );
       assert.equal(codexBucketTotal(cursors), 4_700_000_000);
       assert.equal(await fs.readFile(queuePath, "utf8"), originalQueue);
+      assert.equal(await fs.readFile(queueStatePath, "utf8"), originalQueueState);
+      assert.equal(await fs.readFile(projectQueuePath, "utf8"), originalProjectQueue);
+      assert.equal(await fs.readFile(projectQueueStatePath, "utf8"), originalProjectQueueState);
+      assert.deepEqual(
+        {
+          files: cursors.files,
+          hourly: cursors.hourly,
+          projectHourly: cursors.projectHourly,
+          codexHashes: cursors.codexHashes,
+        },
+        originalCursorState,
+      );
+      assert.equal(
+        cursors.migrations[CODEX_USAGE_LINEAGE_REPAIR_KEY].reason,
+        "usage_lineage_scan_indeterminate",
+      );
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("defers atomically when a contributing rollout contains invalid UTF-8", async () => {
+    const home = await makeTempHome();
+    try {
+      const codexFile = await writeLineageCodexFile(home);
+      await fs.appendFile(
+        codexFile,
+        Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d, 0x0a]),
+      );
+      const { queuePath, queueStatePath } = await seedInflatedLineageInstall(home, codexFile);
+      const cursors = JSON.parse(
+        await fs.readFile(path.join(home, ".tokentracker", "tracker", "cursors.json"), "utf8"),
+      );
+      const originalQueue = await fs.readFile(queuePath, "utf8");
+      const originalQueueState = await fs.readFile(queueStatePath, "utf8");
+      const originalCursorState = structuredClone({
+        files: cursors.files,
+        hourly: cursors.hourly,
+        codexHashes: cursors.codexHashes,
+      });
+
+      assert.equal(
+        await repairCodexInterleavedUsageInflation({
+          cursors,
+          queuePath,
+          queueStatePath,
+          rolloutFiles: [{ path: codexFile, source: "codex" }],
+        }),
+        false,
+      );
+      assert.equal(await fs.readFile(queuePath, "utf8"), originalQueue);
+      assert.equal(await fs.readFile(queueStatePath, "utf8"), originalQueueState);
+      assert.deepEqual(
+        { files: cursors.files, hourly: cursors.hourly, codexHashes: cursors.codexHashes },
+        originalCursorState,
+      );
       assert.equal(
         cursors.migrations[CODEX_USAGE_LINEAGE_REPAIR_KEY].reason,
         "usage_lineage_scan_indeterminate",

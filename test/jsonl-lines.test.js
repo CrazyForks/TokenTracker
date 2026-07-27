@@ -7,7 +7,7 @@ const { physicalJsonlLines, physicalJsonlRecords } = require("../src/lib/jsonl-l
 
 async function collectLines(chunks) {
   const lines = [];
-  for await (const line of physicalJsonlLines(chunks)) {
+  for await (const line of physicalJsonlLines(chunks.map((chunk) => Buffer.from(chunk)))) {
     lines.push(line);
   }
   return lines;
@@ -41,7 +41,7 @@ test("physicalJsonlLines preserves bare carriage returns", async () => {
 
 test("physicalJsonlRecords reports exact CRLF and unterminated byte spans", async () => {
   const records = [];
-  for await (const record of physicalJsonlRecords(["first\r\nlast"])) {
+  for await (const record of physicalJsonlRecords([Buffer.from("first\r\nlast")])) {
     records.push(record);
   }
 
@@ -57,7 +57,7 @@ test("physicalJsonlLines closes its input when the consumer stops early", async 
     [Symbol.asyncIterator]() {
       return {
         async next() {
-          return { value: "first\nsecond\n", done: false };
+          return { value: Buffer.from("first\nsecond\n"), done: false };
         },
         async return() {
           returned = true;
@@ -69,6 +69,38 @@ test("physicalJsonlLines closes its input when the consumer stops early", async 
 
   for await (const _line of physicalJsonlLines(input)) break;
 
+  assert.equal(returned, true);
+});
+
+test("physicalJsonlRecords closes an unterminated input as soon as its byte limit is exceeded", async () => {
+  let pulled = 0;
+  let returned = false;
+  const chunks = ["1234", "5678", "9abcdef"].map((chunk) => Buffer.from(chunk));
+  const input = {
+    [Symbol.asyncIterator]() {
+      return {
+        async next() {
+          const value = chunks[pulled];
+          pulled += 1;
+          return value === undefined ? { done: true } : { value, done: false };
+        },
+        async return() {
+          returned = true;
+          return { done: true };
+        },
+      };
+    },
+  };
+
+  await assert.rejects(
+    async () => {
+      for await (const _record of physicalJsonlRecords(input, { maxPhysicalBytes: 8 })) {
+        assert.fail("an unterminated over-budget record must not be yielded");
+      }
+    },
+    (error) => error?.code === "PHYSICAL_JSONL_LIMIT_EXCEEDED",
+  );
+  assert.equal(pulled, 3);
   assert.equal(returned, true);
 });
 
@@ -102,4 +134,40 @@ test("physicalJsonlLines handles a large record split across many chunks", async
 
   assert.equal(chunks.length > 10_000, true);
   assert.deepEqual(lines, [record]);
+});
+
+test("physicalJsonlRecords counts multibyte UTF-8 exactly", async () => {
+  const content = Buffer.from('{"text":"中\u2028文"}\r\n');
+  const records = [];
+  for await (const record of physicalJsonlRecords([content], {
+    maxPhysicalBytes: content.length,
+  })) {
+    records.push(record);
+  }
+
+  assert.deepEqual(records, [{
+    line: '{"text":"中\u2028文"}',
+    physicalBytes: content.length,
+    terminated: true,
+  }]);
+  await assert.rejects(
+    async () => {
+      for await (const _record of physicalJsonlRecords([content], {
+        maxPhysicalBytes: content.length - 1,
+      })) {
+        assert.fail("an over-budget multibyte record must not be yielded");
+      }
+    },
+    (error) => error?.code === "PHYSICAL_JSONL_LIMIT_EXCEEDED",
+  );
+});
+
+test("physicalJsonlRecords rejects invalid UTF-8", async () => {
+  const invalid = Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d, 0x0a]);
+
+  await assert.rejects(async () => {
+    for await (const _record of physicalJsonlRecords([invalid])) {
+      assert.fail("invalid UTF-8 must not be yielded");
+    }
+  }, TypeError);
 });

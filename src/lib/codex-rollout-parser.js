@@ -920,6 +920,8 @@ async function parseCodexRolloutFile(filePath, {
   return result;
 }
 
+const fatalUtf8Decoder = new TextDecoder("utf-8", { fatal: true });
+
 function parseCodexLine(lineBuffer, diagnostics) {
   let content = lineBuffer;
   if (content.length > 0 && content[content.length - 1] === 0x0d) {
@@ -928,7 +930,7 @@ function parseCodexLine(lineBuffer, diagnostics) {
   if (content.length === 0) return null;
   try {
     if (diagnostics) diagnostics.json_parse_calls += 1;
-    return JSON.parse(content.toString("utf8"));
+    return JSON.parse(fatalUtf8Decoder.decode(content));
   } catch {
     return null;
   }

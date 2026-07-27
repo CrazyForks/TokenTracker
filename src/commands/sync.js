@@ -4272,11 +4272,10 @@ async function scanCodexUsageLineages(filePath, maxBytes = Infinity) {
     const byteLimit = Number.isFinite(maxBytes) ? Math.max(0, maxBytes) : Infinity;
     let bytesRead = 0;
     let affected = false;
-    stream = fssync.createReadStream(filePath, {
-      encoding: "utf8",
-      highWaterMark: 32 * 1024,
-    });
-    for await (const record of physicalJsonlRecords(stream)) {
+    stream = fssync.createReadStream(filePath, { highWaterMark: 32 * 1024 });
+    for await (const record of physicalJsonlRecords(stream, {
+      maxPhysicalBytes: byteLimit,
+    })) {
       const { line } = record;
       bytesRead += record.physicalBytes;
       if (bytesRead > byteLimit) return { affected: false, indeterminate: true };
