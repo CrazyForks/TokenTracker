@@ -6,12 +6,17 @@ import SwiftUI
 /// today's cost on the right wing, the center occluded by the hardware notch.
 /// Hover: expands into a spend summary (today / 7d / 30d / total) plus the
 /// usage-limits bars, all fed by the shared `DashboardViewModel`.
+///
+/// The panel window is always the expanded size; only this black shape
+/// animates. Growing from a top-aligned outer frame (instead of resizing the
+/// window mid-animation) keeps the top edge glued to the screen so no
+/// wallpaper seam flashes through.
 struct DynamicIslandView: View {
     @ObservedObject var viewModel: DashboardViewModel
     @ObservedObject var state: DynamicIslandState
     let onHoverChanged: (Bool) -> Void
     /// Reports the measured wing width (max of both labels + breathing room)
-    /// so the controller can shrink the panel to hug the text.
+    /// so the controller can shrink the hit-test pill to hug the text.
     let onWingWidthChanged: (CGFloat) -> Void
 
     /// Horizontal breathing room added around the widest wing label.
@@ -20,13 +25,16 @@ struct DynamicIslandView: View {
     var body: some View {
         // Referenced so currency/locale changes force a re-render.
         let _ = state.settingsTick
-        VStack(spacing: 0) {
+        ZStack(alignment: .top) {
             island
-            Spacer(minLength: 0)
         }
-        // Fixed root frame matching the panel exactly — a fluid root on a
-        // borderless panel triggers NSWindow constraint updates that crash.
+        // Fixed root frame matching the (always-expanded) panel exactly — a
+        // fluid root on a borderless panel triggers NSWindow constraint
+        // updates that crash (same trap DesktopPetHost avoids).
         .frame(width: state.panelSize.width, height: state.panelSize.height, alignment: .top)
+        // The panel covers the menu-bar / notch safe area; never let SwiftUI
+        // inset the black fill or a top seam appears.
+        .ignoresSafeArea()
         // The island is always a black surface — force dark styling for the
         // embedded summary cards and limit bars regardless of system theme.
         .environment(\.colorScheme, .dark)
@@ -46,13 +54,20 @@ struct DynamicIslandView: View {
             collapsedRow
             if expanded {
                 expandedContent
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    // Opacity only — a `.move(edge: .top)` insertion briefly
+                    // shoves the header down and opens the top seam.
+                    .transition(.opacity)
             }
         }
         .frame(width: width, height: height, alignment: .top)
         .background(shape.fill(Color.black))
         .clipShape(shape)
-        .shadow(color: .black.opacity(expanded ? 0.45 : 0), radius: 14, y: 6)
+        // Shadow draws below the island; keep it off the top edge.
+        .shadow(color: .black.opacity(expanded ? 0.45 : 0), radius: 14, y: 8)
+        // Top-align inside the always-expanded panel so height/width springs
+        // grow downward / outward instead of from the view's center (which
+        // would pull the top edge away from the screen and flash wallpaper).
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onHover(perform: onHoverChanged)
     }
 

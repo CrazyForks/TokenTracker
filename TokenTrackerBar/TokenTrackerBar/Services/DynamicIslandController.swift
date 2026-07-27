@@ -47,6 +47,10 @@ final class DynamicIslandState: ObservableObject {
     /// to this exact frame — a fluid (`maxWidth: .infinity`) root on a
     /// borderless panel routes invalidations into NSWindow's constraint
     /// machinery, which throws and crashes (same trap DesktopPetHost avoids).
+    ///
+    /// Always the expanded size while the island is visible: the window never
+    /// resizes on hover, so the black shape can spring from the top edge
+    /// without a wallpaper seam.
     @Published var panelSize = CGSize(
         width: DynamicIslandGeometry.expandedSize.width,
         height: DynamicIslandGeometry.expandedSize.height
@@ -66,17 +70,20 @@ final class DynamicIslandController: NSObject {
     static let enabledDefaultsKey = "DynamicIslandEnabled"
 
     /// Delay before collapsing after the pointer leaves, so grazing the island
-    /// edge (or the frame swap under the cursor) doesn't flap it shut.
+    /// edge doesn't flap it shut.
     private static let collapseDelay: TimeInterval = 0.25
-    /// How long the shrink animation runs before the panel frame snaps back to
-    /// the collapsed rect (must exceed the SwiftUI spring's visible settle).
-    private static let frameShrinkDelay: TimeInterval = 0.4
+    /// Push the panel 1pt past the screen's top edge so sub-pixel / retina
+    /// rounding never leaves a hairline of wallpaper between black and bezel.
+    private static let topOverhang: CGFloat = 1
 
     private let viewModel: DashboardViewModel
     private let state = DynamicIslandState()
-    private var panel: NSPanel?
+    private var panel: IslandPanel?
+    /// Retained separately because we host its view inside `IslandHitView`
+    /// rather than assigning `contentViewController` (which would replace our
+    /// hit-test wrapper).
+    private var hostingController: NSHostingController<DynamicIslandView>?
     private var collapseWorkItem: DispatchWorkItem?
-    private var shrinkWorkItem: DispatchWorkItem?
     private var observers: [NSObjectProtocol] = []
 
     init(viewModel: DashboardViewModel) {
@@ -128,7 +135,6 @@ final class DynamicIslandController: NSObject {
 
     func hide() {
         collapseWorkItem?.cancel()
-        shrinkWorkItem?.cancel()
         state.isExpanded = false
         panel?.orderOut(nil)
     }
@@ -148,16 +154,13 @@ final class DynamicIslandController: NSObject {
     }
 
     private func expand() {
-        shrinkWorkItem?.cancel()
-        shrinkWorkItem = nil
-        guard panel != nil, let screen = targetScreen() else { return }
-        // Grow the (transparent) frame first so the island has room to animate
-        // into; the shape itself animates in SwiftUI.
-        setPanelFrame(expandedFrame(on: screen))
         guard !state.isExpanded else { return }
+        // Panel frame stays put — only the black shape springs open from the
+        // top. Resizing the window mid-animation was what opened the seam.
         withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
             state.isExpanded = true
         }
+        panel?.updateHitRegion()
     }
 
     private func collapse() {
@@ -165,15 +168,12 @@ final class DynamicIslandController: NSObject {
         withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
             state.isExpanded = false
         }
-        // Shrink the frame only after the shape has visibly settled, otherwise
-        // the window clips the animating island.
-        let item = DispatchWorkItem { [weak self] in
+        // Refresh hit-test after the spring settles so the large expanded
+        // rect doesn't keep stealing clicks under the transparent wings.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             guard let self, !self.state.isExpanded else { return }
-            guard self.panel != nil, let screen = self.targetScreen() else { return }
-            self.setPanelFrame(self.collapsedFrame(on: screen))
+            self.panel?.updateHitRegion()
         }
-        shrinkWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.frameShrinkDelay, execute: item)
     }
 
     // MARK: - Screen + geometry
@@ -212,60 +212,65 @@ final class DynamicIslandController: NSObject {
         )
     }
 
-    /// The view measured its wing labels; adopt the tight width and re-fit the
-    /// collapsed frame so the panel never has dead transparent margins.
+    /// The view measured its wing labels; adopt the tight width so the
+    /// collapsed hit-test pill stays snug around the text.
     private func applyWingWidth(_ width: CGFloat) {
         let clamped = max(DynamicIslandGeometry.minWingWidth, width)
         guard abs(clamped - state.geometry.wingWidth) > 0.5 else { return }
         state.geometry.wingWidth = clamped
-        guard !state.isExpanded, panel != nil, let screen = targetScreen() else { return }
-        setPanelFrame(collapsedFrame(on: screen))
+        panel?.updateHitRegion()
     }
 
-    private func collapsedFrame(on screen: NSScreen) -> NSRect {
-        let geo = state.geometry
-        return NSRect(
-            x: screen.frame.midX - geo.collapsedWidth / 2,
-            y: screen.frame.maxY - geo.collapsedHeight,
-            width: geo.collapsedWidth,
-            height: geo.collapsedHeight
-        )
-    }
-
-    private func expandedFrame(on screen: NSScreen) -> NSRect {
+    /// Always the expanded panel size, top-aligned with a 1pt overhang past
+    /// the screen's top edge (covers retina hairline gaps).
+    private func panelFrame(on screen: NSScreen) -> NSRect {
         let geo = state.geometry
         let size = NSSize(
             width: max(DynamicIslandGeometry.expandedSize.width, geo.collapsedWidth),
-            height: max(DynamicIslandGeometry.expandedSize.height, geo.collapsedHeight)
+            height: max(DynamicIslandGeometry.expandedSize.height, geo.collapsedHeight) + Self.topOverhang
         )
         return NSRect(
             x: screen.frame.midX - size.width / 2,
-            y: screen.frame.maxY - size.height,
+            y: screen.frame.maxY - size.height + Self.topOverhang,
             width: size.width,
             height: size.height
         )
     }
 
+    /// Interactive rect of the black shape, in panel contentView coordinates
+    /// (AppKit: origin bottom-left). Used so transparent chrome click-throughs.
+    fileprivate func hitRectInPanel() -> NSRect {
+        guard let panel else { return .zero }
+        let geo = state.geometry
+        let panelW = panel.frame.width
+        let panelH = panel.frame.height
+        let width = state.isExpanded
+            ? max(DynamicIslandGeometry.expandedSize.width, geo.collapsedWidth)
+            : geo.collapsedWidth
+        let height = state.isExpanded
+            ? DynamicIslandGeometry.expandedSize.height
+            : geo.collapsedHeight
+        // Top-aligned in the panel (whose top may include the 1pt overhang).
+        let x = (panelW - width) / 2
+        let y = panelH - height
+        return NSRect(x: x, y: y, width: width, height: height)
+    }
+
     /// Recompute geometry and re-pin to the current target screen (display
     /// plug/unplug, lid close, resolution change).
     private func repositionPanel() {
-        guard panel != nil, let screen = targetScreen() else { return }
+        guard let panel, let screen = targetScreen() else { return }
         let geo = geometry(for: screen)
         if geo != state.geometry { state.geometry = geo }
-        let frame = state.isExpanded ? expandedFrame(on: screen) : collapsedFrame(on: screen)
-        setPanelFrame(frame)
-    }
-
-    /// Single write path for the panel frame: keeps `state.panelSize` in sync
-    /// so the SwiftUI root's fixed frame always matches the window exactly.
-    private func setPanelFrame(_ frame: NSRect) {
+        let frame = panelFrame(on: screen)
         if state.panelSize != frame.size { state.panelSize = frame.size }
-        panel?.setFrame(frame, display: true)
+        panel.setFrame(frame, display: true)
+        panel.updateHitRegion()
     }
 
     // MARK: - Panel
 
-    private func makePanel() -> NSPanel {
+    private func makePanel() -> IslandPanel {
         // Hosting *controller* (not a bare NSHostingView as contentView): on a
         // borderless panel the latter routes SwiftUI invalidations into
         // NSWindow constraint updates, which throws and crashes (see
@@ -284,10 +289,11 @@ final class DynamicIslandController: NSObject {
         )
 
         // Never let the hosting controller drive the window size — the
-        // controller owns the frame (collapsed vs expanded) exclusively.
+        // controller owns the frame exclusively.
         if #available(macOS 13.0, *) {
             hostingController.sizingOptions = []
         }
+        self.hostingController = hostingController
 
         let panel = IslandPanel(
             contentRect: NSRect(origin: .zero, size: DynamicIslandGeometry.expandedSize),
@@ -295,7 +301,20 @@ final class DynamicIslandController: NSObject {
             backing: .buffered,
             defer: false
         )
-        panel.contentViewController = hostingController
+        panel.islandController = self
+
+        // Wrap the hosting view in a hit-test filter: the panel stays at the
+        // expanded size, but only the black shape accepts mouse events so the
+        // transparent chrome doesn't block the menu bar underneath.
+        let hitView = IslandHitView(frame: NSRect(origin: .zero, size: DynamicIslandGeometry.expandedSize))
+        hitView.autoresizingMask = [.width, .height]
+        hitView.islandController = self
+        hostingController.view.frame = hitView.bounds
+        hostingController.view.autoresizingMask = [.width, .height]
+        hitView.addSubview(hostingController.view)
+        panel.contentView = hitView
+        panel.hitView = hitView
+
         panel.isOpaque = false
         panel.backgroundColor = .clear
         // The island draws its own SwiftUI shadow when expanded; a window
@@ -315,6 +334,28 @@ final class DynamicIslandController: NSObject {
 
 /// Never steals key/main status — the island is display-only chrome.
 private final class IslandPanel: NSPanel {
+    weak var islandController: DynamicIslandController?
+    weak var hitView: IslandHitView?
+
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+
+    func updateHitRegion() {
+        hitView?.hitRegion = islandController?.hitRectInPanel() ?? .zero
+    }
+}
+
+/// Filters hit-testing to the black island rect. Points outside return nil so
+/// AppKit delivers the event to whatever is underneath (menu bar, desktop).
+private final class IslandHitView: NSView {
+    weak var islandController: DynamicIslandController?
+    var hitRegion: NSRect = .zero
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // `point` is in this view's coordinate system (origin bottom-left).
+        guard hitRegion.contains(point) else { return nil }
+        return super.hitTest(point)
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
