@@ -64,11 +64,14 @@ struct DynamicIslandView: View {
         .clipShape(shape)
         // Shadow draws below the island; keep it off the top edge.
         .shadow(color: .black.opacity(expanded ? 0.45 : 0), radius: 14, y: 8)
+        // Hover must attach HERE — on the island's own animated bounds — not
+        // on the outer fill frame, whose tracking area would cover the whole
+        // (invisible) expanded-size panel and expand from empty air.
+        .onHover(perform: onHoverChanged)
         // Top-align inside the always-expanded panel so height/width springs
         // grow downward / outward instead of from the view's center (which
         // would pull the top edge away from the screen and flash wallpaper).
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .onHover(perform: onHoverChanged)
     }
 
     // MARK: - Collapsed wings

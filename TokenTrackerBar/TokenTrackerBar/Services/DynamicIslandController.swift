@@ -19,6 +19,10 @@ struct DynamicIslandGeometry: Equatable {
     /// width to keep the island symmetric around the notch center.
     var wingWidth: CGFloat
     var hasNotch: Bool
+    /// Horizontal center of the island in screen coordinates. The hardware
+    /// notch is not always exactly at the screen's midX (auxiliary areas can
+    /// differ by a point), so the island centers on the notch itself.
+    var islandCenterX: CGFloat = 0
 
     /// Floor so a tiny value (e.g. "0") still reads as an island wing.
     static let minWingWidth: CGFloat = 44
@@ -72,9 +76,6 @@ final class DynamicIslandController: NSObject {
     /// Delay before collapsing after the pointer leaves, so grazing the island
     /// edge doesn't flap it shut.
     private static let collapseDelay: TimeInterval = 0.25
-    /// Push the panel 1pt past the screen's top edge so sub-pixel / retina
-    /// rounding never leaves a hairline of wallpaper between black and bezel.
-    private static let topOverhang: CGFloat = 1
 
     private let viewModel: DashboardViewModel
     private let state = DynamicIslandState()
@@ -194,6 +195,7 @@ final class DynamicIslandController: NSObject {
         guard inset > 0 else {
             var geo = DynamicIslandGeometry.simulated
             geo.wingWidth = wingWidth
+            geo.islandCenterX = screen.frame.midX
             return geo
         }
         let leftWidth = screen.auxiliaryTopLeftArea?.width ?? 0
@@ -202,13 +204,17 @@ final class DynamicIslandController: NSObject {
         guard notchWidth > 0, notchWidth < screen.frame.width / 2 else {
             var geo = DynamicIslandGeometry.simulated
             geo.wingWidth = wingWidth
+            geo.islandCenterX = screen.frame.midX
             return geo
         }
         return DynamicIslandGeometry(
             centerGapWidth: notchWidth,
             collapsedHeight: inset,
             wingWidth: wingWidth,
-            hasNotch: true
+            hasNotch: true,
+            // Center on the physical notch (aux areas can be asymmetric by a
+            // point), not the screen midpoint.
+            islandCenterX: screen.frame.minX + leftWidth + notchWidth / 2
         )
     }
 
@@ -221,17 +227,19 @@ final class DynamicIslandController: NSObject {
         panel?.updateHitRegion()
     }
 
-    /// Always the expanded panel size, top-aligned with a 1pt overhang past
-    /// the screen's top edge (covers retina hairline gaps).
+    /// Always the expanded panel size, top edge exactly flush with the
+    /// screen's top so the collapsed pill bottom lines up with the notch
+    /// bottom (a 1pt overhang shifted the whole pill up and broke alignment).
     private func panelFrame(on screen: NSScreen) -> NSRect {
         let geo = state.geometry
         let size = NSSize(
             width: max(DynamicIslandGeometry.expandedSize.width, geo.collapsedWidth),
-            height: max(DynamicIslandGeometry.expandedSize.height, geo.collapsedHeight) + Self.topOverhang
+            height: max(DynamicIslandGeometry.expandedSize.height, geo.collapsedHeight)
         )
+        let centerX = geo.islandCenterX > 0 ? geo.islandCenterX : screen.frame.midX
         return NSRect(
-            x: screen.frame.midX - size.width / 2,
-            y: screen.frame.maxY - size.height + Self.topOverhang,
+            x: centerX - size.width / 2,
+            y: screen.frame.maxY - size.height,
             width: size.width,
             height: size.height
         )
@@ -250,7 +258,7 @@ final class DynamicIslandController: NSObject {
         let height = state.isExpanded
             ? DynamicIslandGeometry.expandedSize.height
             : geo.collapsedHeight
-        // Top-aligned in the panel (whose top may include the 1pt overhang).
+        // Top-aligned in the panel.
         let x = (panelW - width) / 2
         let y = panelH - height
         return NSRect(x: x, y: y, width: width, height: height)
