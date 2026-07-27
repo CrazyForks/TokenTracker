@@ -9,6 +9,7 @@ const { resolveInstallPaths, ensureFlatCursor } = require("../lib/install-resolv
 const { multiInstallParse, mergeBothFileSources } = require("../lib/multi-install-parser");
 const wsl = require("../lib/wsl-probe");
 const { ensureDir, readJson, writeJson, openLock } = require("../lib/fs");
+const { physicalJsonlRecords } = require("../lib/jsonl-lines");
 const {
   listRolloutFiles,
   listRolloutFilesDeep,
@@ -4265,7 +4266,6 @@ async function scanForInterleavedCodexUsage(
 
 async function scanCodexUsageLineages(filePath, maxBytes = Infinity) {
   let stream = null;
-  let rl = null;
   try {
     const before = await readCodexFileSnapshot(filePath);
     const state = createUsageDeltaState();
@@ -4276,9 +4276,9 @@ async function scanCodexUsageLineages(filePath, maxBytes = Infinity) {
       encoding: "utf8",
       highWaterMark: 32 * 1024,
     });
-    rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-    for await (const line of rl) {
-      bytesRead += Buffer.byteLength(line, "utf8") + 1;
+    for await (const record of physicalJsonlRecords(stream)) {
+      const { line } = record;
+      bytesRead += record.physicalBytes;
       if (bytesRead > byteLimit) return { affected: false, indeterminate: true };
       if (!line.trim()) continue;
       let obj;
@@ -4308,7 +4308,6 @@ async function scanCodexUsageLineages(filePath, maxBytes = Infinity) {
   } catch (_e) {
     return { affected: false, indeterminate: true };
   } finally {
-    if (rl) rl.close();
     if (stream) stream.destroy();
   }
 }

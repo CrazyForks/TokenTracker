@@ -6,6 +6,7 @@ const readline = require("node:readline");
 
 const crypto = require("node:crypto");
 const { ensureDir, writeJson, chmod600IfPossible } = require("./fs");
+const { physicalJsonlLines } = require("./jsonl-lines");
 const { readSqliteJsonRows, readSqliteJsonRowsAsync } = require("./sqlite-reader");
 const wsl = require("./wsl-probe");
 const { resolveInstallPaths } = require("./install-resolver");
@@ -1962,7 +1963,6 @@ async function parseRolloutFile({
   }
 
   const stream = fssync.createReadStream(filePath, { encoding: "utf8", start: startOffset });
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
 
   let model = typeof lastModel === "string" ? lastModel : null;
   const usageDeltaState = createUsageDeltaState({
@@ -1988,7 +1988,7 @@ async function parseRolloutFile({
   let currentProjectKey = projectKey || null;
   let eventsAggregated = 0;
 
-  for await (const line of rl) {
+  for await (const line of physicalJsonlLines(stream)) {
     if (!line) continue;
     const maybeTokenCount = line.includes('"token_count"');
     const maybeTurnContext =
