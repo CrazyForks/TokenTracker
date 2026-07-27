@@ -248,6 +248,73 @@ describe("repairCodexRescanInflation (#187) — atomic guarded rebuild", () => {
     }
   });
 
+  it("fails closed without mutation when historical rebuild input contains invalid UTF-8", async () => {
+    const home = await makeTempHome();
+    try {
+      const codexFile = await writeCodexFile(home);
+      const raw = await fs.readFile(codexFile);
+      const firstNewline = raw.indexOf(0x0a);
+      const secondLine = Buffer.from(raw.subarray(firstNewline + 1, raw.length - 1));
+      const marker = secondLine.indexOf(Buffer.from('"event_msg"'));
+      assert.ok(marker >= 0);
+      secondLine[marker + 1] = 0xff;
+      await fs.writeFile(
+        codexFile,
+        Buffer.concat([raw.subarray(0, firstNewline + 1), secondLine, Buffer.from("\n")]),
+      );
+
+      const queuePath = path.join(home, "queue.jsonl");
+      const queueStatePath = path.join(home, "queue.state.json");
+      const originalQueue = [
+        JSON.stringify({
+          source: "codex",
+          model: "unknown",
+          hour_start: "2025-12-17T00:00:00.000Z",
+          total_tokens: TRUE_CODEX_TOTAL,
+        }),
+        JSON.stringify({
+          source: "claude",
+          model: "opus",
+          hour_start: "2025-12-17T00:00:00.000Z",
+          total_tokens: 5000,
+        }),
+      ].join("\n") + "\n";
+      await fs.writeFile(queuePath, originalQueue, "utf8");
+      await fs.writeFile(queueStatePath, JSON.stringify({ offset: 123 }), "utf8");
+      const cursors = {
+        hourly: {
+          buckets: {
+            "codex|unknown|2025-12-17T00:00:00.000Z": {
+              totals: { total_tokens: TRUE_CODEX_TOTAL },
+            },
+            "claude|opus|2025-12-17T00:00:00.000Z": {
+              totals: { total_tokens: 5000 },
+            },
+          },
+          groupQueued: {},
+        },
+        files: { [codexFile]: { inode: 1, offset: 5, lastTotal: T2 } },
+        codexHashes: ["existing:key"],
+        migrations: {},
+      };
+      const originalCursors = structuredClone(cursors);
+
+      const ran = await repairCodexRescanInflation({
+        cursors,
+        queuePath,
+        queueStatePath,
+        rolloutFiles: [{ path: codexFile, source: "codex" }],
+      });
+
+      assert.equal(ran, false);
+      assert.deepEqual(cursors, originalCursors);
+      assert.equal(await fs.readFile(queuePath, "utf8"), originalQueue);
+      assert.deepEqual(JSON.parse(await fs.readFile(queueStatePath, "utf8")), { offset: 123 });
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("rebuilds Codex project usage during rescan repair", async () => {
     const home = await makeTempHome();
     try {

@@ -181,7 +181,11 @@ async function parseRolloutIncremental({
   source,
   publicRepoResolver,
   diagnostics,
+  invalidRecordPolicy = "skip",
 }) {
+  if (invalidRecordPolicy !== "skip" && invalidRecordPolicy !== "throw") {
+    throw new TypeError(`unsupported invalidRecordPolicy: ${invalidRecordPolicy}`);
+  }
   await ensureDir(path.dirname(queuePath));
   let filesProcessed = 0;
   let eventsAggregated = 0;
@@ -447,6 +451,7 @@ async function parseRolloutIncremental({
           publicRepoCache,
           publicRepoResolver,
           projectContext,
+          invalidRecordPolicy,
         })
       : await parseRolloutFile({
           filePath,
@@ -468,6 +473,7 @@ async function parseRolloutIncremental({
           projectContext,
           seenCodexEvents: codexEventTracker,
           sessionId: codexSessionIdFromPath(filePath),
+          invalidRecordPolicy,
         });
 
     const nextCursor = {
@@ -1946,6 +1952,7 @@ async function parseRolloutFile({
   projectContext,
   seenCodexEvents,
   sessionId,
+  invalidRecordPolicy,
 }) {
   const st = fileStat || (await fs.stat(filePath));
   const endOffset = st.size;
@@ -1993,7 +2000,8 @@ async function parseRolloutFile({
   let scannedEndOffset = startOffset;
   let committedEndOffset = startOffset;
 
-  for await (const record of physicalJsonlRecords(stream, { invalidUtf8: "record" })) {
+  const invalidUtf8 = invalidRecordPolicy === "throw" ? "throw" : "record";
+  for await (const record of physicalJsonlRecords(stream, { invalidUtf8 })) {
     scannedEndOffset += record.physicalBytes;
     if (record.terminated) committedEndOffset = scannedEndOffset;
     if (!record.utf8Valid) {
@@ -2015,11 +2023,12 @@ async function parseRolloutFile({
         line.includes('"current_date"') ||
         line.includes('"forked_from_id"'));
     if (!maybeTokenCount && !maybeTurnContext) {
-      if (!record.terminated) {
+      if (invalidRecordPolicy === "throw" || !record.terminated) {
         try {
           JSON.parse(line);
           committedEndOffset = scannedEndOffset;
-        } catch (_e) {
+        } catch (error) {
+          if (invalidRecordPolicy === "throw") throw error;
           break;
         }
       }
@@ -2029,7 +2038,8 @@ async function parseRolloutFile({
     let obj;
     try {
       obj = JSON.parse(line);
-    } catch (_e) {
+    } catch (error) {
+      if (invalidRecordPolicy === "throw") throw error;
       if (!record.terminated) break;
       continue;
     }
@@ -2197,6 +2207,7 @@ async function scanRolloutProjectFileContexts({
   publicRepoCache,
   publicRepoResolver,
   projectContext,
+  invalidRecordPolicy,
 }) {
   const st = fileStat || (await fs.stat(filePath));
   const endOffset = st.size;
@@ -2218,7 +2229,8 @@ async function scanRolloutProjectFileContexts({
   let scannedEndOffset = 0;
   let committedEndOffset = 0;
 
-  for await (const record of physicalJsonlRecords(stream, { invalidUtf8: "record" })) {
+  const invalidUtf8 = invalidRecordPolicy === "throw" ? "throw" : "record";
+  for await (const record of physicalJsonlRecords(stream, { invalidUtf8 })) {
     scannedEndOffset += record.physicalBytes;
     if (record.terminated) committedEndOffset = scannedEndOffset;
     if (!record.utf8Valid) {
@@ -2235,11 +2247,12 @@ async function scanRolloutProjectFileContexts({
       ) ||
       !line.includes('"cwd"')
     ) {
-      if (!record.terminated && line) {
+      if (line && (invalidRecordPolicy === "throw" || !record.terminated)) {
         try {
           JSON.parse(line);
           committedEndOffset = scannedEndOffset;
-        } catch (_e) {
+        } catch (error) {
+          if (invalidRecordPolicy === "throw") throw error;
           break;
         }
       }
@@ -2249,7 +2262,8 @@ async function scanRolloutProjectFileContexts({
     let obj;
     try {
       obj = JSON.parse(line);
-    } catch (_e) {
+    } catch (error) {
+      if (invalidRecordPolicy === "throw") throw error;
       if (!record.terminated) break;
       continue;
     }

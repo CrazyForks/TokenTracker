@@ -3819,6 +3819,7 @@ async function repairCodexRescanInflation({
       cursors: tmpCursors,
       queuePath: tmpQueue,
       projectQueuePath: tmpProjectQueue,
+      invalidRecordPolicy: "throw",
     });
     let tmpRaw = "";
     try {
