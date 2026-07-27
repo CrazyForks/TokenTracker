@@ -39,7 +39,7 @@ async function* physicalJsonlRecords(input, {
 
   for await (const value of input) {
     if (!Buffer.isBuffer(value) && !(value instanceof Uint8Array)) {
-      throw new TypeError("physicalJsonlLines input must emit bytes");
+      throw new TypeError("physicalJsonlRecords input must emit bytes");
     }
     const chunk = Buffer.isBuffer(value)
       ? value
@@ -98,22 +98,7 @@ async function* physicalJsonlRecords(input, {
   }
 }
 
-async function* physicalJsonlLines(input, { invalidUtf8 = "throw", ...options } = {}) {
-  if (invalidUtf8 !== "throw" && invalidUtf8 !== "skip") {
-    throw new TypeError(`unsupported invalidUtf8 policy: ${invalidUtf8}`);
-  }
-  const recordPolicy = invalidUtf8 === "skip" ? "record" : "throw";
-  for await (const record of physicalJsonlRecords(input, {
-    ...options,
-    invalidUtf8: recordPolicy,
-  })) {
-    if (!record.utf8Valid) continue;
-    yield record.line;
-  }
-}
-
 module.exports = {
   PhysicalJsonlLimitError,
-  physicalJsonlLines,
   physicalJsonlRecords,
 };

@@ -3,29 +3,29 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 
-const { physicalJsonlLines, physicalJsonlRecords } = require("../src/lib/jsonl-lines");
+const { physicalJsonlRecords } = require("../src/lib/jsonl-lines");
 
 async function collectLines(chunks) {
   const lines = [];
-  for await (const line of physicalJsonlLines(chunks.map((chunk) => Buffer.from(chunk)))) {
-    lines.push(line);
+  for await (const record of physicalJsonlRecords(chunks.map((chunk) => Buffer.from(chunk)))) {
+    lines.push(record.line);
   }
   return lines;
 }
 
-test("physicalJsonlLines splits LF records", async () => {
+test("physicalJsonlRecords splits LF records", async () => {
   const lines = await collectLines(["first\nsecond\nthird\n"]);
 
   assert.deepEqual(lines, ["first", "second", "third"]);
 });
 
-test("physicalJsonlLines strips CR from CRLF records, including split CRLF chunks", async () => {
+test("physicalJsonlRecords strips CR from CRLF records, including split CRLF chunks", async () => {
   const lines = await collectLines(["first\r", "\nsecond\r", "\nthird\r\n"]);
 
   assert.deepEqual(lines, ["first", "second", "third"]);
 });
 
-test("physicalJsonlLines preserves legal U+2028 and U+2029 characters", async () => {
+test("physicalJsonlRecords preserves legal U+2028 and U+2029 characters", async () => {
   const first = '{"text":"before\u2028after"}';
   const second = '{"text":"before\u2029after"}';
   const lines = await collectLines([`${first}\n${second}\n`]);
@@ -33,7 +33,7 @@ test("physicalJsonlLines preserves legal U+2028 and U+2029 characters", async ()
   assert.deepEqual(lines, [first, second]);
 });
 
-test("physicalJsonlLines preserves bare carriage returns", async () => {
+test("physicalJsonlRecords preserves bare carriage returns", async () => {
   const lines = await collectLines(["first\rsecond\nfinal\r"]);
 
   assert.deepEqual(lines, ["first\rsecond", "final\r"]);
@@ -51,7 +51,7 @@ test("physicalJsonlRecords reports exact CRLF and unterminated byte spans", asyn
   ]);
 });
 
-test("physicalJsonlLines closes its input when the consumer stops early", async () => {
+test("physicalJsonlRecords closes its input when the consumer stops early", async () => {
   let returned = false;
   const input = {
     [Symbol.asyncIterator]() {
@@ -67,7 +67,7 @@ test("physicalJsonlLines closes its input when the consumer stops early", async 
     },
   };
 
-  for await (const _line of physicalJsonlLines(input)) break;
+  for await (const _record of physicalJsonlRecords(input)) break;
 
   assert.equal(returned, true);
 });
@@ -104,25 +104,25 @@ test("physicalJsonlRecords closes an unterminated input as soon as its byte limi
   assert.equal(returned, true);
 });
 
-test("physicalJsonlLines reassembles records split across chunks", async () => {
+test("physicalJsonlRecords reassembles records split across chunks", async () => {
   const lines = await collectLines(['{"id":', "1}", '\n{"id"', ":2}\n"]);
 
   assert.deepEqual(lines, ['{"id":1}', '{"id":2}']);
 });
 
-test("physicalJsonlLines yields a final unterminated record", async () => {
+test("physicalJsonlRecords yields a final unterminated record", async () => {
   const lines = await collectLines(["complete\nunter", "minated"]);
 
   assert.deepEqual(lines, ["complete", "unterminated"]);
 });
 
-test("physicalJsonlLines preserves empty physical records", async () => {
+test("physicalJsonlRecords preserves empty physical records", async () => {
   const lines = await collectLines(["\n", "\nvalue\n\n"]);
 
   assert.deepEqual(lines, ["", "", "value", ""]);
 });
 
-test("physicalJsonlLines handles a large record split across many chunks", async () => {
+test("physicalJsonlRecords handles a large record split across many chunks", async () => {
   const record = `{"payload":"${"x".repeat(2 * 1024 * 1024)}"}`;
   const chunks = [];
   for (let offset = 0; offset < record.length; offset += 127) {
@@ -180,16 +180,6 @@ test("physicalJsonlRecords preserves invalid UTF-8 record spans in record mode",
   assert.equal(records.reduce((sum, record) => sum + record.physicalBytes, 0), input.length);
 });
 
-test("physicalJsonlLines skips invalid UTF-8 only when explicitly requested", async () => {
-  const invalid = Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d]);
-  const input = Buffer.concat([Buffer.from("first\n"), invalid, Buffer.from("\nlast\n")]);
-  const lines = [];
-
-  for await (const line of physicalJsonlLines([input], { invalidUtf8: "skip" })) lines.push(line);
-
-  assert.deepEqual(lines, ["first", "last"]);
-});
-
 test("physicalJsonlRecords rejects invalid UTF-8 by default", async () => {
   const invalid = Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d, 0x0a]);
 
@@ -209,10 +199,7 @@ test("physicalJsonlRecords propagates errors thrown into a final record yield", 
   await assert.rejects(iterator.throw(new Error("consumer failed")), /consumer failed/);
 });
 
-test("physical JSONL iterators reject unsupported UTF-8 policies", async () => {
-  await assert.rejects(async () => {
-    for await (const _line of physicalJsonlLines([], { invalidUtf8: "record" })) {}
-  }, TypeError);
+test("physicalJsonlRecords rejects unsupported UTF-8 policies", async () => {
   await assert.rejects(async () => {
     for await (const _record of physicalJsonlRecords([], { invalidUtf8: "skip" })) {}
   }, TypeError);
