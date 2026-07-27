@@ -313,6 +313,7 @@ const PROVIDER_LOGO_MAP = {
   ANTIGRAVITY: "/brand-logos/antigravity.svg",
   ANYTHINGLLM: "/brand-logos/anythingllm.svg",
   CLAUDE: "/brand-logos/claude-code.svg",
+  "CLAUDE-SCIENCE": "/brand-logos/claude-code.svg",
   CODEX: "/brand-logos/codex.svg",
   DEEPSEEK: "/brand-logos/deepseek.svg",
   GEMINI: "/brand-logos/gemini.svg",

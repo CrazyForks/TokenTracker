@@ -126,6 +126,7 @@ const SUPPORTED_PROVIDERS = [
   "ZCode",
   "Qoder",
   "AnythingLLM Desktop",
+  "Claude Science",
 ];
 
 async function cmdInit(argv) {

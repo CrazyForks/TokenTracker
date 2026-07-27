@@ -30,4 +30,5 @@ export const AGENT_LOGOS = [
   { id: 26, name: "ZCode", provider: "zcode" },
   { id: 27, name: "Qoder", provider: "qoder" },
   { id: 28, name: "AnythingLLM", provider: "anythingllm" },
+  { id: 29, name: "Claude Science", provider: "claude-science" },
 ];

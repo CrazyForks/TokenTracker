@@ -40,6 +40,12 @@ const {
   parseOpencodeDbIncremental,
   parseQoderDbIncremental,
   parseOpenclawIncremental,
+  resolveOpenclawSessionFiles,
+  resolveOpenclawHome,
+  openclawCursorKey,
+  resolveClaudeScienceDbPaths,
+  readClaudeScienceFrames,
+  parseClaudeScienceIncremental,
   parseCursorApiIncremental,
   parseKiroIncremental,
   parseHermesIncremental,
@@ -237,6 +243,7 @@ const AUTO_SYNC_SOURCES = new Set([
   "antigravity",
   "anythingllm",
   "claude",
+  "claude-science",
   "codebuddy",
   "codex",
   "copilot",
@@ -473,7 +480,7 @@ async function cmdSync(argv, context = {}) {
     // OpenClaw session plugin integration: lifecycle hooks request an
     // OpenClaw-only auto sync so unrelated providers do not get walked.
     const openclawSignal = opts.fromOpenclaw
-      ? resolveOpenclawSignal({ home, env: process.env })
+      ? resolveOpenclawSignal({ env: process.env })
       : null;
 
     const autoSourceScope = resolveAutoSourceScope(opts);
@@ -668,9 +675,38 @@ async function cmdSync(argv, context = {}) {
       codexCursorLoadRestarted = Boolean(loadResult?.restarted);
     }
 
-    const openclawFiles = openclawSignal?.sessionFile
-      ? [{ path: openclawSignal.sessionFile, source: "openclaw" }]
-      : [];
+    // Plugin-triggered sync points at one specific session file; a normal full
+    // sync also passively scans every on-disk OpenClaw transcript so usage is
+    // captured even when the session plugin never fires (issue #264). The scan
+    // is gated to full syncs so a scoped `--from-openclaw` hook still only
+    // touches its own file and the 5-minute background tick stays cheap. The
+    // event-identity dedup makes the plugin and passive paths idempotent, so
+    // overlap on the same file is safe.
+    //
+    // Keyed by openclawCursorKey, not the raw path: that is the same identity
+    // the parser assigns cursors by, so a plugin-supplied path and a scanned
+    // path that differ only in Windows casing collapse to one entry instead of
+    // being parsed twice.
+    const openclawSessionFiles = new Map();
+    if (openclawSignal?.sessionFile) {
+      openclawSessionFiles.set(openclawCursorKey(openclawSignal.sessionFile), {
+        path: openclawSignal.sessionFile,
+        source: "openclaw",
+      });
+    }
+    if (isFullSourceScan && sourceAllowed("openclaw")) {
+      try {
+        for (const f of await resolveOpenclawSessionFiles(process.env)) {
+          const key = openclawCursorKey(f);
+          if (!openclawSessionFiles.has(key)) {
+            openclawSessionFiles.set(key, { path: f, source: "openclaw" });
+          }
+        }
+      } catch (err) {
+        warnProviderParseFailure("OpenClaw", err, opts);
+      }
+    }
+    const openclawFiles = Array.from(openclawSessionFiles.values());
 
     if (progress?.enabled) {
       progress.start(
@@ -740,7 +776,7 @@ async function cmdSync(argv, context = {}) {
 
     let openclawResult = { filesProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
     if (sourceAllowed("openclaw") && openclawFiles.length > 0) {
-      // Only runs when explicitly triggered by the OpenClaw session plugin.
+      // Parses plugin-triggered and/or passively discovered session files.
       try {
         openclawResult = await parseOpenclawIncremental({
           sessionFiles: openclawFiles,
@@ -1051,6 +1087,45 @@ async function cmdSync(argv, context = {}) {
           };
         } catch (err) {
           warnProviderParseFailure("Qoder", err, opts);
+        }
+      }
+    }
+
+    // ── Claude Science (Anthropic's local research workbench, issue #246) ──
+    // Per-frame token usage lives on the `frames` table of operon-cli.db.
+    // Passive, incremental, subtract-on-change. There can be more than one DB:
+    // multi-org installs keep one per org, and on Windows the app runs inside
+    // WSL so the DB is on the distro home.
+    let claudeScienceResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+    if (sourceAllowed("claude-science")) {
+      // Resolution is inside the error isolation too: it touches the filesystem
+      // and (on Windows) probes WSL, and a throw here would abort cmdSync before
+      // any provider's buckets are written, not just this one's.
+      let claudeScienceDbPaths = [];
+      try {
+        claudeScienceDbPaths = resolveClaudeScienceDbPaths({ home, env: process.env });
+      } catch (err) {
+        warnProviderParseFailure("Claude Science", err, opts);
+      }
+      if (claudeScienceDbPaths.length > 0 && progress?.enabled) {
+        progress.start(`Parsing Claude Science ${renderBar(0)} | buckets 0`);
+      }
+      for (const claudeScienceDbPath of claudeScienceDbPaths) {
+        try {
+          const dbRows = await readClaudeScienceFrames(claudeScienceDbPath);
+          const parsed = await parseClaudeScienceIncremental({
+            dbRows,
+            cursors,
+            queuePath,
+            onProgress: makeProviderProgress("Claude Science"),
+          });
+          claudeScienceResult = mergeParseResult(claudeScienceResult, {
+            recordsProcessed: parsed.recordsProcessed || 0,
+            eventsAggregated: parsed.eventsAggregated || 0,
+            bucketsQueued: parsed.bucketsQueued || 0,
+          });
+        } catch (err) {
+          warnProviderParseFailure("Claude Science", err, opts);
         }
       }
     }
@@ -2215,6 +2290,7 @@ async function cmdSync(argv, context = {}) {
       antigravityResult.filesProcessed +
       opencodeResult.filesProcessed +
       qoderResult.recordsProcessed +
+      claudeScienceResult.recordsProcessed +
       cursorResult.recordsProcessed +
       kiroResult.recordsProcessed +
       kiroCliResult.recordsProcessed +
@@ -2245,6 +2321,7 @@ async function cmdSync(argv, context = {}) {
       antigravityResult.bucketsQueued +
       opencodeResult.bucketsQueued +
       qoderResult.bucketsQueued +
+      claudeScienceResult.bucketsQueued +
       cursorResult.bucketsQueued +
       kiroResult.bucketsQueued +
       kiroCliResult.bucketsQueued +
@@ -2586,15 +2663,18 @@ function normalizeString(value) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function resolveOpenclawSignal({ home, env } = {}) {
+function resolveOpenclawSignal({ env } = {}) {
   if (!env) return null;
 
   const agentId = normalizeString(env.TOKENTRACKER_OPENCLAW_AGENT_ID);
   const sessionId = normalizeString(env.TOKENTRACKER_OPENCLAW_PREV_SESSION_ID);
   if (!agentId || !sessionId) return null;
 
-  const openclawHome =
-    normalizeString(env.TOKENTRACKER_OPENCLAW_HOME) || path.join(home || os.homedir(), ".openclaw");
+  // Resolve the OpenClaw home identically to the passive scanner so the
+  // plugin-triggered file and passively discovered files share one path
+  // spelling — otherwise the same transcript could get two cursors and be
+  // counted twice (issue #264 review).
+  const openclawHome = resolveOpenclawHome(env);
   const sessionFile = path.join(openclawHome, "agents", agentId, "sessions", `${sessionId}.jsonl`);
 
   const prevTotals = {
@@ -2627,6 +2707,16 @@ async function applyOpenclawTotalsFallback({
     return { filesProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
   }
 
+  // The passive/plugin transcript parse is authoritative: if this session's
+  // transcript has ever yielded real per-event usage, synthesizing sessions.json
+  // totals on top would count the same tokens twice (issue #264 review). Defer
+  // to the real events and advance the fallback baseline so no stale delta lingers.
+  const transcriptCursor =
+    signal.sessionFile && cursors?.files
+      ? cursors.files[openclawCursorKey(signal.sessionFile)]
+      : null;
+  const transcriptHasRealUsage = Boolean(transcriptCursor?.hasRealUsage);
+
   const sessionKey = `${signal.agentId}:${signal.sessionId}`;
   const statePath = path.join(trackerDir, "openclaw.fallback.state.json");
   const fallbackFilePath = path.join(trackerDir, "openclaw.fallback.jsonl");
@@ -2634,6 +2724,22 @@ async function applyOpenclawTotalsFallback({
   const sessions = state.sessions && typeof state.sessions === "object" ? state.sessions : {};
   const prev =
     sessions[sessionKey] && typeof sessions[sessionKey] === "object" ? sessions[sessionKey] : null;
+
+  if (transcriptHasRealUsage) {
+    sessions[sessionKey] = {
+      totalTokens: normalizeNonNegativeInt(signal?.prevTotals?.totalTokens) || 0,
+      inputTokens: normalizeNonNegativeInt(signal?.prevTotals?.inputTokens) || 0,
+      outputTokens: normalizeNonNegativeInt(signal?.prevTotals?.outputTokens) || 0,
+      model: normalizeString(signal?.prevTotals?.model) || "unknown",
+      updatedAt: normalizeIsoOrEpoch(signal?.prevTotals?.updatedAt) || new Date().toISOString(),
+      seenAt: new Date().toISOString(),
+      coveredByEvents: true,
+    };
+    state.version = 1;
+    state.sessions = sessions;
+    await writeJson(statePath, state);
+    return { filesProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+  }
 
   const current = {
     totalTokens: normalizeNonNegativeInt(signal?.prevTotals?.totalTokens) || 0,

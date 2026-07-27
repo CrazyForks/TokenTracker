@@ -66,6 +66,7 @@ const {
   resolveRoocodeTaskFiles,
   resolveZedDbPath,
   resolveQoderDbPaths,
+  resolveClaudeScienceDbPaths,
   resolveAnythingllmDbPath,
   resolveGooseDbPath,
   listDroidSettingsFiles,
@@ -424,6 +425,14 @@ async function cmdStatus(argv = []) {
   const qoderActive = formatResolvedPaths(qoderPaths);
   const qoderInstalled = qoderActive.length > 0;
   const qoderDbPath = qoderActive.join(" | ");
+
+  // Claude Science — token usage lives on the `frames` table of operon-cli.db.
+  // Unlike the native/WSL pair other providers resolve to, this is an open-ended
+  // list: multi-org installs keep one DB per org (and on Windows they all sit
+  // inside WSL), so the resolver already returns only paths that exist.
+  const claudeScienceActive = resolveClaudeScienceDbPaths({ home, env: process.env });
+  const claudeScienceInstalled = claudeScienceActive.length > 0;
+  const claudeScienceDbPath = claudeScienceActive.join(" | ");
 
   // OpenCode (JSON files + SQLite DB) — passive scan of storage/message/ and opencode.db.
   const opencodeStorageNativeValue = process.env.OPENCODE_HOME || path.join(xdgDataHome, "opencode");
@@ -786,6 +795,9 @@ async function cmdStatus(argv = []) {
         qoder: qoderInstalled
           ? { installed: true, detail: qoderDbPath }
           : { installed: false },
+        "claude-science": claudeScienceInstalled
+          ? { installed: true, detail: claudeScienceDbPath }
+          : { installed: false },
         kilocode: kilocodeInstalled
           ? { installed: true, files: kilocodeTaskFiles.length }
           : { installed: false },
@@ -906,6 +918,9 @@ async function cmdStatus(argv = []) {
         : null,
       qoderInstalled
         ? `- Qoder: passive reader (${qoderDbPath})`
+        : null,
+      claudeScienceInstalled
+        ? `- Claude Science: passive reader (${claudeScienceDbPath})`
         : null,
       opencodeInstalled
         ? `- OpenCode: passive reader (storage: ${opencodeStorageActive.join(" | ") || "not found"}, DB: ${opencodeDbActive.join(" | ") || "not found"})`
