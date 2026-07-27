@@ -78,6 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let serverManager = ServerManager()
     private let launchAtLoginManager = LaunchAtLoginManager()
     private lazy var desktopPetController = DesktopPetWindowController(viewModel: viewModel)
+    private lazy var dynamicIslandController = DynamicIslandController(viewModel: viewModel)
     private static var userInitiatedQuit = false
     private static let wakeCatchUpDebounceInterval: TimeInterval = 60
 
@@ -121,10 +122,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Bring the desktop pet back if it was showing when the app last quit.
         desktopPetController.restoreIfNeeded()
 
+        // Bring the Dynamic Island back if it was enabled when the app last quit.
+        dynamicIslandController.restoreIfNeeded()
+
         NativeBridge.shared.configure(
             viewModel: viewModel,
             launchAtLoginManager: launchAtLoginManager,
-            desktopPetController: desktopPetController
+            desktopPetController: desktopPetController,
+            dynamicIslandController: dynamicIslandController
         )
         registerWakeCatchUpObservers()
 
