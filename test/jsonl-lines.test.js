@@ -199,3 +199,21 @@ test("physicalJsonlRecords rejects invalid UTF-8 by default", async () => {
     }
   }, TypeError);
 });
+
+test("physicalJsonlRecords propagates errors thrown into a final record yield", async () => {
+  const iterator = physicalJsonlRecords([Buffer.from("last")], { invalidUtf8: "record" });
+  assert.deepEqual(await iterator.next(), {
+    done: false,
+    value: { line: "last", utf8Valid: true, physicalBytes: 4, terminated: false },
+  });
+  await assert.rejects(iterator.throw(new Error("consumer failed")), /consumer failed/);
+});
+
+test("physical JSONL iterators reject unsupported UTF-8 policies", async () => {
+  await assert.rejects(async () => {
+    for await (const _line of physicalJsonlLines([], { invalidUtf8: "record" })) {}
+  }, TypeError);
+  await assert.rejects(async () => {
+    for await (const _record of physicalJsonlRecords([], { invalidUtf8: "skip" })) {}
+  }, TypeError);
+});

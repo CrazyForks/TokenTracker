@@ -229,7 +229,9 @@ test("parseRolloutIncremental skips an invalid UTF-8 record and keeps surroundin
       annotation: "BROKEN",
     });
     const invalid = Buffer.from(invalidLine);
-    invalid[invalid.indexOf(Buffer.from("BROKEN"))] = 0xff;
+    const invalidMarker = invalid.indexOf(Buffer.from("BROKEN"));
+    assert.ok(invalidMarker >= 0);
+    invalid[invalidMarker] = 0xff;
     const content = Buffer.concat([
       Buffer.from(`${first}\n`),
       invalid,

@@ -86,22 +86,15 @@ async function* physicalJsonlRecords(input, {
     const lineBuffer = fragments.length === 1
       ? fragments[0]
       : Buffer.concat(fragments, fragmentsBytes);
+    let line = null;
+    let utf8Valid = true;
     try {
-      yield {
-        line: decodePhysicalLine(lineBuffer),
-        utf8Valid: true,
-        physicalBytes: fragmentsBytes,
-        terminated: false,
-      };
+      line = decodePhysicalLine(lineBuffer);
     } catch (error) {
       if (invalidUtf8 === "throw") throw error;
-      yield {
-        line: null,
-        utf8Valid: false,
-        physicalBytes: fragmentsBytes,
-        terminated: false,
-      };
+      utf8Valid = false;
     }
+    yield { line, utf8Valid, physicalBytes: fragmentsBytes, terminated: false };
   }
 }
 

@@ -6,7 +6,7 @@ const readline = require("node:readline");
 
 const crypto = require("node:crypto");
 const { ensureDir, writeJson, chmod600IfPossible } = require("./fs");
-const { physicalJsonlLines, physicalJsonlRecords } = require("./jsonl-lines");
+const { physicalJsonlRecords } = require("./jsonl-lines");
 const { readSqliteJsonRows, readSqliteJsonRowsAsync } = require("./sqlite-reader");
 const wsl = require("./wsl-probe");
 const { resolveInstallPaths } = require("./install-resolver");
@@ -2010,10 +2010,7 @@ async function parseRolloutFile({
     }
 
     const { line } = record;
-    if (!line) {
-      if (!record.terminated) committedEndOffset = scannedEndOffset;
-      continue;
-    }
+    if (!line) continue;
     const maybeTokenCount = line.includes('"token_count"');
     const maybeTurnContext =
       !maybeTokenCount &&
