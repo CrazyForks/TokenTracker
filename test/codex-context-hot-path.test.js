@@ -905,6 +905,7 @@ test("Context incrementally parses append-only sessions with pending tools and d
 test("Context resume state preserves interleaved cumulative usage lineages", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "tt-codex-context-lineage-"));
   const freshRoot = await fs.mkdtemp(path.join(os.tmpdir(), "tt-codex-context-lineage-fresh-"));
+  let rolloutHandle;
   try {
     const day = "2030-06-02";
     const fileName =
@@ -917,11 +918,12 @@ test("Context resume state preserves interleaved cumulative usage lineages", asy
       reasoning_output_tokens: 0,
       total_tokens: totalTokens,
     });
-    const event = (timestamp, last, total) => ({
+    const event = (timestamp, last, total, annotation = null) => ({
       timestamp,
       type: "event_msg",
       payload: {
         type: "token_count",
+        ...(annotation == null ? {} : { annotation }),
         info: {
           last_token_usage: last,
           total_token_usage: total,
@@ -939,15 +941,16 @@ test("Context resume state preserves interleaved cumulative usage lineages", asy
           model_provider: "openai",
         },
       },
-      event(`${day}T04:45:39.000Z`, usage(100), usage(100)),
+      event(`${day}T04:45:39.000Z`, usage(100), usage(100), "before\u2028after"),
       event(`${day}T04:45:45.000Z`, usage(200), usage(200)),
     ];
     const appendedEvents = [
-      event(`${day}T04:46:02.000Z`, usage(100), usage(100)),
+      event(`${day}T04:46:02.000Z`, usage(100), usage(100), "before\u2029after"),
       event(`${day}T04:46:05.000Z`, usage(50), usage(250)),
       event(`${day}T04:46:10.000Z`, usage(30), usage(130)),
     ];
     const filePath = await writeRollout(root, day, fileName, initialEvents);
+    rolloutHandle = await fs.open(filePath, "a+");
     const args = {
       from: day,
       to: day,
@@ -957,9 +960,12 @@ test("Context resume state preserves interleaved cumulative usage lineages", asy
 
     const primed = await computeCodexContextBreakdown(args);
     assert.equal(primed.totals.total_tokens, 300);
-    await fs.appendFile(filePath, rolloutContents(appendedEvents), "utf8");
+    assert.equal(primed.diagnostics.bytes_read, (await rolloutHandle.stat()).size);
+    assert.equal(primed.diagnostics.parsed_files, 1);
+    const appendedContent = rolloutContents(appendedEvents);
+    await rolloutHandle.appendFile(appendedContent, "utf8");
     const active = new Date(`${day}T12:01:00.000Z`);
-    await fs.utimes(filePath, active, active);
+    await rolloutHandle.utimes(active, active);
 
     const resumed = await computeCodexContextBreakdown(args);
     const freshPath = await writeRollout(freshRoot, day, fileName, []);
@@ -972,7 +978,10 @@ test("Context resume state preserves interleaved cumulative usage lineages", asy
     assert.deepEqual(resumed.totals, fresh.totals);
     assert.equal(resumed.diagnostics.incremental_parse_hits, 1);
     assert.equal(resumed.diagnostics.incremental_parse_fallbacks, 0);
+    assert.equal(resumed.diagnostics.bytes_read, Buffer.byteLength(appendedContent));
+    assert.equal(resumed.diagnostics.parsed_files, 1);
   } finally {
+    await rolloutHandle?.close();
     await fs.rm(root, { recursive: true, force: true });
     await fs.rm(freshRoot, { recursive: true, force: true });
   }

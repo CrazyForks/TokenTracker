@@ -6,6 +6,7 @@ const readline = require("node:readline");
 
 const crypto = require("node:crypto");
 const { ensureDir, writeJson, chmod600IfPossible } = require("./fs");
+const { physicalJsonlRecords } = require("./jsonl-lines");
 const { readSqliteJsonRows, readSqliteJsonRowsAsync } = require("./sqlite-reader");
 const wsl = require("./wsl-probe");
 const { resolveInstallPaths } = require("./install-resolver");
@@ -180,7 +181,11 @@ async function parseRolloutIncremental({
   source,
   publicRepoResolver,
   diagnostics,
+  invalidRecordPolicy = "skip",
 }) {
+  if (invalidRecordPolicy !== "skip" && invalidRecordPolicy !== "throw") {
+    throw new TypeError(`unsupported invalidRecordPolicy: ${invalidRecordPolicy}`);
+  }
   await ensureDir(path.dirname(queuePath));
   let filesProcessed = 0;
   let eventsAggregated = 0;
@@ -446,6 +451,7 @@ async function parseRolloutIncremental({
           publicRepoCache,
           publicRepoResolver,
           projectContext,
+          invalidRecordPolicy,
         })
       : await parseRolloutFile({
           filePath,
@@ -467,6 +473,7 @@ async function parseRolloutIncremental({
           projectContext,
           seenCodexEvents: codexEventTracker,
           sessionId: codexSessionIdFromPath(filePath),
+          invalidRecordPolicy,
         });
 
     const nextCursor = {
@@ -1952,6 +1959,7 @@ async function parseRolloutFile({
   projectContext,
   seenCodexEvents,
   sessionId,
+  invalidRecordPolicy,
 }) {
   const st = fileStat || (await fs.stat(filePath));
   const endOffset = st.size;
@@ -1968,8 +1976,10 @@ async function parseRolloutFile({
     };
   }
 
-  const stream = fssync.createReadStream(filePath, { encoding: "utf8", start: startOffset });
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  const stream = fssync.createReadStream(filePath, {
+    start: startOffset,
+    end: endOffset - 1,
+  });
 
   let model = typeof lastModel === "string" ? lastModel : null;
   const usageDeltaState = createUsageDeltaState({
@@ -1994,8 +2004,19 @@ async function parseRolloutFile({
   let currentProjectRef = projectRef || null;
   let currentProjectKey = projectKey || null;
   let eventsAggregated = 0;
+  let scannedEndOffset = startOffset;
+  let committedEndOffset = startOffset;
 
-  for await (const line of rl) {
+  const invalidUtf8 = invalidRecordPolicy === "throw" ? "throw" : "record";
+  for await (const record of physicalJsonlRecords(stream, { invalidUtf8 })) {
+    scannedEndOffset += record.physicalBytes;
+    if (record.terminated) committedEndOffset = scannedEndOffset;
+    if (!record.utf8Valid) {
+      if (!record.terminated) break;
+      continue;
+    }
+
+    const { line } = record;
     if (!line) continue;
     const maybeTokenCount = line.includes('"token_count"');
     const maybeTurnContext =
@@ -2005,14 +2026,28 @@ async function parseRolloutFile({
         line.includes('"cwd"') ||
         line.includes('"current_date"') ||
         line.includes('"forked_from_id"'));
-    if (!maybeTokenCount && !maybeTurnContext) continue;
+    if (!maybeTokenCount && !maybeTurnContext) {
+      if (invalidRecordPolicy === "throw" || !record.terminated) {
+        try {
+          JSON.parse(line);
+          committedEndOffset = scannedEndOffset;
+        } catch (error) {
+          if (invalidRecordPolicy === "throw") throw error;
+          break;
+        }
+      }
+      continue;
+    }
 
     let obj;
     try {
       obj = JSON.parse(line);
-    } catch (_e) {
+    } catch (error) {
+      if (invalidRecordPolicy === "throw") throw error;
+      if (!record.terminated) break;
       continue;
     }
+    if (!record.terminated) committedEndOffset = scannedEndOffset;
 
     if (
       (obj?.type === "turn_context" || obj?.type === "session_meta") &&
@@ -2156,7 +2191,7 @@ async function parseRolloutFile({
   }
 
   return {
-    endOffset,
+    endOffset: committedEndOffset,
     lastTotal: latestTotal,
     tokenUsageBaselines: snapshotUsageBaselines(usageDeltaState),
     lastModel: model,
@@ -2176,6 +2211,7 @@ async function scanRolloutProjectFileContexts({
   publicRepoCache,
   publicRepoResolver,
   projectContext,
+  invalidRecordPolicy,
 }) {
   const st = fileStat || (await fs.stat(filePath));
   const endOffset = st.size;
@@ -2192,11 +2228,21 @@ async function scanRolloutProjectFileContexts({
     };
   }
 
-  const stream = fssync.createReadStream(filePath, { encoding: "utf8", start: 0 });
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  const stream = fssync.createReadStream(filePath, { start: 0, end: endOffset - 1 });
   let currentCwd = null;
+  let scannedEndOffset = 0;
+  let committedEndOffset = 0;
 
-  for await (const line of rl) {
+  const invalidUtf8 = invalidRecordPolicy === "throw" ? "throw" : "record";
+  for await (const record of physicalJsonlRecords(stream, { invalidUtf8 })) {
+    scannedEndOffset += record.physicalBytes;
+    if (record.terminated) committedEndOffset = scannedEndOffset;
+    if (!record.utf8Valid) {
+      if (!record.terminated) break;
+      continue;
+    }
+
+    const { line } = record;
     if (
       !line ||
       !(
@@ -2205,15 +2251,27 @@ async function scanRolloutProjectFileContexts({
       ) ||
       !line.includes('"cwd"')
     ) {
+      if (line && (invalidRecordPolicy === "throw" || !record.terminated)) {
+        try {
+          JSON.parse(line);
+          committedEndOffset = scannedEndOffset;
+        } catch (error) {
+          if (invalidRecordPolicy === "throw") throw error;
+          break;
+        }
+      }
       continue;
     }
 
     let obj;
     try {
       obj = JSON.parse(line);
-    } catch (_e) {
+    } catch (error) {
+      if (invalidRecordPolicy === "throw") throw error;
+      if (!record.terminated) break;
       continue;
     }
+    if (!record.terminated) committedEndOffset = scannedEndOffset;
     if (
       (obj?.type !== "turn_context" && obj?.type !== "session_meta") ||
       !obj?.payload ||
@@ -2237,7 +2295,7 @@ async function scanRolloutProjectFileContexts({
   }
 
   return {
-    endOffset,
+    endOffset: committedEndOffset,
     lastTotal,
     tokenUsageBaselines,
     lastModel,
