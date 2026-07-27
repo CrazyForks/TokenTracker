@@ -14,11 +14,15 @@ async function makeTempHome() {
   return await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-codexrepair-"));
 }
 
-function tokenCountLine({ ts, last, total }) {
+function tokenCountLine({ ts, last, total, annotation }) {
   return JSON.stringify({
     type: "event_msg",
     timestamp: ts,
-    payload: { type: "token_count", info: { last_token_usage: last, total_token_usage: total } },
+    payload: {
+      type: "token_count",
+      info: { last_token_usage: last, total_token_usage: total },
+      ...(annotation == null ? {} : { annotation }),
+    },
   });
 }
 
@@ -1248,6 +1252,7 @@ async function writeLineageCodexFile(home, {
   multiAgentVersion = "v2",
   resumedMultiAgent = false,
   tailPaddingLines = 0,
+  tokenAnnotation = null,
   uuid = "dddddddd-eeee-ffff-aaaa-bbbbbbbbbbbb",
 } = {}) {
   const dir = archived
@@ -1284,6 +1289,7 @@ async function writeLineageCodexFile(home, {
       ts: "2025-12-18T00:00:00.000Z",
       last: lineageUsage(100),
       total: lineageUsage(100),
+      annotation: tokenAnnotation,
     }));
     if (resumedMultiAgent) {
       // Old sessions can be resumed after upgrading Codex. The active marker
@@ -1377,6 +1383,104 @@ describe("repairCodexInterleavedUsageInflation — cumulative lineage repair", (
       );
       assert.equal(codexBucketTotal(cursors), LINEAGE_TRUE_TOTAL);
       assert.equal((await queueRowsBySource(queuePath)).codex.total, LINEAGE_TRUE_TOTAL);
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  for (const [name, separator] of [
+    ["line separator", "\u2028"],
+    ["paragraph separator", "\u2029"],
+  ]) {
+    it(`repairs valid physical JSONL records containing a Unicode ${name}`, async () => {
+      const home = await makeTempHome();
+      try {
+        const codexFile = await writeLineageCodexFile(home, {
+          tokenAnnotation: `before${separator}after`,
+        });
+        const physicalRecords = (await fs.readFile(codexFile, "utf8")).split("\n");
+        assert.ok(physicalRecords[2].includes(separator));
+        assert.doesNotThrow(() => JSON.parse(physicalRecords[2]));
+
+        const { queuePath, queueStatePath } = await seedInflatedLineageInstall(home, codexFile);
+        const cursors = JSON.parse(
+          await fs.readFile(path.join(home, ".tokentracker", "tracker", "cursors.json"), "utf8"),
+        );
+
+        assert.equal(
+          await repairCodexInterleavedUsageInflation({
+            cursors,
+            queuePath,
+            queueStatePath,
+            rolloutFiles: [{ path: codexFile, source: "codex" }],
+          }),
+          true,
+        );
+        assert.equal(codexBucketTotal(cursors), LINEAGE_TRUE_TOTAL);
+        assert.equal((await queueRowsBySource(queuePath)).codex.total, LINEAGE_TRUE_TOTAL);
+        assert.equal(typeof cursors.migrations[CODEX_USAGE_LINEAGE_REPAIR_KEY], "string");
+      } finally {
+        await fs.rm(home, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("counts CRLF bytes exactly when enforcing the lineage scan budget", async () => {
+    const home = await makeTempHome();
+    try {
+      const codexFile = await writeLineageCodexFile(home);
+      const content = await fs.readFile(codexFile, "utf8");
+      await fs.writeFile(codexFile, content.replaceAll("\n", "\r\n"), "utf8");
+      const stat = await fs.stat(codexFile);
+      const { queuePath, queueStatePath } = await seedInflatedLineageInstall(home, codexFile);
+      const originalQueue = await fs.readFile(queuePath, "utf8");
+      const cursors = JSON.parse(
+        await fs.readFile(path.join(home, ".tokentracker", "tracker", "cursors.json"), "utf8"),
+      );
+
+      assert.equal(
+        await repairCodexInterleavedUsageInflation({
+          cursors,
+          queuePath,
+          queueStatePath,
+          rolloutFiles: [{ path: codexFile, source: "codex" }],
+          maxLineageScanBytes: stat.size - 1,
+        }),
+        false,
+      );
+      assert.equal(
+        cursors.migrations[CODEX_USAGE_LINEAGE_REPAIR_KEY].reason,
+        "usage_lineage_scan_indeterminate",
+      );
+      assert.equal(await fs.readFile(queuePath, "utf8"), originalQueue);
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts an unterminated final record when the byte budget equals the file size", async () => {
+    const home = await makeTempHome();
+    try {
+      const codexFile = await writeLineageCodexFile(home);
+      const content = await fs.readFile(codexFile, "utf8");
+      await fs.writeFile(codexFile, content.slice(0, -1), "utf8");
+      const stat = await fs.stat(codexFile);
+      const { queuePath, queueStatePath } = await seedInflatedLineageInstall(home, codexFile);
+      const cursors = JSON.parse(
+        await fs.readFile(path.join(home, ".tokentracker", "tracker", "cursors.json"), "utf8"),
+      );
+
+      assert.equal(
+        await repairCodexInterleavedUsageInflation({
+          cursors,
+          queuePath,
+          queueStatePath,
+          rolloutFiles: [{ path: codexFile, source: "codex" }],
+          maxLineageScanBytes: stat.size,
+        }),
+        true,
+      );
+      assert.equal(codexBucketTotal(cursors), LINEAGE_TRUE_TOTAL);
     } finally {
       await fs.rm(home, { recursive: true, force: true });
     }

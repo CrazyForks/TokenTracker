@@ -150,6 +150,55 @@ test("parseRolloutIncremental ignores repeated token_count records with unchange
   }
 });
 
+test("parseRolloutIncremental preserves Unicode line separators inside physical JSONL records", async () => {
+  for (const separator of ["\u2028", "\u2029"]) {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-rollout-unicode-line-"));
+    try {
+      const rolloutPath = path.join(tmp, "rollout-test.jsonl");
+      const queuePath = path.join(tmp, "queue.jsonl");
+      const cursors = { version: 1, files: {}, updatedAt: null };
+      const usage = (totalTokens) => ({
+        input_tokens: totalTokens,
+        cached_input_tokens: 0,
+        output_tokens: 0,
+        reasoning_output_tokens: 0,
+        total_tokens: totalTokens,
+      });
+      const records = [
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: "2025-12-17T00:00:00.000Z",
+          payload: {
+            type: "token_count",
+            annotation: `before${separator}after`,
+            info: { last_token_usage: usage(100), total_token_usage: usage(100) },
+          },
+        }),
+        buildTokenCountLine({
+          ts: "2025-12-17T00:00:01.000Z",
+          last: usage(50),
+          total: usage(150),
+        }),
+      ];
+      assert.ok(records[0].includes(separator));
+      assert.doesNotThrow(() => JSON.parse(records[0]));
+      await fs.writeFile(rolloutPath, records.join("\n") + "\n", "utf8");
+
+      const result = await parseRolloutIncremental({
+        rolloutFiles: [rolloutPath],
+        cursors,
+        queuePath,
+      });
+
+      assert.equal(result.eventsAggregated, 2);
+      const queued = await readJsonLines(queuePath);
+      assert.equal(queued.reduce((sum, event) => sum + event.total_tokens, 0), 150);
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  }
+});
+
 test("parseRolloutIncremental separates interleaved cumulative usage lineages", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-rollout-"));
   try {
