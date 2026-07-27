@@ -18,9 +18,14 @@ struct DynamicIslandView: View {
     /// Reports the measured wing width (max of both labels + breathing room)
     /// so the controller can shrink the hit-test pill to hug the text.
     let onWingWidthChanged: (CGFloat) -> Void
+    /// Reports the rendered island height after layout so the controller can
+    /// size the expanded hit-test rect to the actual black shape.
+    let onExpandedHeightChanged: (CGFloat) -> Void
 
     /// Horizontal breathing room added around the widest wing label.
     private static let wingPadding: CGFloat = 16
+
+    @State private var menuBarIcon: NSImage? = nil
 
     var body: some View {
         // Referenced so currency/locale changes force a re-render.
@@ -39,31 +44,78 @@ struct DynamicIslandView: View {
         // embedded summary cards and limit bars regardless of system theme.
         .environment(\.colorScheme, .dark)
         .preferredColorScheme(.dark)
+        .onReceive(NotificationCenter.default.publisher(for: .menuBarIconFrameUpdated)) { note in
+            // The animator posts a frame per animation tick (up to ~12/s while
+            // a runner sprints). Only re-render for it when the panel is on
+            // screen and a wing actually displays the icon.
+            guard state.isPanelVisible, wingsShowMenuBarIcon,
+                  let image = note.object as? NSImage else { return }
+            self.menuBarIcon = image
+        }
+        .onAppear {
+            self.menuBarIcon = StatusBarController.currentMenuBarIcon
+        }
     }
 
     private var island: some View {
         let geo = state.geometry
         let expanded = state.isExpanded
-        let width = expanded
-            ? max(DynamicIslandGeometry.expandedSize.width, geo.collapsedWidth)
+        let islandWidth = expanded
+            ? max(DynamicIslandGeometry.expandedWidth, geo.collapsedWidth)
             : geo.collapsedWidth
-        let height = expanded ? DynamicIslandGeometry.expandedSize.height : geo.collapsedHeight
         let shape = BottomRoundedRectangle(radius: expanded ? 22 : min(12, geo.collapsedHeight / 2.5))
 
         return VStack(spacing: 0) {
-            collapsedRow
-            if expanded {
+            if !expanded {
+                collapsedRow
+                    .transition(.opacity)
+            } else {
+                expandedHeaderRow
+                    .transition(.opacity)
                 expandedContent
-                    // Opacity only — a `.move(edge: .top)` insertion briefly
-                    // shoves the header down and opens the top seam.
                     .transition(.opacity)
             }
         }
-        .frame(width: width, height: height, alignment: .top)
-        .background(shape.fill(Color.black))
+        // Width is always explicit. Height: nil when expanded lets the VStack
+        // size naturally to its content; explicit when collapsed.
+        .frame(width: islandWidth, height: expanded ? nil : geo.collapsedHeight, alignment: .top)
+        .fixedSize(horizontal: false, vertical: expanded)
         .clipShape(shape)
-        // Shadow draws below the island; keep it off the top edge.
-        .shadow(color: .black.opacity(expanded ? 0.45 : 0), radius: 14, y: 8)
+        .background(
+            shape.fill(Color.black)
+                .shadow(color: .black.opacity(expanded ? 0.25 : 0), radius: expanded ? 10 : 0, x: 0, y: expanded ? 5 : 0)
+                .shadow(color: .black.opacity(expanded ? 0.15 : 0), radius: expanded ? 3 : 0, x: 0, y: expanded ? 1 : 0)
+        )
+        .overlay(
+            Group {
+                if expanded {
+                    shape
+                        .stroke(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(0.18),
+                                    Color.white.opacity(0.05),
+                                    Color.white.opacity(0.08)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 0.5
+                        )
+                }
+            }
+        )
+        // Report the rendered island height back to the controller for
+        // hit-test sizing. This runs AFTER layout so it reads the actual
+        // natural content height — no chicken-and-egg.
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(key: IslandRenderedHeightKey.self, value: proxy.size.height)
+            }
+        )
+        .onPreferenceChange(IslandRenderedHeightKey.self) { h in
+            onExpandedHeightChanged(h)
+        }
         // Hover must attach HERE — on the island's own animated bounds — not
         // on the outer fill frame, whose tracking area would cover the whole
         // (invisible) expanded-size panel and expand from empty air.
@@ -81,12 +133,13 @@ struct DynamicIslandView: View {
     /// row while expanded so the numbers never jump around.
     private var collapsedRow: some View {
         let geo = state.geometry
+        let metrics = wingMetrics
         return HStack(spacing: 0) {
-            leftWing
+            buildWingView(for: metrics.left)
                 .frame(width: geo.wingWidth)
             Spacer()
                 .frame(width: geo.centerGapWidth)
-            rightWing
+            buildWingView(for: metrics.right)
                 .frame(width: geo.wingWidth)
         }
         .frame(height: geo.collapsedHeight)
@@ -94,8 +147,8 @@ struct DynamicIslandView: View {
         // drives the shared wing width, keeping the island tight + symmetric.
         .background(
             HStack(spacing: 0) {
-                measured(leftWing)
-                measured(rightWing)
+                measured(buildWingView(for: metrics.left))
+                measured(buildWingView(for: metrics.right))
             }
             .hidden()
         )
@@ -104,17 +157,108 @@ struct DynamicIslandView: View {
         }
     }
 
-    private var leftWing: some View {
-        HStack(spacing: 3) {
-            Image(systemName: "bolt.fill")
-                .font(.system(size: 8.5, weight: .bold))
-                .foregroundStyle(Color.white.opacity(0.92))
-            wingLabel(TokenFormatter.formatCompact(viewModel.todayTokens))
+    /// The two collapsed-wing metrics: the user's first two menu-bar slots,
+    /// with hidden providers filtered out exactly like the menu bar does.
+    /// Reads preferences once per render.
+    private var wingMetrics: (left: MenuBarDisplayMetric, right: MenuBarDisplayMetric) {
+        let hidden = LimitsSettingsStore.shared.hiddenProviders
+        let selected = MenuBarDisplayPreferences.read()
+            .compactMap { MenuBarDisplayMetric(rawValue: $0) }
+            .filter { metric in metric.providerKey.map { !hidden.contains($0) } ?? true }
+        let left = selected.first ?? .todayTokens
+        let right = selected.count > 1 ? selected[1] : .todayCost
+        return (left, right)
+    }
+
+    /// Whether either wing renders the animated menu-bar icon (the
+    /// `.todayTokens` slot) — gates icon-frame notification re-renders.
+    private var wingsShowMenuBarIcon: Bool {
+        let metrics = wingMetrics
+        return metrics.left == .todayTokens || metrics.right == .todayTokens
+    }
+
+    private func buildWingView(for metric: MenuBarDisplayMetric) -> some View {
+        let content = wingContent(for: metric)
+        return HStack(spacing: 4) {
+            if let providerKey = metric.providerKey,
+               let iconName = LimitsSettingsStore.iconNames[providerKey] {
+                Image(iconName)
+                    .renderingMode(.original)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .frame(width: 10.5, height: 10.5)
+            } else if metric == .todayTokens, let icon = menuBarIcon ?? StatusBarController.currentMenuBarIcon {
+                Image(nsImage: icon)
+                    .renderingMode(.template)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .frame(height: 15.5)
+                    .foregroundStyle(Color.white.opacity(0.95))
+            } else if let icon = content.icon {
+                Image(systemName: icon)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Color.white.opacity(0.92))
+            }
+
+            if let label = content.label {
+                Text(label)
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.55))
+            }
+
+            if !content.value.isEmpty {
+                wingLabel(content.value)
+            }
         }
     }
 
-    private var rightWing: some View {
-        wingLabel(viewModel.todayCost)
+    private func wingContent(for metric: MenuBarDisplayMetric) -> (icon: String?, label: String?, value: String) {
+        switch metric {
+        case .todayTokens:
+            // Same "has data" gate as the menu bar (todaySummary != nil): the
+            // value stays put during re-syncs instead of blinking empty.
+            let val = viewModel.todaySummary == nil ? "" : TokenFormatter.formatCompact(viewModel.todayTokens)
+            return ("bolt.fill", nil, val)
+        case .todayCost:
+            let val = viewModel.todaySummary == nil ? "" : viewModel.todayCost
+            return (nil, nil, val)
+        case .last7dTokens:
+            let val = viewModel.rollingSummary == nil ? "--" : TokenFormatter.formatCompact(viewModel.last7dTokens)
+            return ("clock.fill", "7d", val)
+        case .totalTokens:
+            let val = viewModel.totalSummary == nil ? "--" : TokenFormatter.formatCompact(viewModel.totalTokens)
+            return ("chart.bar.fill", "Tot", val)
+        case .totalCost:
+            let val = viewModel.totalSummary == nil ? "--" : viewModel.totalCost
+            return (nil, "All", val)
+        case .claude5h, .codex5h, .codexSpark5h, .kimi5h, .antigravityClaude5h, .antigravityGemini5h:
+            return (nil, "5h", limitPercentText(for: metric) ?? "--")
+        case .claude7d, .codex7d, .codexSpark7d, .antigravityClaudeWeekly, .antigravityGeminiWeekly:
+            return (nil, "7d", limitPercentText(for: metric) ?? "--")
+        case .cursorPlan:
+            return (nil, "Plan", limitPercentText(for: metric) ?? "--")
+        case .cursorAuto:
+            return (nil, "Auto", limitPercentText(for: metric) ?? "--")
+        case .cursorAPI:
+            return (nil, "API", limitPercentText(for: metric) ?? "--")
+        case .geminiPro:
+            return (nil, "Pro", limitPercentText(for: metric) ?? "--")
+        case .geminiFlash:
+            return (nil, "Flash", limitPercentText(for: metric) ?? "--")
+        case .geminiLite:
+            return (nil, "Lite", limitPercentText(for: metric) ?? "--")
+        default:
+            return (nil, metric.menuLabel, limitPercentText(for: metric) ?? "--")
+        }
+    }
+
+    /// Limit percent for a wing, sharing the menu bar's guards (configured,
+    /// no error) and its display-mode/rounding rules so both surfaces agree.
+    private func limitPercentText(for metric: MenuBarDisplayMetric) -> String? {
+        guard let pct = viewModel.usageLimits?.utilizationPercent(for: metric) else { return nil }
+        return LimitsSettingsStore.formatPercentText(pct)
     }
 
     private func measured<Content: View>(_ content: Content) -> some View {
@@ -127,13 +271,120 @@ struct DynamicIslandView: View {
 
     private func wingLabel(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-            .foregroundStyle(Color.white.opacity(0.92))
+            .font(.system(size: 11, weight: .bold, design: .rounded))
+            .foregroundStyle(Color.white.opacity(0.95))
             .lineLimit(1)
-            .minimumScaleFactor(0.7)
+            .minimumScaleFactor(0.8)
+    }
+
+    @StateObject private var starStore = GitHubStarStore.shared
+    @State private var hoveringBrand = false
+    @State private var hoveringStar = false
+    @State private var hoveringGear = false
+
+    /// Shared height for the header's Star capsule and gear button so the two
+    /// controls read as one family (same height, same 0.5pt hairline).
+    private static let headerControlHeight: CGFloat = 26
+
+    private var expandedHeaderRow: some View {
+        let geo = state.geometry
+        let appIcon = NSApp.applicationIconImage ?? NSImage(named: NSImage.applicationIconName) ?? NSImage()
+        return HStack(spacing: 0) {
+            Button(action: {
+                if let url = URL(string: "https://www.tokentracker.cc") {
+                    NSWorkspace.shared.open(url)
+                }
+            }) {
+                HStack(spacing: 6) {
+                    Image(nsImage: appIcon)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        .frame(width: 18, height: 18)
+                        .cornerRadius(4)
+                        .shadow(color: .black.opacity(0.35), radius: 1.5, x: 0, y: 1)
+
+                    Text("TokenTracker")
+                        .font(.system(size: 12.5, weight: .regular, design: .rounded))
+                        .foregroundStyle(Color.white.opacity(hoveringBrand ? 1.0 : 0.85))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .pointingHandCursor()
+            .onHover { hovering in
+                withAnimation(.easeOut(duration: 0.12)) { hoveringBrand = hovering }
+            }
+
+            Spacer()
+
+            Button(action: {
+                if let url = URL(string: "https://github.com/mm7894215/TokenTracker") {
+                    NSWorkspace.shared.open(url)
+                }
+            }) {
+                HStack(spacing: 4) {
+                    GithubLogoView(size: 11.5)
+                        .opacity(hoveringStar ? 1.0 : 0.9)
+
+                    Text("Star")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(Color.white.opacity(hoveringStar ? 1.0 : 0.90))
+
+                    if let stars = starStore.starCount {
+                        Text(String(stars))
+                            .font(.system(size: 10, weight: .regular, design: .rounded))
+                            .foregroundStyle(Color.white.opacity(hoveringStar ? 0.75 : 0.55))
+                    }
+                }
+                .padding(.horizontal, 9)
+                .frame(height: Self.headerControlHeight)
+                .background(
+                    Capsule()
+                        .fill(Color.white.opacity(hoveringStar ? 0.16 : 0.09))
+                        .overlay(Capsule().strokeBorder(Color.white.opacity(hoveringStar ? 0.28 : 0.15), lineWidth: 0.5))
+                )
+            }
+            .buttonStyle(.plain)
+            .pointingHandCursor()
+            .onHover { hovering in
+                withAnimation(.easeOut(duration: 0.12)) { hoveringStar = hovering }
+            }
+
+            // Settings gear — same visual family as the Star capsule. Surfaces
+            // the tray menu on click, since right-clicking the island is easy
+            // to miss.
+            Button(action: {
+                StatusBarController.showContextMenuFromIslandGear()
+            }) {
+                Image(systemName: "gearshape.fill")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(hoveringGear ? 0.95 : 0.65))
+                    .frame(width: Self.headerControlHeight, height: Self.headerControlHeight)
+                    .background(
+                        Circle()
+                            .fill(Color.white.opacity(hoveringGear ? 0.16 : 0.09))
+                            .overlay(Circle().strokeBorder(Color.white.opacity(hoveringGear ? 0.28 : 0.15), lineWidth: 0.5))
+                    )
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .pointingHandCursor()
+            .onHover { hovering in
+                withAnimation(.easeOut(duration: 0.12)) { hoveringGear = hovering }
+            }
+            .padding(.leading, 8)
+        }
+        .padding(.horizontal, 14)
+        .frame(height: geo.collapsedHeight)
     }
 
     // MARK: - Expanded detail
+
+    /// Cap for the limits list: island chrome (header + summary cards +
+    /// divider + footer + paddings) stays under ~240pt, so this keeps the
+    /// whole island within `maxExpandedHeight` and the panel's bounds.
+    private static let limitsMaxHeight: CGFloat = DynamicIslandGeometry.maxExpandedHeight - 240
 
     private var expandedContent: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -148,15 +399,31 @@ struct DynamicIslandView: View {
                 totalCost: viewModel.totalCost
             )
 
+            // Self-sizing up to the cap (outer `.fixedSize` makes the scroll
+            // view hug its content), scrollable beyond it — many configured
+            // providers must not push the island past the panel's bottom.
             ScrollView(.vertical, showsIndicators: false) {
                 UsageLimitsView(limits: viewModel.usageLimits)
-                    .padding(.bottom, 4)
             }
+            .frame(maxHeight: Self.limitsMaxHeight)
+
+            Divider()
+                .opacity(0.4)
+                .padding(.vertical, 2)
+
+            FooterView(horizontalPadding: 4, verticalPadding: 2)
         }
         .padding(.horizontal, 14)
-        .padding(.top, 4)
-        .padding(.bottom, 12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(.top, 10)
+        .padding(.bottom, 10)
+    }
+}
+
+/// Rendered height of the island shape, reported after layout for hit-testing.
+private struct IslandRenderedHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
@@ -194,7 +461,80 @@ struct BottomRoundedRectangle: Shape {
             to: CGPoint(x: rect.minX, y: rect.maxY - r),
             control: CGPoint(x: rect.minX, y: rect.maxY)
         )
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
         path.closeSubpath()
         return path
     }
 }
+
+@MainActor
+final class GitHubStarStore: ObservableObject {
+    static let shared = GitHubStarStore()
+    @Published var starCount: Int? = nil
+
+    private static let cacheKey = "GitHubStarCountCache"
+
+    private init() {
+        // Serve the last known count immediately; refresh in the background.
+        let cached = UserDefaults.standard.integer(forKey: Self.cacheKey)
+        if cached > 0 { starCount = cached }
+        fetchStars()
+    }
+
+    func fetchStars() {
+        guard let url = URL(string: "https://api.github.com/repos/mm7894215/TokenTracker") else { return }
+        Task {
+            do {
+                let (data, _) = try await URLSession.shared.data(from: url)
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let count = json["stargazers_count"] as? Int {
+                    self.starCount = count
+                    UserDefaults.standard.set(count, forKey: Self.cacheKey)
+                }
+            } catch {
+                // Ignore network errors gracefully
+            }
+        }
+    }
+}
+
+struct GithubLogoView: View {
+    var size: CGFloat = 12
+    var body: some View {
+        Canvas { context, size in
+            var path = Path()
+            let s = size.width / 16.0
+            path.move(to: CGPoint(x: 8 * s, y: 0))
+            path.addCurve(to: CGPoint(x: 16 * s, y: 8 * s), control1: CGPoint(x: 12.42 * s, y: 0), control2: CGPoint(x: 16 * s, y: 3.58 * s))
+            path.addCurve(to: CGPoint(x: 10.55 * s, y: 15.59 * s), control1: CGPoint(x: 16 * s, y: 11.54 * s), control2: CGPoint(x: 13.68 * s, y: 14.54 * s))
+            path.addCurve(to: CGPoint(x: 10 * s, y: 15.21 * s), control1: CGPoint(x: 10.15 * s, y: 15.67 * s), control2: CGPoint(x: 10 * s, y: 15.42 * s))
+            path.addCurve(to: CGPoint(x: 10.01 * s, y: 13.01 * s), control1: CGPoint(x: 10 * s, y: 14.94 * s), control2: CGPoint(x: 10.01 * s, y: 14.08 * s))
+            path.addCurve(to: CGPoint(x: 9.47 * s, y: 11.53 * s), control1: CGPoint(x: 10.01 * s, y: 12.26 * s), control2: CGPoint(x: 9.76 * s, y: 11.78 * s))
+            path.addCurve(to: CGPoint(x: 13.12 * s, y: 7.58 * s), control1: CGPoint(x: 11.25 * s, y: 11.33 * s), control2: CGPoint(x: 13.12 * s, y: 10.65 * s))
+            path.addCurve(to: CGPoint(x: 12.3 * s, y: 5.43 * s), control1: CGPoint(x: 13.12 * s, y: 6.7 * s), control2: CGPoint(x: 12.81 * s, y: 5.99 * s))
+            path.addCurve(to: CGPoint(x: 12.22 * s, y: 3.31 * s), control1: CGPoint(x: 12.38 * s, y: 5.23 * s), control2: CGPoint(x: 12.66 * s, y: 4.41 * s))
+            path.addCurve(to: CGPoint(x: 10.02 * s, y: 4.13 * s), control1: CGPoint(x: 12.22 * s, y: 3.31 * s), control2: CGPoint(x: 11.55 * s, y: 3.09 * s))
+            path.addCurve(to: CGPoint(x: 8 * s, y: 3.86 * s), control1: CGPoint(x: 9.38 * s, y: 3.95 * s), control2: CGPoint(x: 8.7 * s, y: 3.86 * s))
+            path.addCurve(to: CGPoint(x: 5.98 * s, y: 4.13 * s), control1: CGPoint(x: 7.3 * s, y: 3.86 * s), control2: CGPoint(x: 6.62 * s, y: 3.95 * s))
+            path.addCurve(to: CGPoint(x: 3.78 * s, y: 3.31 * s), control1: CGPoint(x: 4.45 * s, y: 3.09 * s), control2: CGPoint(x: 3.78 * s, y: 3.31 * s))
+            path.addCurve(to: CGPoint(x: 3.7 * s, y: 5.43 * s), control1: CGPoint(x: 3.34 * s, y: 4.41 * s), control2: CGPoint(x: 3.62 * s, y: 5.23 * s))
+            path.addCurve(to: CGPoint(x: 2.88 * s, y: 7.58 * s), control1: CGPoint(x: 3.19 * s, y: 5.99 * s), control2: CGPoint(x: 2.88 * s, y: 6.71 * s))
+            path.addCurve(to: CGPoint(x: 6.52 * s, y: 11.53 * s), control1: CGPoint(x: 2.88 * s, y: 10.64 * s), control2: CGPoint(x: 4.74 * s, y: 11.33 * s))
+            path.addCurve(to: CGPoint(x: 6.01 * s, y: 12.6 * s), control1: CGPoint(x: 6.29 * s, y: 11.73 * s), control2: CGPoint(x: 6.08 * s, y: 12.08 * s))
+            path.addCurve(to: CGPoint(x: 3.68 * s, y: 11.94 * s), control1: CGPoint(x: 5.55 * s, y: 12.81 * s), control2: CGPoint(x: 4.4 * s, y: 12.47 * s))
+            path.addCurve(to: CGPoint(x: 2.45 * s, y: 11.12 * s), control1: CGPoint(x: 3.53 * s, y: 11.7 * s), control2: CGPoint(x: 3.08 * s, y: 11.11 * s))
+            path.addCurve(to: CGPoint(x: 2.46 * s, y: 11.65 * s), control1: CGPoint(x: 1.78 * s, y: 11.13 * s), control2: CGPoint(x: 2.18 * s, y: 11.5 * s))
+            path.addCurve(to: CGPoint(x: 3.28 * s, y: 12.78 * s), control1: CGPoint(x: 2.8 * s, y: 11.84 * s), control2: CGPoint(x: 3.19 * s, y: 12.55 * s))
+            path.addCurve(to: CGPoint(x: 5.97 * s, y: 13.72 * s), control1: CGPoint(x: 3.44 * s, y: 13.23 * s), control2: CGPoint(x: 3.96 * s, y: 14.09 * s))
+            path.addCurve(to: CGPoint(x: 5.98 * s, y: 15.21 * s), control1: CGPoint(x: 5.97 * s, y: 14.39 * s), control2: CGPoint(x: 5.98 * s, y: 15.02 * s))
+            path.addCurve(to: CGPoint(x: 5.43 * s, y: 15.59 * s), control1: CGPoint(x: 5.98 * s, y: 15.42 * s), control2: CGPoint(x: 5.83 * s, y: 15.67 * s))
+            path.addCurve(to: CGPoint(x: 0, y: 8 * s), control1: CGPoint(x: 2.32 * s, y: 14.54 * s), control2: CGPoint(x: 0, y: 11.54 * s))
+            path.addCurve(to: CGPoint(x: 8 * s, y: 0), control1: CGPoint(x: 0, y: 3.58 * s), control2: CGPoint(x: 3.58 * s, y: 0))
+            path.closeSubpath()
+
+            context.fill(path, with: .color(.white))
+        }
+        .frame(width: size, height: size)
+    }
+}
+

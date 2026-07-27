@@ -33,17 +33,32 @@ export function LabsSection() {
   return (
     <SectionCard title={copy("settings.section.labs")}>
       {islandSupported && (
-        <SettingsRow
-          label={<BetaLabel labelKey="settings.labs.island.label" />}
-          hint={copy("settings.labs.island.hint")}
-          control={
-            <ToggleSwitch
-              checked={islandEnabled}
-              onChange={() => setSetting("dynamicIslandEnabled", !islandEnabled)}
-              ariaLabel={copy("settings.labs.island.aria")}
+        <>
+          <SettingsRow
+            label={<BetaLabel labelKey="settings.labs.island.label" />}
+            hint={copy("settings.labs.island.hint")}
+            control={
+              <ToggleSwitch
+                checked={islandEnabled}
+                onChange={() => setSetting("dynamicIslandEnabled", !islandEnabled)}
+                ariaLabel={copy("settings.labs.island.aria")}
+              />
+            }
+          />
+          {islandEnabled && (
+            <SettingsRow
+              label={copy("settings.labs.island_hide_menubar.label")}
+              hint={copy("settings.labs.island_hide_menubar.hint")}
+              control={
+                <ToggleSwitch
+                  checked={Boolean(nativeSettings?.hideMenuBarIcon)}
+                  onChange={() => setSetting("hideMenuBarIcon", !nativeSettings?.hideMenuBarIcon)}
+                  ariaLabel={copy("settings.labs.island_hide_menubar.aria")}
+                />
+              }
             />
-          }
-        />
+          )}
+        </>
       )}
       <SettingsRow
         label={<BetaLabel labelKey="settings.labs.qpd.label" />}

@@ -34,6 +34,8 @@ enum Strings {
     static var noData: String { t("No data", "暂无数据", "暫無資料", "データなし", "데이터 없음") }
     static var retryButton: String { t("Retry", "重试", "重試", "再試行", "다시 시도") }
     static var openDashboard: String { t("Open Dashboard", "打开仪表盘", "開啟儀表盤", "ダッシュボードを開く", "대시보드 열기") }
+    static var menuDynamicIsland: String { t("Dynamic Island", "灵动岛", "靈動島", "ダイナミックアイランド", "다이나믹 아일랜드") }
+    static var menuIconStyle: String { t("Icon Style", "图标样式", "圖標樣式", "アイコンスタイル", "아이콘 스타일") }
     static var quitButton: String { t("Quit", "退出", "退出", "終了", "종료") }
     static var justNow: String { t("just now", "刚刚", "剛剛", "たった今", "방금") }
     static var activityTitle: String { t("Activity", "活跃度", "活躍度", "アクティビティ", "활동") }
@@ -225,8 +227,8 @@ enum Strings {
     static var menuHelp: String { t("TokenTracker Help", "TokenTracker 帮助", "TokenTracker 說明", "TokenTracker ヘルプ", "TokenTracker 도움말") }
     static var menuLaunchAtLogin: String { t("Launch at Login", "登录时启动", "登入時啟動", "ログイン時に起動", "로그인 시 실행") }
     static var menuStarOnGitHub: String { t("★ Star on GitHub", "★ 在 GitHub 上标星", "★ 在 GitHub 上標星", "★ GitHub でスターを付ける", "★ GitHub에서 스타하기") }
-    static var menuShowStats: String { t("Show Stats in Menu Bar", "在菜单栏显示统计", "在選單欄顯示統計", "メニューバーに統計を表示", "메뉴 막대에 통계 표시") }
-    static var menuMenuBarDisplay: String { t("Menu Bar Display", "菜单栏显示", "選單欄顯示", "メニューバー表示", "메뉴 막대 표시") }
+    static var menuShowStats: String { t("Show Numeric Values", "显示数值", "顯示數值", "数値の表示", "수치 표시") }
+    static var menuDisplayMetrics: String { t("Display Metrics", "显示指标", "顯示指標", "表示メトリクス", "표시 메트릭") }
     static var menuPrimarySlot: String { t("Primary", "主指标", "主指標", "プライマリ", "기본") }
     static var menuSecondarySlot: String { t("Secondary", "副指标", "副指標", "セカンダリ", "보조") }
     static var menuMenuBarIcon: String { t("Menu Bar Icon", "菜单栏图标", "選單欄圖示", "メニューバーアイコン", "메뉴 막대 아이콘") }

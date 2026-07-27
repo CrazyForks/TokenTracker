@@ -3,6 +3,7 @@ import Combine
 
 extension Notification.Name {
     static let nativeSettingsChanged = Notification.Name("NativeSettingsChanged")
+    static let menuBarIconFrameUpdated = Notification.Name("MenuBarIconFrameUpdated")
 }
 
 /// How the Usage Limits panel renders utilization values.
@@ -138,6 +139,15 @@ final class LimitsSettingsStore: ObservableObject {
     /// transient provider outage, which keeps an already-selected metric.
     var hiddenProviders: Set<String> {
         Set(providerVisibility.filter { !$0.value }.keys)
+    }
+
+    /// Formats a raw utilization percent for compact surfaces (menu bar,
+    /// Dynamic Island wings), honoring the shared used/remaining display mode
+    /// and rounding to the nearest integer so both surfaces always agree.
+    static func formatPercentText(_ utilization: Double, defaults: UserDefaults = .standard) -> String {
+        let raw = min(max(utilization, 0), 100)
+        let displayed = readDisplayMode(from: defaults) == .remaining ? (100 - raw) : raw
+        return "\(Int(displayed.rounded()))%"
     }
 
     func setDisplayModeFromMenu(_ mode: LimitDisplayMode) {

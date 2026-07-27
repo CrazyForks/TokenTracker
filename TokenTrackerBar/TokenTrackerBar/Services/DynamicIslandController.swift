@@ -1,6 +1,39 @@
 import AppKit
 import SwiftUI
 
+// MARK: - Background cursor override
+
+// The window server silently ignores NSCursor changes from apps that are not
+// frontmost — and this app never is while the island is hovered (the panel is
+// non-activating, canBecomeKey == false). These private-but-long-stable CGS
+// calls (same ones AltTab / Karabiner rely on) opt the process into setting
+// the cursor from the background, which is what makes the pointing hand
+// actually appear over island buttons.
+private typealias CGSConnectionID = Int32
+
+@_silgen_name("CGSMainConnectionID")
+private func CGSMainConnectionID() -> CGSConnectionID
+
+@_silgen_name("CGSSetConnectionProperty")
+private func CGSSetConnectionProperty(
+    _ cid: CGSConnectionID,
+    _ targetCID: CGSConnectionID,
+    _ key: CFString,
+    _ value: CFTypeRef
+) -> CGError
+
+enum BackgroundCursorOverride {
+    private static var enabled = false
+
+    /// Idempotent; called when the island panel is first created.
+    static func enable() {
+        guard !enabled else { return }
+        enabled = true
+        let cid = CGSMainConnectionID()
+        _ = CGSSetConnectionProperty(cid, cid, "SetsCursorInBackground" as CFString, kCFBooleanTrue)
+    }
+}
+
 /// Geometry of the island, derived from the target screen's hardware notch
 /// (or a simulated pill on notch-less screens). Published to the SwiftUI view
 /// so the collapsed shape hugs the real notch dimensions.
@@ -29,7 +62,15 @@ struct DynamicIslandGeometry: Equatable {
 
     var collapsedWidth: CGFloat { centerGapWidth + wingWidth * 2 }
 
-    static let expandedSize = NSSize(width: 480, height: 348)
+    static let expandedWidth: CGFloat = 480
+    /// Extra space around the island shape so the drop shadow isn't clipped
+    /// by the window server. Applied horizontally (each side) and vertically
+    /// (bottom only — top is flush with the screen edge).
+    static let shadowBleed: CGFloat = 28
+    /// Maximum vertical space the panel reserves for island content.
+    /// The panel is always this tall (plus shadowBleed); the island shape
+    /// grows to fit its content up to this limit.
+    static let maxExpandedHeight: CGFloat = 800
 
     /// Simulated island for screens without a notch (external displays, older
     /// Macs): a compact pill at the top-center, boring.notch-style.
@@ -47,18 +88,20 @@ struct DynamicIslandGeometry: Equatable {
 final class DynamicIslandState: ObservableObject {
     @Published var isExpanded = false
     @Published var geometry = DynamicIslandGeometry.simulated
-    /// Mirrors the panel's current content size. The SwiftUI root pins itself
-    /// to this exact frame — a fluid (`maxWidth: .infinity`) root on a
-    /// borderless panel routes invalidations into NSWindow's constraint
-    /// machinery, which throws and crashes (same trap DesktopPetHost avoids).
-    ///
-    /// Always the expanded size while the island is visible: the window never
-    /// resizes on hover, so the black shape can spring from the top edge
-    /// without a wallpaper seam.
-    @Published var panelSize = CGSize(
-        width: DynamicIslandGeometry.expandedSize.width,
-        height: DynamicIslandGeometry.expandedSize.height
-    )
+    /// Actual rendered height of the expanded island, reported by the SwiftUI
+    /// view's GeometryReader after layout. Drives the expanded hit-test rect so
+    /// the transparent chrome below the island never swallows clicks.
+    @Published var expandedHeight: CGFloat = 400
+    /// Whether the island panel is currently on screen. Lets the view skip
+    /// work (icon-frame notifications) while the feature is toggled off.
+    @Published var isPanelVisible = false
+    /// Mirrors the panel's current content size. Fixed at the generous maximum
+    /// so the panel never needs to resize.
+    @Published var panelSize: CGSize = {
+        let w = DynamicIslandGeometry.expandedWidth + DynamicIslandGeometry.shadowBleed * 2
+        let h = DynamicIslandGeometry.maxExpandedHeight + DynamicIslandGeometry.shadowBleed
+        return CGSize(width: w, height: h)
+    }()
     /// Bumped on `.nativeSettingsChanged` so currency/locale changes re-render
     /// the cost strings without waiting for the next data refresh.
     @Published var settingsTick = 0
@@ -86,6 +129,9 @@ final class DynamicIslandController: NSObject {
     private var hostingController: NSHostingController<DynamicIslandView>?
     private var collapseWorkItem: DispatchWorkItem?
     private var observers: [NSObjectProtocol] = []
+    /// While > 0 a tray menu spawned from the island is open; hover-out must
+    /// not collapse the island under the menu.
+    private var menuHoldCount = 0
 
     init(viewModel: DashboardViewModel) {
         self.viewModel = viewModel
@@ -132,11 +178,13 @@ final class DynamicIslandController: NSObject {
         self.panel = panel
         repositionPanel()
         panel.orderFrontRegardless()
+        state.isPanelVisible = true
     }
 
     func hide() {
         collapseWorkItem?.cancel()
         state.isExpanded = false
+        state.isPanelVisible = false
         panel?.orderOut(nil)
     }
 
@@ -148,10 +196,47 @@ final class DynamicIslandController: NSObject {
         if hovering {
             expand()
         } else {
+            // A menu is tracking — keep the island open; endMenuHold decides.
+            guard menuHoldCount == 0 else { return }
             let item = DispatchWorkItem { [weak self] in self?.collapse() }
             collapseWorkItem = item
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.collapseDelay, execute: item)
         }
+    }
+
+    /// Menu tracking started from the island (gear button / right-click).
+    /// Blocks hover-driven collapse for the menu's lifetime.
+    func beginMenuHold() {
+        menuHoldCount += 1
+        collapseWorkItem?.cancel()
+        collapseWorkItem = nil
+    }
+
+    /// Menu dismissed — collapse unless the pointer came back to the island.
+    /// Even then, schedule the standard delayed collapse as a fallback: the
+    /// menu's tracking run loop can swallow the SwiftUI hover re-entry, in
+    /// which case no hover-out would ever fire and the island would hang
+    /// open. A live hover cancels this via the next handleHover(true).
+    func endMenuHold() {
+        menuHoldCount = max(0, menuHoldCount - 1)
+        guard menuHoldCount == 0 else { return }
+        if isPointerOverIsland() {
+            handleHover(true)
+            let item = DispatchWorkItem { [weak self] in
+                guard let self, !self.isPointerOverIsland() else { return }
+                self.collapse()
+            }
+            collapseWorkItem = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: item)
+        } else {
+            collapse()
+        }
+    }
+
+    private func isPointerOverIsland() -> Bool {
+        guard let panel else { return false }
+        let local = panel.convertPoint(fromScreen: NSEvent.mouseLocation)
+        return hitRectInPanel().contains(local)
     }
 
     private func expand() {
@@ -227,21 +312,32 @@ final class DynamicIslandController: NSObject {
         panel?.updateHitRegion()
     }
 
-    /// Always the expanded panel size, top edge exactly flush with the
-    /// screen's top so the collapsed pill bottom lines up with the notch
-    /// bottom (a 1pt overhang shifted the whole pill up and broke alignment).
+    /// The view measured its rendered island height; adopt it so the expanded
+    /// hit-test rect hugs the actual black shape instead of the whole panel
+    /// (which would swallow clicks meant for windows below the island).
+    /// Collapsed-state reports are ignored — they'd overwrite the remembered
+    /// expanded height with the notch height and churn the hit region.
+    private func applyExpandedHeight(_ height: CGFloat) {
+        guard state.isExpanded else { return }
+        guard height > 0, abs(height - state.expandedHeight) > 1 else { return }
+        state.expandedHeight = height
+        panel?.updateHitRegion()
+    }
+
+    /// Fixed generous panel frame — the panel is always this size. The island
+    /// shape inside grows/shrinks freely; the transparent chrome around it
+    /// passes clicks through via IslandHitView. Wider and taller than the
+    /// island so the drop shadow isn't clipped by the window server.
     private func panelFrame(on screen: NSScreen) -> NSRect {
-        let geo = state.geometry
-        let size = NSSize(
-            width: max(DynamicIslandGeometry.expandedSize.width, geo.collapsedWidth),
-            height: max(DynamicIslandGeometry.expandedSize.height, geo.collapsedHeight)
-        )
-        let centerX = geo.islandCenterX > 0 ? geo.islandCenterX : screen.frame.midX
+        let bleed = DynamicIslandGeometry.shadowBleed
+        let panelW = max(DynamicIslandGeometry.expandedWidth, state.geometry.collapsedWidth) + bleed * 2
+        let panelH = DynamicIslandGeometry.maxExpandedHeight + bleed
+        let centerX = state.geometry.islandCenterX > 0 ? state.geometry.islandCenterX : screen.frame.midX
         return NSRect(
-            x: centerX - size.width / 2,
-            y: screen.frame.maxY - size.height,
-            width: size.width,
-            height: size.height
+            x: centerX - panelW / 2,
+            y: screen.frame.maxY - panelH,
+            width: panelW,
+            height: panelH
         )
     }
 
@@ -253,12 +349,14 @@ final class DynamicIslandController: NSObject {
         let panelW = panel.frame.width
         let panelH = panel.frame.height
         let width = state.isExpanded
-            ? max(DynamicIslandGeometry.expandedSize.width, geo.collapsedWidth)
+            ? max(DynamicIslandGeometry.expandedWidth, geo.collapsedWidth)
             : geo.collapsedWidth
+        // Expanded: the measured island height (clamped to the panel), so the
+        // transparent area below the island stays click-through.
         let height = state.isExpanded
-            ? DynamicIslandGeometry.expandedSize.height
+            ? min(max(state.expandedHeight, geo.collapsedHeight), panelH)
             : geo.collapsedHeight
-        // Top-aligned in the panel.
+        // Centered horizontally, top-aligned vertically in the panel.
         let x = (panelW - width) / 2
         let y = panelH - height
         return NSRect(x: x, y: y, width: width, height: height)
@@ -279,6 +377,10 @@ final class DynamicIslandController: NSObject {
     // MARK: - Panel
 
     private func makePanel() -> IslandPanel {
+        // Without this the window server drops every NSCursor change we make
+        // while another app is frontmost — hover cursors would never show.
+        BackgroundCursorOverride.enable()
+
         // Hosting *controller* (not a bare NSHostingView as contentView): on a
         // borderless panel the latter routes SwiftUI invalidations into
         // NSWindow constraint updates, which throws and crashes (see
@@ -292,6 +394,9 @@ final class DynamicIslandController: NSObject {
                 },
                 onWingWidthChanged: { [weak self] width in
                     Task { @MainActor [weak self] in self?.applyWingWidth(width) }
+                },
+                onExpandedHeightChanged: { [weak self] height in
+                    Task { @MainActor [weak self] in self?.applyExpandedHeight(height) }
                 }
             )
         )
@@ -303,8 +408,9 @@ final class DynamicIslandController: NSObject {
         }
         self.hostingController = hostingController
 
+        let panelSize = state.panelSize
         let panel = IslandPanel(
-            contentRect: NSRect(origin: .zero, size: DynamicIslandGeometry.expandedSize),
+            contentRect: NSRect(origin: .zero, size: panelSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -314,7 +420,7 @@ final class DynamicIslandController: NSObject {
         // Wrap the hosting view in a hit-test filter: the panel stays at the
         // expanded size, but only the black shape accepts mouse events so the
         // transparent chrome doesn't block the menu bar underneath.
-        let hitView = IslandHitView(frame: NSRect(origin: .zero, size: DynamicIslandGeometry.expandedSize))
+        let hitView = IslandHitView(frame: NSRect(origin: .zero, size: panelSize))
         hitView.autoresizingMask = [.width, .height]
         hitView.islandController = self
         hostingController.view.frame = hitView.bounds
@@ -341,12 +447,32 @@ final class DynamicIslandController: NSObject {
 }
 
 /// Never steals key/main status — the island is display-only chrome.
-private final class IslandPanel: NSPanel {
+private final class IslandPanel: NSPanel, CursorHitScoping {
     weak var islandController: DynamicIslandController?
     weak var hitView: IslandHitView?
 
+    /// Only the black island shape counts as "ours" for cursor arbitration —
+    /// the panel frame is mostly transparent click-through chrome overhanging
+    /// other apps' windows.
+    func containsInteractiveScreenPoint(_ screenPoint: NSPoint) -> Bool {
+        let local = convertPoint(fromScreen: screenPoint)
+        return (islandController?.hitRectInPanel() ?? .zero).contains(local)
+    }
+
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+
+    /// AppKit answers `.cursorUpdate` events by resetting to the arrow cursor.
+    /// On a non-activating panel that reset always wins over `NSCursor.set()`
+    /// calls from SwiftUI hover handlers, so the pointing hand never shows.
+    /// Swallow the event and re-assert whatever the hover coordinator wants.
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .cursorUpdate {
+            PointerCursorCoordinator.shared.apply()
+            return
+        }
+        super.sendEvent(event)
+    }
 
     func updateHitRegion() {
         hitView?.hitRegion = islandController?.hitRectInPanel() ?? .zero
@@ -366,4 +492,8 @@ private final class IslandHitView: NSView {
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func rightMouseDown(with event: NSEvent) {
+        StatusBarController.showContextMenuFromIsland(event: event, view: self)
+    }
 }

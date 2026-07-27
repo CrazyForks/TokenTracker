@@ -22,6 +22,84 @@ struct UsageLimitsResponse: Codable, Equatable {
     }
 }
 
+extension UsageLimitsResponse {
+    /// Raw utilization percent for a menu-bar metric, with the same
+    /// configured / no-error guards the menu bar applies — so the Dynamic
+    /// Island never shows a stale value for an unconfigured or erroring
+    /// provider. Callers format the number (display mode, rounding) via
+    /// `LimitsSettingsStore.formatPercentText`.
+    func utilizationPercent(for metric: MenuBarDisplayMetric) -> Double? {
+        func guarded(_ configured: Bool?, _ error: String?, _ value: Double?) -> Double? {
+            guard configured == true, error == nil else { return nil }
+            return value
+        }
+        switch metric {
+        case .todayTokens, .todayCost, .last7dTokens, .totalTokens, .totalCost:
+            return nil
+        case .claude5h:
+            return guarded(claude.configured, claude.error, claude.fiveHour?.utilization)
+        case .claude7d:
+            return guarded(claude.configured, claude.error, claude.sevenDay?.utilization)
+        case .codex5h:
+            return guarded(codex.configured, codex.error, codex.primaryWindow.map { Double($0.usedPercent) })
+        case .codex7d:
+            return guarded(codex.configured, codex.error, codex.secondaryWindow.map { Double($0.usedPercent) })
+        case .codexCredits:
+            return guarded(codex.configured, codex.error, codex.creditWindow?.usedPercent)
+        case .codexSpark5h:
+            return guarded(codex.configured, codex.error, codex.sparkPrimaryWindow.map { Double($0.usedPercent) })
+        case .codexSpark7d:
+            return guarded(codex.configured, codex.error, codex.sparkSecondaryWindow.map { Double($0.usedPercent) })
+        case .cursorPlan:
+            return guarded(cursor.configured, cursor.error, cursor.primaryWindow?.usedPercent)
+        case .cursorAuto:
+            return guarded(cursor.configured, cursor.error, cursor.secondaryWindow?.usedPercent)
+        case .cursorAPI:
+            return guarded(cursor.configured, cursor.error, cursor.tertiaryWindow?.usedPercent)
+        case .geminiPro:
+            return guarded(gemini.configured, gemini.error, gemini.primaryWindow?.usedPercent)
+        case .geminiFlash:
+            return guarded(gemini.configured, gemini.error, gemini.secondaryWindow?.usedPercent)
+        case .geminiLite:
+            return guarded(gemini.configured, gemini.error, gemini.tertiaryWindow?.usedPercent)
+        case .kimiWeekly:
+            return guarded(kimi?.configured, kimi?.error, kimi?.primaryWindow?.usedPercent)
+        case .kimi5h:
+            return guarded(kimi?.configured, kimi?.error, kimi?.secondaryWindow?.usedPercent)
+        case .kimiTotal:
+            return guarded(kimi?.configured, kimi?.error, kimi?.tertiaryWindow?.usedPercent)
+        case .kiroMonth:
+            return guarded(kiro.configured, kiro.error, kiro.primaryWindow?.usedPercent)
+        case .kiroBonus:
+            return guarded(kiro.configured, kiro.error, kiro.secondaryWindow?.usedPercent)
+        case .grokMonth:
+            return guarded(grok?.configured, grok?.error, grok?.primaryWindow?.usedPercent)
+        case .grokOndemand:
+            return guarded(grok?.configured, grok?.error, grok?.secondaryWindow?.usedPercent)
+        case .copilotPremium:
+            return guarded(copilot?.configured, copilot?.error, copilot?.primaryWindow?.usedPercent)
+        case .copilotChat:
+            return guarded(copilot?.configured, copilot?.error, copilot?.secondaryWindow?.usedPercent)
+        case .antigravityClaudeWeekly:
+            return guarded(antigravity.configured, antigravity.error, antigravity.primaryWindow?.usedPercent)
+        case .antigravityClaude5h:
+            return guarded(antigravity.configured, antigravity.error, antigravity.secondaryWindow?.usedPercent)
+        case .antigravityGeminiWeekly:
+            return guarded(antigravity.configured, antigravity.error, antigravity.tertiaryWindow?.usedPercent)
+        case .antigravityGemini5h:
+            return guarded(antigravity.configured, antigravity.error, antigravity.quaternaryWindow?.usedPercent)
+        case .zcodeGlm52:
+            return guarded(zcode?.configured, zcode?.error, zcode?.primaryWindow?.usedPercent)
+        case .zcodeGlm5Turbo:
+            return guarded(zcode?.configured, zcode?.error, zcode?.secondaryWindow?.usedPercent)
+        case .qoderQuota:
+            return guarded(qoder?.configured, qoder?.error, qoder?.primaryWindow?.usedPercent)
+        case .qoderUltimate:
+            return guarded(qoder?.configured, qoder?.error, qoder?.secondaryWindow?.usedPercent)
+        }
+    }
+}
+
 enum UsageLimitsCache {
     static let defaultsKey = "UsageLimitsLastGoodResponse"
 
