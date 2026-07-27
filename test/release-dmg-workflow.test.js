@@ -172,6 +172,9 @@ test("missing releases cannot be recreated from an existing version tag", () => 
   const createDraft = content.indexOf(
     'gh release create "$tag" --verify-tag --draft'
   );
+  // The fresh-create path's tag creation is the LAST git/refs POST; the first
+  // one belongs to the draft-reuse branch and legitimately precedes the guard.
+  const createTagRef = content.lastIndexOf("repos/$GITHUB_REPOSITORY/git/refs");
 
   assert.ok(
     missingReleaseGuard > 0,
@@ -182,6 +185,10 @@ test("missing releases cannot be recreated from an existing version tag", () => 
       "This version is already consumed; bump the version instead of recreating it."
     ),
     "the failure must require a new version"
+  );
+  assert.ok(
+    missingReleaseGuard < createTagRef,
+    "the existing-tag guard must run before creating a replacement tag ref"
   );
   assert.ok(
     missingReleaseGuard < createDraft,
