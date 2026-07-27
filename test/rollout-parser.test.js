@@ -966,6 +966,7 @@ test("parseRolloutIncremental recovers legacy Codex EOF cursor project freshness
 
 test("parseRolloutIncremental retries a partial legacy project-context-only tail", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-rollout-project-partial-"));
+  let rolloutHandle;
   try {
     const repoRoot = path.join(tmp, "repo");
     await fs.mkdir(path.join(repoRoot, ".git"), { recursive: true });
@@ -1003,7 +1004,8 @@ test("parseRolloutIncremental retries a partial legacy project-context-only tail
     assert.ok(splitOffset > 0 && splitOffset < contextLine.length);
     const initialContent = Buffer.concat([completePrefix, contextLine.subarray(0, splitOffset)]);
     await fs.writeFile(rolloutPath, initialContent);
-    const stat = await fs.stat(rolloutPath);
+    rolloutHandle = await fs.open(rolloutPath, "a+");
+    const stat = await rolloutHandle.stat();
     const cursors = {
       version: 1,
       files: {
@@ -1029,8 +1031,7 @@ test("parseRolloutIncremental retries a partial legacy project-context-only tail
     assert.equal(cursors.files[rolloutPath].projectOffset, completePrefix.length);
     assert.equal(Boolean(cursors.files[rolloutPath].projectFileContext?.configPath), false);
 
-    await fs.appendFile(
-      rolloutPath,
+    await rolloutHandle.appendFile(
       Buffer.concat([contextLine.subarray(splitOffset), Buffer.from("\n")]),
     );
     const second = await parseRolloutIncremental({
@@ -1041,9 +1042,10 @@ test("parseRolloutIncremental retries a partial legacy project-context-only tail
     });
     assert.equal(second.filesProcessed, 1);
     assert.equal(second.eventsAggregated, 0);
-    assert.equal(cursors.files[rolloutPath].offset, (await fs.stat(rolloutPath)).size);
+    assert.equal(cursors.files[rolloutPath].offset, (await rolloutHandle.stat()).size);
     assert.equal(cursors.files[rolloutPath].projectFileContext.configPath.endsWith("config"), true);
   } finally {
+    await rolloutHandle?.close();
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });
