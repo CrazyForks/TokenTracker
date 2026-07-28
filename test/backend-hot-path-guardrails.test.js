@@ -151,12 +151,22 @@ test("leaderboard refresh reconciles stale rows after the replacement snapshot i
   );
 });
 
-test("leaderboard anti-cheat queue poll runs hourly after the hourly detector", () => {
+test("leaderboard anti-cheat health poll is hourly and never files public issues", () => {
   const workflow = read(".github/workflows/leaderboard-anticheat.yml");
   assert.match(
     workflow,
     /cron: "53 \* \* \* \*"/u,
     "a daily poll can miss a flag created after that day's run for nearly 24 hours",
+  );
+  assert.doesNotMatch(
+    workflow,
+    /issues:\s*write|gh issue (?:create|edit|close|list)/u,
+    "automatic soft exclusion must not depend on or create a public GitHub issue",
+  );
+  assert.match(
+    workflow,
+    /GITHUB_STEP_SUMMARY/u,
+    "the health check should retain private run-level observability",
   );
 });
 
