@@ -162,3 +162,158 @@ test("computeGrokContextBreakdown returns empty supported payload without sessio
   assert.equal(result.totals.total_tokens, 0);
   assert.equal(result.session_count, 0);
 });
+
+
+test("computeGrokContextBreakdown reuses result cache on identical range", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tt-grok-cache-"));
+  const sid = "019f-grok-cache-1";
+  const ts = Date.parse("2026-07-18T10:05:00.000Z");
+  writeSession(root, sid, [
+    JSON.stringify({
+      timestamp: 1784357110,
+      method: "session/update",
+      params: {
+        sessionId: sid,
+        update: {
+          sessionUpdate: "turn_completed",
+          prompt_id: "p1",
+          stop_reason: "end_turn",
+          usage: {
+            inputTokens: 500,
+            outputTokens: 50,
+            totalTokens: 550,
+            cachedReadTokens: 100,
+            reasoningTokens: 10,
+          },
+        },
+        _meta: {
+          promptId: "p1",
+          turnStartMs: ts,
+          agentTimestampMs: ts + 1000,
+          updateType: "TurnCompleted",
+        },
+      },
+    }),
+  ]);
+
+  const env = { GROK_HOME: root, HOME: root };
+  const a = await computeGrokContextBreakdown({
+    from: "2026-07-18",
+    to: "2026-07-18",
+    env,
+  });
+  const b = await computeGrokContextBreakdown({
+    from: "2026-07-18",
+    to: "2026-07-18",
+    env,
+  });
+  assert.equal(a.totals.total_tokens, 550);
+  assert.equal(b.totals.total_tokens, 550);
+  assert.equal(a.session_count, b.session_count);
+  // Same object from result cache (not a deep clone).
+  assert.equal(a, b);
+});
+
+test("computeGrokContextBreakdown coalesces concurrent in-flight scans", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tt-grok-inflight-"));
+  const sid = "019f-grok-inflight-1";
+  const ts = Date.parse("2026-07-19T10:05:00.000Z");
+  writeSession(root, sid, [
+    JSON.stringify({
+      timestamp: 1784443510,
+      method: "session/update",
+      params: {
+        sessionId: sid,
+        update: {
+          sessionUpdate: "turn_completed",
+          prompt_id: "p1",
+          stop_reason: "end_turn",
+          usage: {
+            inputTokens: 200,
+            outputTokens: 20,
+            totalTokens: 220,
+            cachedReadTokens: 0,
+            reasoningTokens: 0,
+          },
+        },
+        _meta: {
+          promptId: "p1",
+          turnStartMs: ts,
+          agentTimestampMs: ts + 500,
+          updateType: "TurnCompleted",
+        },
+      },
+    }),
+  ]);
+
+  const env = { GROK_HOME: root, HOME: root };
+  const opts = { from: "2026-07-19", to: "2026-07-19", env };
+  const [a, b] = await Promise.all([
+    computeGrokContextBreakdown(opts),
+    computeGrokContextBreakdown(opts),
+  ]);
+  assert.equal(a.totals.total_tokens, 220);
+  assert.equal(b.totals.total_tokens, 220);
+  assert.equal(a, b);
+});
+
+test("file parse cache invalidates when updates.jsonl size/mtime change", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tt-grok-filecache-"));
+  const sid = "019f-grok-filecache-1";
+  const ts = Date.parse("2026-07-20T10:05:00.000Z");
+  const line = (total) =>
+    JSON.stringify({
+      timestamp: 1784529910,
+      method: "session/update",
+      params: {
+        sessionId: sid,
+        update: {
+          sessionUpdate: "turn_completed",
+          prompt_id: "p1",
+          stop_reason: "end_turn",
+          usage: {
+            inputTokens: total,
+            outputTokens: 0,
+            totalTokens: total,
+            cachedReadTokens: 0,
+            reasoningTokens: 0,
+          },
+        },
+        _meta: {
+          promptId: "p1",
+          turnStartMs: ts,
+          agentTimestampMs: ts + 500,
+          updateType: "TurnCompleted",
+        },
+      },
+    });
+
+  writeSession(root, sid, [line(100)]);
+  const env = { GROK_HOME: root, HOME: root };
+  const first = await computeGrokContextBreakdown({
+    from: "2026-07-20",
+    to: "2026-07-20",
+    env,
+  });
+  assert.equal(first.totals.total_tokens, 100);
+
+  // Append a second turn so size+mtime change → file cache miss, new totals.
+  const updatesPath = path.join(
+    root,
+    "sessions",
+    encodeURIComponent("/tmp/project"),
+    sid,
+    "updates.jsonl",
+  );
+  fs.appendFileSync(updatesPath, `${line(50)}\n`);
+  // Ensure mtime advances on coarse FS clocks.
+  const st = fs.statSync(updatesPath);
+  fs.utimesSync(updatesPath, st.atime, new Date(st.mtimeMs + 2000));
+
+  const second = await computeGrokContextBreakdown({
+    from: "2026-07-20",
+    to: "2026-07-20",
+    env,
+  });
+  assert.equal(second.totals.total_tokens, 150);
+});
