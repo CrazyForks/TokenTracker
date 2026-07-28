@@ -8,7 +8,13 @@ const readline = require("node:readline");
 const { resolveInstallPaths, ensureFlatCursor } = require("../lib/install-resolver");
 const { multiInstallParse, mergeBothFileSources } = require("../lib/multi-install-parser");
 const wsl = require("../lib/wsl-probe");
-const { ensureDir, readJson, writeJson, openLock } = require("../lib/fs");
+const {
+  ensureDir,
+  readJson,
+  writeJson,
+  chmod600IfPossible,
+  openLock,
+} = require("../lib/fs");
 const { physicalJsonlRecords } = require("../lib/jsonl-lines");
 const {
   listRolloutFiles,
@@ -125,7 +131,7 @@ const {
   openCursorStore,
 } = require("../lib/cursor-store");
 const { resolveTrackerPaths } = require("../lib/tracker-paths");
-const { resolveRuntimeConfig } = require("../lib/runtime-config");
+const { resolveRuntimeConfig, isLegacyInsforgeBaseUrl } = require("../lib/runtime-config");
 const { extractTokenCount } = require("../lib/codex-rollout-parser");
 const {
   consumeUsageDelta,
@@ -215,6 +221,7 @@ const CODEX_FORK_REPLAY_REPAIR_KEY = "codexForkReplayRepair_2026_07";
 // contributing rollout before committing the rebuild. The new key is required
 // so installs that finalized the original migration on a false negative retry.
 const CODEX_USAGE_LINEAGE_REPAIR_KEY = "codexUsageLineageRepair_2026_07_v2";
+const LEGACY_BASE_URL_MIGRATION_NOTE = "reset_after_legacy_baseurl_migration_2026_07";
 // Keep the one escalated desktop refresh bounded; explicit full syncs can retry
 // the same migration without this ceiling when the history needs a deeper scan.
 const CODEX_BACKGROUND_LINEAGE_SCAN_MAX_BYTES = 1024 * 1024;
@@ -430,6 +437,53 @@ async function cmdSync(argv, context = {}) {
     }
 
     const config = await readJson(configPath);
+    let legacyBaseUrlMigration = null;
+    // One-time repair for installs initialized before the 2026-04-19 InsForge
+    // project migration (0.5.67): init preserved any persisted config.baseUrl,
+    // so those installs kept uploading to the retired b46ug8xu project until
+    // its backend went dark on 2026-07-27 — every upload since 503s while the
+    // dashboard shows no error (silent cloud outage). Reset the upload offset
+    // so the whole local queue replays into the current project, clear the 503
+    // backoff, then remove the retired URL as the final commit step. Keeping the
+    // URL until every prerequisite succeeds makes an interrupted migration
+    // retryable on the next sync. Device tokens are opaque random values looked
+    // up by SHA-256 hash in tokentracker_device_tokens (not JWT_SECRET-signed);
+    // the database was restored into the current project, so preserve the old
+    // token unless the local API has already minted a replacement from the
+    // user's current login session and passed it through the environment.
+    // Ingest is a whole-row upsert per bucket key, making replay idempotent.
+    if (config && isLegacyInsforgeBaseUrl(config.baseUrl)) {
+      const priorQueueState = (await readJson(queueStatePath)) || {};
+      // Prepare the replay exactly once. The note survives successful batches,
+      // so retryable failures retain both their committed offset and backoff
+      // instead of restarting history and hammering the backend on every hook.
+      if (priorQueueState.note !== LEGACY_BASE_URL_MIGRATION_NOTE) {
+        await writeJson(queueStatePath, {
+          ...priorQueueState,
+          offset: 0,
+          updatedAt: new Date().toISOString(),
+          note: LEGACY_BASE_URL_MIGRATION_NOTE,
+        });
+        try {
+          await fs.unlink(uploadThrottlePath);
+        } catch (error) {
+          if (error?.code !== "ENOENT") throw error;
+        }
+      }
+      const replacementDeviceToken =
+        typeof process.env.TOKENTRACKER_DEVICE_TOKEN === "string"
+          ? process.env.TOKENTRACKER_DEVICE_TOKEN.trim()
+          : "";
+      const previousDeviceToken =
+        typeof config.deviceToken === "string" ? config.deviceToken.trim() : "";
+      // Do not commit either the replacement token or URL removal yet. The
+      // current backend must accept a token first; otherwise a stale environment
+      // token could destroy a valid restored credential and make recovery worse.
+      legacyBaseUrlMigration = {
+        previousDeviceToken,
+        replacementDeviceToken,
+      };
+    }
     const codexCursorRoots = [process.env.CODEX_HOME || path.join(home, ".codex")];
     const cursorStore = await openCursorStore({
       trackerDir,
@@ -2386,24 +2440,28 @@ async function cmdSync(argv, context = {}) {
 
     progress?.stop();
 
-    const runtime = resolveRuntimeConfig({ config: config || {}, env: process.env });
+    const runtimeConfig = config ? { ...config } : {};
+    if (legacyBaseUrlMigration?.replacementDeviceToken) {
+      runtimeConfig.deviceToken = legacyBaseUrlMigration.replacementDeviceToken;
+    }
+    const runtime = resolveRuntimeConfig({ config: runtimeConfig, env: process.env });
 
     let uploadResult = { inserted: 0, skipped: 0 };
     let uploadAttempted = false;
-    let backgroundUploadDecision = null;
+    let autoUploadDecision = null;
 
-    if (opts.publishAccount) {
+    if (opts.publishAccount || (legacyBaseUrlMigration && opts.auto)) {
       const uploadStateBefore = (await readJson(queueStatePath)) || { offset: 0 };
       const queueSizeBefore = await safeStatSize(queuePath);
       const pendingBytesBefore = Math.max(
         0,
         queueSizeBefore - Number(uploadStateBefore.offset || 0),
       );
-      // The native five-minute loop is already the success cadence. Reuse the
-      // shared decision helper for pending/backoff handling, but intentionally
-      // ignore the legacy 30-minute success throttle so account publication
-      // does not become stale again. Failure backoff remains authoritative.
-      backgroundUploadDecision = decideAutoUpload({
+      // Native publication and every auto-triggered legacy migration share the
+      // failure-backoff gate. Intentionally ignore the 30-minute success
+      // throttle: native refresh owns its own cadence, while a pending migration
+      // should complete as soon as a credential becomes usable.
+      autoUploadDecision = decideAutoUpload({
         nowMs: Date.now(),
         pendingBytes: pendingBytesBefore,
         state: {
@@ -2420,7 +2478,7 @@ async function cmdSync(argv, context = {}) {
 
     if (runtime.deviceToken && runtime.baseUrl &&
         (!isBackgroundLightweightSync || opts.publishAccount) &&
-        (!backgroundUploadDecision || backgroundUploadDecision.allowed)) {
+        (!autoUploadDecision || autoUploadDecision.allowed)) {
       uploadAttempted = true;
       // Mirror the machine identity into the purge-surviving seed file so a
       // future `uninstall --purge` + reinstall recovers the same cloud device
@@ -2432,14 +2490,49 @@ async function cmdSync(argv, context = {}) {
         // best effort — upload below must not be blocked by identity mirroring
       }
       try {
-        uploadResult = await drainQueueToCloud({
-          baseUrl: runtime.baseUrl,
-          deviceToken: runtime.deviceToken,
-          queuePath,
-          queueStatePath,
-          maxBatches: opts.drain ? 100 : (backgroundUploadDecision?.maxBatches || 5),
-          batchSize: backgroundUploadDecision?.batchSize || 200,
-        });
+        let successfulDeviceToken = runtime.deviceToken;
+        const drainWithToken = (deviceToken) =>
+          drainQueueToCloud({
+            baseUrl: runtime.baseUrl,
+            deviceToken,
+            queuePath,
+            queueStatePath,
+            maxBatches: opts.drain ? 100 : (autoUploadDecision?.maxBatches || 5),
+            batchSize: autoUploadDecision?.batchSize || 200,
+          });
+        try {
+          uploadResult = await drainWithToken(successfulDeviceToken);
+        } catch (error) {
+          const fallbackDeviceToken = legacyBaseUrlMigration?.previousDeviceToken;
+          const replacementDeviceToken = legacyBaseUrlMigration?.replacementDeviceToken;
+          const stateAfterFailure = (await readJson(queueStatePath)) || { offset: 0 };
+          const canFallbackWithoutSplittingHistory =
+            (error?.status === 401 || error?.status === 403) &&
+            replacementDeviceToken &&
+            fallbackDeviceToken &&
+            fallbackDeviceToken !== replacementDeviceToken &&
+            Number(stateAfterFailure.offset || 0) === 0;
+          if (!canFallbackWithoutSplittingHistory) throw error;
+          successfulDeviceToken = fallbackDeviceToken;
+          uploadResult = await drainWithToken(successfulDeviceToken);
+        }
+        // A successful ingest response proves which credential belongs to the
+        // current backend. Only now commit the token and remove the retry marker.
+        // Empty queues make no request, so keep the marker until future data can
+        // validate a credential instead of persisting an unverified token.
+        if (legacyBaseUrlMigration && uploadResult.batches > 0) {
+          // device-login does not share the sync lock and may have written a
+          // fresh current-backend config while the scan/upload was running.
+          // Re-read before committing, merge only while the legacy marker still
+          // exists, and never clobber a concurrently completed login.
+          const latestConfig = (await readJson(configPath)) || config;
+          if (isLegacyInsforgeBaseUrl(latestConfig.baseUrl)) {
+            latestConfig.deviceToken = successfulDeviceToken;
+            delete latestConfig.baseUrl;
+            await writeJson(configPath, latestConfig);
+            await chmod600IfPossible(configPath);
+          }
+        }
         // Record success so the exponential backoff step resets — otherwise
         // a single past failure keeps us pessimistically throttled forever.
         uploadThrottleState = recordUploadSuccess({
@@ -3005,6 +3098,7 @@ async function drainQueueToCloud({ baseUrl, deviceToken, queuePath, queueStatePa
   let offset = Number(state.offset || 0);
   let inserted = 0;
   let skipped = 0;
+  let batches = 0;
 
   const queueSize = await safeStatSize(queuePath);
   const limit = Math.min(Math.max(1, Math.floor(Number(batchSize || 200))), MAX_INGEST_BUCKETS);
@@ -3042,6 +3136,7 @@ async function drainQueueToCloud({ baseUrl, deviceToken, queuePath, queueStatePa
 
     inserted += Number(data?.inserted || 0);
     skipped += Number(data?.skipped || 0);
+    batches += 1;
 
     offset = result.nextOffset;
     state.offset = offset;
@@ -3049,7 +3144,7 @@ async function drainQueueToCloud({ baseUrl, deviceToken, queuePath, queueStatePa
     await writeJson(queueStatePath, state);
   }
 
-  return { inserted, skipped };
+  return { inserted, skipped, batches };
 }
 
 async function readQueueBatch(queuePath, startOffset, maxBuckets) {

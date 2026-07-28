@@ -25,4 +25,25 @@ final class DynamicIslandLayoutPolicyTests: XCTestCase {
             DynamicIslandLayoutPolicy.minimumLimitsHeight
         )
     }
+
+    func testHoverEnterRequiresPointerInsideCurrentInteractiveRegion() {
+        XCTAssertFalse(
+            DynamicIslandInteractionPolicy.shouldExpand(
+                hovering: true,
+                pointerInsideInteractiveRegion: false
+            )
+        )
+        XCTAssertTrue(
+            DynamicIslandInteractionPolicy.shouldExpand(
+                hovering: true,
+                pointerInsideInteractiveRegion: true
+            )
+        )
+        XCTAssertFalse(
+            DynamicIslandInteractionPolicy.shouldExpand(
+                hovering: false,
+                pointerInsideInteractiveRegion: true
+            )
+        )
+    }
 }

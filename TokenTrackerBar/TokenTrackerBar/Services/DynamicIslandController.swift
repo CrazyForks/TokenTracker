@@ -192,11 +192,21 @@ final class DynamicIslandController: NSObject {
     // MARK: - Hover-driven expand / collapse
 
     private func handleHover(_ hovering: Bool) {
-        collapseWorkItem?.cancel()
-        collapseWorkItem = nil
         if hovering {
+            // SwiftUI's tracking area can briefly keep the expanded animated
+            // bounds after the black shape has collapsed. Ignore that stale
+            // hover unless the pointer is physically inside the CURRENT AppKit
+            // hit rect; otherwise transparent space re-opens the island.
+            guard DynamicIslandInteractionPolicy.shouldExpand(
+                hovering: true,
+                pointerInsideInteractiveRegion: isPointerOverIsland()
+            ) else { return }
+            collapseWorkItem?.cancel()
+            collapseWorkItem = nil
             expand()
         } else {
+            collapseWorkItem?.cancel()
+            collapseWorkItem = nil
             // A menu is tracking — keep the island open; endMenuHold decides.
             guard menuHoldCount == 0 else { return }
             let item = DispatchWorkItem { [weak self] in self?.collapse() }
@@ -263,8 +273,12 @@ final class DynamicIslandController: NSObject {
                 state.isExpanded = false
             }
         }
-        // Refresh hit-test after the spring settles so the large expanded
-        // rect doesn't keep stealing clicks under the transparent wings.
+        // Collapse the AppKit hit region immediately. The SwiftUI shape may
+        // continue its spring animation visually, but its transparent former
+        // bounds must become click-through and hover-inert at once.
+        panel?.updateHitRegion()
+        // Re-assert after the spring settles in case measured geometry changed
+        // during the transition.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             guard let self, !self.state.isExpanded else { return }
             self.panel?.updateHitRegion()

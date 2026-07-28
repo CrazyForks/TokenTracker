@@ -29,3 +29,16 @@ enum DynamicIslandLayoutPolicy {
         max(minimumLimitsHeight, panelHeight - shadowBleed - fixedChromeHeight)
     }
 }
+
+/// Pure interaction gate for hover events emitted by the fixed-size hosting
+/// view. SwiftUI tracking areas can briefly retain their expanded geometry
+/// while the island spring is collapsing, so visual hover alone is not enough:
+/// the pointer must also be inside the controller's current black-shape rect.
+enum DynamicIslandInteractionPolicy {
+    static func shouldExpand(
+        hovering: Bool,
+        pointerInsideInteractiveRegion: Bool
+    ) -> Bool {
+        hovering && pointerInsideInteractiveRegion
+    }
+}
