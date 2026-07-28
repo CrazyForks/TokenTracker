@@ -4,10 +4,22 @@ const path = require("node:path");
 
 const DEFAULT_BILLING_BASE_URL = "https://cli-chat-proxy.grok.com";
 const DEFAULT_BILLING_TIMEOUT_MS = 15_000;
+const DEFAULT_OIDC_ISSUER = "https://auth.x.ai";
+const DEFAULT_TOKEN_ENDPOINT = "https://auth.x.ai/oauth2/token";
+// Refresh slightly before wall-clock expiry so Limits doesn't race a just-expired JWT.
+const ACCESS_TOKEN_EXPIRY_SKEW_MS = 60_000;
 
 function grokAuthError() {
   const error = new Error("Not logged in to Grok Build. Run `grok login` in Terminal to authenticate.");
   error.code = "GROK_AUTH_REQUIRED";
+  return error;
+}
+
+function grokReauthError() {
+  const error = new Error(
+    "Grok session expired. Run `grok login` in Terminal to re-authenticate.",
+  );
+  error.code = "GROK_REAUTH_REQUIRED";
   return error;
 }
 
@@ -176,11 +188,16 @@ function loadGrokAuthEntry({ home, env } = {}) {
   if (!fs.existsSync(authPath)) return null;
   try {
     const parsed = JSON.parse(fs.readFileSync(authPath, "utf8"));
-    if (!parsed || typeof parsed !== "object") return null;
-    for (const value of Object.values(parsed)) {
-      if (!value || typeof value !== "object") continue;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    for (const [scopeKey, value] of Object.entries(parsed)) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
       const key = typeof value.key === "string" ? value.key.trim() : "";
-      if (key) return { entry: value, authPath };
+      const refreshToken =
+        typeof value.refresh_token === "string" ? value.refresh_token.trim() : "";
+      // Prefer entries that can still authenticate (access token and/or refresh token).
+      if (key || refreshToken) {
+        return { entry: value, authPath, scopeKey, authFile: parsed };
+      }
     }
   } catch (_error) {
     return null;
@@ -192,6 +209,252 @@ function readGrokAccessToken({ home, env } = {}) {
   const loaded = loadGrokAuthEntry({ home, env });
   const key = typeof loaded?.entry?.key === "string" ? loaded.entry.key.trim() : "";
   return key || null;
+}
+
+function isGrokAccessTokenExpired(expiresAt, nowMs = Date.now(), skewMs = ACCESS_TOKEN_EXPIRY_SKEW_MS) {
+  if (expiresAt == null || expiresAt === "") return false;
+  const ts = typeof expiresAt === "number" ? expiresAt : Date.parse(String(expiresAt));
+  if (!Number.isFinite(ts)) return false;
+  const skew = Number.isFinite(skewMs) && skewMs >= 0 ? skewMs : ACCESS_TOKEN_EXPIRY_SKEW_MS;
+  return ts <= nowMs + skew;
+}
+
+function resolveGrokOidcClientId(entry, scopeKey) {
+  if (entry && typeof entry.oidc_client_id === "string" && entry.oidc_client_id.trim()) {
+    return entry.oidc_client_id.trim();
+  }
+  if (typeof scopeKey === "string" && scopeKey.includes("::")) {
+    const suffix = scopeKey.slice(scopeKey.lastIndexOf("::") + 2).trim();
+    if (suffix) return suffix;
+  }
+  return null;
+}
+
+function resolveGrokOidcIssuer(entry) {
+  if (entry && typeof entry.oidc_issuer === "string" && entry.oidc_issuer.trim()) {
+    return entry.oidc_issuer.trim().replace(/\/$/, "");
+  }
+  return DEFAULT_OIDC_ISSUER;
+}
+
+function resolveGrokTokenEndpoint(entry, env = process.env) {
+  if (typeof env.TOKENTRACKER_GROK_TOKEN_ENDPOINT === "string" && env.TOKENTRACKER_GROK_TOKEN_ENDPOINT.trim()) {
+    return env.TOKENTRACKER_GROK_TOKEN_ENDPOINT.trim();
+  }
+  if (typeof env.GROK_OIDC_TOKEN_ENDPOINT === "string" && env.GROK_OIDC_TOKEN_ENDPOINT.trim()) {
+    return env.GROK_OIDC_TOKEN_ENDPOINT.trim();
+  }
+  const issuer = resolveGrokOidcIssuer(entry);
+  if (issuer === DEFAULT_OIDC_ISSUER) return DEFAULT_TOKEN_ENDPOINT;
+  return `${issuer}/oauth2/token`;
+}
+
+function grokEntryRefreshToken(entry) {
+  return entry && typeof entry.refresh_token === "string" ? entry.refresh_token.trim() : "";
+}
+
+function grokEntryAccessToken(entry) {
+  return entry && typeof entry.key === "string" ? entry.key.trim() : "";
+}
+
+/**
+ * Public xAI OIDC client refresh (auth method "none").
+ * Matches Grok Build CLI's refresh against https://auth.x.ai/oauth2/token.
+ */
+async function refreshGrokTokens({
+  refreshToken,
+  clientId,
+  tokenEndpoint = DEFAULT_TOKEN_ENDPOINT,
+  fetchImpl = fetch,
+} = {}) {
+  if (typeof refreshToken !== "string" || !refreshToken.trim()) {
+    const err = new Error("Grok refresh skipped: no refresh_token in auth.json");
+    err.code = "NO_REFRESH_TOKEN";
+    throw err;
+  }
+  if (typeof clientId !== "string" || !clientId.trim()) {
+    const err = new Error("Grok refresh skipped: missing oidc_client_id");
+    err.code = "NO_CLIENT_ID";
+    throw err;
+  }
+
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: refreshToken.trim(),
+    client_id: clientId.trim(),
+  });
+
+  const res = await fetchImpl(tokenEndpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "application/json",
+    },
+    body: body.toString(),
+  });
+
+  if (res.status === 400 || res.status === 401) {
+    let oauthError = null;
+    try {
+      const payload = await res.json();
+      oauthError =
+        (typeof payload?.error === "string" && payload.error) ||
+        (payload?.error && typeof payload.error === "object" && payload.error.code) ||
+        null;
+    } catch (_error) {
+      // Status remains authoritative.
+    }
+    const err = grokReauthError();
+    err.oauthError = oauthError;
+    err.status = res.status;
+    throw err;
+  }
+
+  if (!res.ok) {
+    const err = new Error(`Grok token refresh failed: HTTP ${res.status}`);
+    err.code = "REFRESH_HTTP_ERROR";
+    err.status = res.status;
+    throw err;
+  }
+
+  const payload = await res.json();
+  const accessToken =
+    typeof payload?.access_token === "string" ? payload.access_token.trim() : "";
+  if (!accessToken) {
+    const err = new Error("Grok token refresh response missing access_token");
+    err.code = "REFRESH_INVALID_RESPONSE";
+    throw err;
+  }
+
+  const nextRefresh =
+    typeof payload?.refresh_token === "string" && payload.refresh_token.trim()
+      ? payload.refresh_token.trim()
+      : refreshToken.trim();
+
+  let expiresAt = null;
+  const expiresIn = Number(payload?.expires_in);
+  if (Number.isFinite(expiresIn) && expiresIn > 0) {
+    expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
+  } else if (typeof payload?.expires_at === "string" && payload.expires_at.trim()) {
+    const parsed = Date.parse(payload.expires_at.trim());
+    if (Number.isFinite(parsed)) expiresAt = new Date(parsed).toISOString();
+  }
+
+  return {
+    access_token: accessToken,
+    refresh_token: nextRefresh,
+    expires_at: expiresAt,
+    token_type: typeof payload?.token_type === "string" ? payload.token_type : null,
+  };
+}
+
+async function persistGrokRefreshedAuth(authPath, authFile, scopeKey, entry, newTokens) {
+  if (!authPath || !scopeKey || !entry || !newTokens?.access_token) {
+    throw new Error("Grok auth persist requires auth path, scope, entry, and access_token");
+  }
+  const nextEntry = {
+    ...entry,
+    key: newTokens.access_token,
+    refresh_token: newTokens.refresh_token || entry.refresh_token,
+  };
+  if (newTokens.expires_at) {
+    nextEntry.expires_at = newTokens.expires_at;
+  }
+  const merged = {
+    ...authFile,
+    [scopeKey]: nextEntry,
+  };
+  const tmp = `${authPath}.tmp.${process.pid}.${Date.now()}`;
+  await fs.promises.writeFile(tmp, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
+  await fs.promises.rename(tmp, authPath);
+  try {
+    await fs.promises.chmod(authPath, 0o600);
+  } catch (_error) {
+    // Best-effort; some filesystems reject chmod on rename targets.
+  }
+  return { entry: nextEntry, authFile: merged, authPath, scopeKey };
+}
+
+/**
+ * Return a usable access token, refreshing via OIDC when expired or forced.
+ * Does not throw for missing install; throws GROK_REAUTH_REQUIRED when refresh is rejected.
+ */
+async function resolveGrokAccessToken({
+  home,
+  env = process.env,
+  fetchImpl = fetch,
+  forceRefresh = false,
+  nowMs = Date.now(),
+} = {}) {
+  const loaded = loadGrokAuthEntry({ home, env });
+  if (!loaded) {
+    return {
+      accessToken: null,
+      configured: false,
+      canRefresh: false,
+      refreshed: false,
+    };
+  }
+
+  const accessToken = grokEntryAccessToken(loaded.entry);
+  const refreshToken = grokEntryRefreshToken(loaded.entry);
+  const expired = isGrokAccessTokenExpired(loaded.entry.expires_at, nowMs);
+  const canRefresh = Boolean(refreshToken && resolveGrokOidcClientId(loaded.entry, loaded.scopeKey));
+  const needsRefresh = forceRefresh || !accessToken || expired;
+
+  if (!needsRefresh) {
+    return {
+      accessToken,
+      configured: true,
+      canRefresh,
+      refreshed: false,
+      loaded,
+    };
+  }
+
+  if (!canRefresh) {
+    if (accessToken) {
+      // Stale key still present — let billing decide (may 401).
+      return {
+        accessToken,
+        configured: true,
+        canRefresh: false,
+        refreshed: false,
+        loaded,
+      };
+    }
+    return {
+      accessToken: null,
+      configured: true,
+      canRefresh: false,
+      refreshed: false,
+      loaded,
+      error: grokAuthError(),
+    };
+  }
+
+  const clientId = resolveGrokOidcClientId(loaded.entry, loaded.scopeKey);
+  const tokens = await refreshGrokTokens({
+    refreshToken,
+    clientId,
+    tokenEndpoint: resolveGrokTokenEndpoint(loaded.entry, env),
+    fetchImpl,
+  });
+  const persisted = await persistGrokRefreshedAuth(
+    loaded.authPath,
+    loaded.authFile,
+    loaded.scopeKey,
+    loaded.entry,
+    tokens,
+  );
+
+  return {
+    accessToken: tokens.access_token,
+    configured: true,
+    canRefresh: true,
+    refreshed: true,
+    loaded: persisted,
+  };
 }
 
 /**
@@ -324,16 +587,57 @@ async function fetchGrokBilling(
   return legacyResult.body;
 }
 
-async function fetchGrokLimits({ home, env, fetchImpl = fetch, timeoutMs } = {}) {
+async function fetchGrokLimits({ home, env, fetchImpl = fetch, timeoutMs, nowMs } = {}) {
   if (!isGrokInstalled({ home, env })) {
     return { configured: false };
   }
-  const accessToken = readGrokAccessToken({ home, env });
-  if (!accessToken) {
+
+  let resolved;
+  try {
+    resolved = await resolveGrokAccessToken({ home, env, fetchImpl, nowMs });
+  } catch (error) {
+    return {
+      configured: true,
+      error: error?.message || "Unknown error",
+    };
+  }
+
+  if (!resolved.configured) {
     return { configured: false };
   }
+  if (!resolved.accessToken) {
+    return {
+      configured: true,
+      error: resolved.error?.message || grokAuthError().message,
+    };
+  }
+
   try {
-    const body = await fetchGrokBilling(accessToken, { fetchImpl, env, timeoutMs });
+    let body;
+    try {
+      body = await fetchGrokBilling(resolved.accessToken, { fetchImpl, env, timeoutMs });
+    } catch (error) {
+      // Access token rejected — refresh once when a refresh_token is available.
+      if (
+        error?.code === "GROK_AUTH_REQUIRED" &&
+        resolved.canRefresh &&
+        !resolved.refreshed
+      ) {
+        const retry = await resolveGrokAccessToken({
+          home,
+          env,
+          fetchImpl,
+          forceRefresh: true,
+          nowMs,
+        });
+        if (!retry.accessToken) {
+          throw retry.error || grokReauthError();
+        }
+        body = await fetchGrokBilling(retry.accessToken, { fetchImpl, env, timeoutMs });
+      } else {
+        throw error;
+      }
+    }
     return {
       configured: true,
       error: null,
@@ -350,9 +654,18 @@ async function fetchGrokLimits({ home, env, fetchImpl = fetch, timeoutMs } = {})
 module.exports = {
   resolveGrokHome,
   resolveGrokBillingBaseUrl,
+  DEFAULT_TOKEN_ENDPOINT,
+  ACCESS_TOKEN_EXPIRY_SKEW_MS,
   isGrokInstalled,
   loadGrokAuthEntry,
   readGrokAccessToken,
+  isGrokAccessTokenExpired,
+  resolveGrokOidcClientId,
+  resolveGrokOidcIssuer,
+  resolveGrokTokenEndpoint,
+  refreshGrokTokens,
+  persistGrokRefreshedAuth,
+  resolveGrokAccessToken,
   normalizeGrokPeriodType,
   inferGrokPeriodTypeFromDates,
   sumProductUsagePercent,
