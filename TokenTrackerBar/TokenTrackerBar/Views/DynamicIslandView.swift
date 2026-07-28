@@ -14,7 +14,6 @@ import SwiftUI
 struct DynamicIslandView: View {
     @ObservedObject var viewModel: DashboardViewModel
     @ObservedObject var state: DynamicIslandState
-    let onHoverChanged: (Bool) -> Void
     /// Reports the measured wing width (max of both labels + breathing room)
     /// so the controller can shrink the hit-test pill to hug the text.
     let onWingWidthChanged: (CGFloat) -> Void
@@ -129,10 +128,6 @@ struct DynamicIslandView: View {
         .onPreferenceChange(IslandRenderedHeightKey.self) { h in
             onExpandedHeightChanged(h)
         }
-        // Hover must attach HERE — on the island's own animated bounds — not
-        // on the outer fill frame, whose tracking area would cover the whole
-        // (invisible) expanded-size panel and expand from empty air.
-        .onHover(perform: onHoverChanged)
         // Top-align inside the always-expanded panel so height/width springs
         // grow downward / outward instead of from the view's center (which
         // would pull the top edge away from the screen and flash wallpaper).

@@ -191,12 +191,11 @@ final class DynamicIslandController: NSObject {
 
     // MARK: - Hover-driven expand / collapse
 
-    private func handleHover(_ hovering: Bool) {
+    fileprivate func handleHover(_ hovering: Bool) {
         if hovering {
-            // SwiftUI's tracking area can briefly keep the expanded animated
-            // bounds after the black shape has collapsed. Ignore that stale
-            // hover unless the pointer is physically inside the CURRENT AppKit
-            // hit rect; otherwise transparent space re-opens the island.
+            // Tracking areas are rebuilt as the island expands/collapses.
+            // Ignore a stale enter from the previous area unless the pointer
+            // is physically inside the CURRENT AppKit hit rect.
             guard DynamicIslandInteractionPolicy.shouldExpand(
                 hovering: true,
                 pointerInsideInteractiveRegion: isPointerOverIsland()
@@ -415,9 +414,6 @@ final class DynamicIslandController: NSObject {
             rootView: DynamicIslandView(
                 viewModel: viewModel,
                 state: state,
-                onHoverChanged: { [weak self] hovering in
-                    Task { @MainActor [weak self] in self?.handleHover(hovering) }
-                },
                 onWingWidthChanged: { [weak self] width in
                     Task { @MainActor [weak self] in self?.applyWingWidth(width) }
                 },
@@ -514,12 +510,48 @@ private final class IslandPanel: NSPanel, CursorHitScoping {
 /// AppKit delivers the event to whatever is underneath (menu bar, desktop).
 private final class IslandHitView: NSView {
     weak var islandController: DynamicIslandController?
-    var hitRegion: NSRect = .zero
+    var hitRegion: NSRect = .zero {
+        didSet {
+            guard hitRegion != oldValue else { return }
+            rebuildHoverTrackingArea()
+        }
+    }
+
+    private var hoverTrackingArea: NSTrackingArea?
+
+    private func rebuildHoverTrackingArea() {
+        if let hoverTrackingArea {
+            removeTrackingArea(hoverTrackingArea)
+            self.hoverTrackingArea = nil
+        }
+        guard !hitRegion.isEmpty else { return }
+
+        let trackingArea = NSTrackingArea(
+            rect: hitRegion,
+            options: [.mouseEnteredAndExited, .activeAlways, .enabledDuringMouseDrag],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        hoverTrackingArea = trackingArea
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         // `point` is in this view's coordinate system (origin bottom-left).
         guard hitRegion.contains(point) else { return nil }
-        return super.hitTest(point)
+        // The hardware-notch gap has no SwiftUI child content. Claim it at
+        // the AppKit container level so it is just as interactive as either
+        // populated metric wing, while outer transparent chrome still passes
+        // through to the menu bar.
+        return super.hitTest(point) ?? self
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        islandController?.handleHover(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        islandController?.handleHover(false)
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
