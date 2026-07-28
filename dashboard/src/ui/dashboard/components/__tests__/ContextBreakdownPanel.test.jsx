@@ -729,4 +729,71 @@ describe("ContextBreakdownPanel", () => {
     resolveCodex(codexPayload);
   });
 
+  it("shows loading skeleton instead of stale data when visiting an uncached source", async () => {
+    const codexPayload = {
+      source: "codex",
+      scope: "supported",
+      totals: {
+        input_tokens: 100,
+        cached_input_tokens: 900,
+        cache_creation_input_tokens: 0,
+        output_tokens: 20,
+        reasoning_output_tokens: 5,
+        total_tokens: 1020,
+      },
+      session_count: 1,
+      message_count: 2,
+      tool_calls_breakdown: {
+        total_calls: 1,
+        categories: [
+          {
+            name: "Execution",
+            calls: 1,
+            totals: {
+              input_tokens: 100,
+              cached_input_tokens: 900,
+              cache_creation_input_tokens: 0,
+              output_tokens: 20,
+              reasoning_output_tokens: 5,
+              total_tokens: 1020,
+            },
+            tools: [],
+          },
+        ],
+      },
+      exec_command_breakdown: { by_type: [], by_exit: [] },
+    };
+
+    let resolveGrok;
+    const slowGrok = new Promise((resolve) => {
+      resolveGrok = resolve;
+    });
+
+    getUsageCategoryBreakdown
+      .mockResolvedValueOnce(codexPayload)
+      .mockReturnValueOnce(slowGrok);
+
+    const { rerender } = render(
+      <ContextBreakdownPanel from="2026-05-09" to="2026-05-09" source="codex" />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(copy("dashboard.context_breakdown.category.tool_calls"))).toBeInTheDocument();
+    });
+
+    // First visit to grok (cache miss, fetch pending): must show the skeleton,
+    // never the previous codex payload under grok's display branch.
+    rerender(
+      <ContextBreakdownPanel from="2026-05-09" to="2026-05-09" source="grok" />,
+    );
+
+    expect(screen.getByText(copy("dashboard.context_breakdown.loading_hint"))).toBeInTheDocument();
+    expect(screen.queryByText(copy("dashboard.context_breakdown.category.tool_calls"))).not.toBeInTheDocument();
+
+    resolveGrok({ ...codexPayload, source: "grok" });
+    await waitFor(() => {
+      expect(screen.getByText(copy("dashboard.context_breakdown.category.tool_calls"))).toBeInTheDocument();
+    });
+  });
+
 });

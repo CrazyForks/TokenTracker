@@ -703,7 +703,9 @@ export function ContextBreakdownPanel({ from, to, source = "claude", referenceTo
     let cancelled = false;
     const cacheKey = `${from || ""}|${to || ""}|${source || "claude"}`;
     const cached = cacheRef.current[cacheKey];
-    if (cached) setData(cached);
+    // On a cache miss, reset data so the previous source's payload never
+    // renders under the new source's display branch while the fetch runs.
+    setData(cached || null);
     setLoading(true);
     onLoadingChange?.(true);
     setError(null);
