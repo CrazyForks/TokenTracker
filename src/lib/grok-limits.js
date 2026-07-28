@@ -186,6 +186,7 @@ function isGrokInstalled({ home, env } = {}) {
 function loadGrokAuthEntry({ home, env } = {}) {
   const authPath = path.join(resolveGrokHome({ home, env }), "auth.json");
   if (!fs.existsSync(authPath)) return null;
+  let fallback = null;
   try {
     const parsed = JSON.parse(fs.readFileSync(authPath, "utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
@@ -194,15 +195,20 @@ function loadGrokAuthEntry({ home, env } = {}) {
       const key = typeof value.key === "string" ? value.key.trim() : "";
       const refreshToken =
         typeof value.refresh_token === "string" ? value.refresh_token.trim() : "";
-      // Prefer entries that can still authenticate (access token and/or refresh token).
-      if (key || refreshToken) {
+      // Entries with an access token win outright. A refresh-token-only entry
+      // is only usable when a client id is resolvable, and must not shadow a
+      // later keyed entry — keep it as a fallback instead.
+      if (key) {
         return { entry: value, authPath, scopeKey, authFile: parsed };
+      }
+      if (refreshToken && !fallback && resolveGrokOidcClientId(value, scopeKey)) {
+        fallback = { entry: value, authPath, scopeKey, authFile: parsed };
       }
     }
   } catch (_error) {
     return null;
   }
-  return null;
+  return fallback;
 }
 
 function readGrokAccessToken({ home, env } = {}) {
@@ -266,6 +272,7 @@ async function refreshGrokTokens({
   clientId,
   tokenEndpoint = DEFAULT_TOKEN_ENDPOINT,
   fetchImpl = fetch,
+  timeoutMs = DEFAULT_BILLING_TIMEOUT_MS,
 } = {}) {
   if (typeof refreshToken !== "string" || !refreshToken.trim()) {
     const err = new Error("Grok refresh skipped: no refresh_token in auth.json");
@@ -284,68 +291,88 @@ async function refreshGrokTokens({
     client_id: clientId.trim(),
   });
 
-  const res = await fetchImpl(tokenEndpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Accept: "application/json",
-    },
-    body: body.toString(),
-  });
+  // Same abort deadline discipline as fetchGrokBilling — a stalled token
+  // endpoint must not block fetchGrokLimits (and its poller) indefinitely.
+  // The timer stays armed through the body reads below, not just the headers.
+  const normalizedTimeoutMs =
+    Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_BILLING_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timeoutError = new Error("Grok token refresh timed out.");
+  timeoutError.code = "GROK_REFRESH_TIMEOUT";
+  const timer = setTimeout(() => controller.abort(timeoutError), normalizedTimeoutMs);
 
-  if (res.status === 400 || res.status === 401) {
-    let oauthError = null;
-    try {
-      const payload = await res.json();
-      oauthError =
-        (typeof payload?.error === "string" && payload.error) ||
-        (payload?.error && typeof payload.error === "object" && payload.error.code) ||
-        null;
-    } catch (_error) {
-      // Status remains authoritative.
+  try {
+    const res = await fetchImpl(tokenEndpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json",
+      },
+      body: body.toString(),
+      signal: controller.signal,
+    });
+
+    if (res.status === 400 || res.status === 401) {
+      let oauthError = null;
+      try {
+        const payload = await res.json();
+        oauthError =
+          (typeof payload?.error === "string" && payload.error) ||
+          (payload?.error && typeof payload.error === "object" && payload.error.code) ||
+          null;
+      } catch (_error) {
+        // Status remains authoritative.
+      }
+      const err = grokReauthError();
+      err.oauthError = oauthError;
+      err.status = res.status;
+      throw err;
     }
-    const err = grokReauthError();
-    err.oauthError = oauthError;
-    err.status = res.status;
-    throw err;
+
+    if (!res.ok) {
+      const err = new Error(`Grok token refresh failed: HTTP ${res.status}`);
+      err.code = "REFRESH_HTTP_ERROR";
+      err.status = res.status;
+      throw err;
+    }
+
+    const payload = await res.json();
+    const accessToken =
+      typeof payload?.access_token === "string" ? payload.access_token.trim() : "";
+    if (!accessToken) {
+      const err = new Error("Grok token refresh response missing access_token");
+      err.code = "REFRESH_INVALID_RESPONSE";
+      throw err;
+    }
+
+    const nextRefresh =
+      typeof payload?.refresh_token === "string" && payload.refresh_token.trim()
+        ? payload.refresh_token.trim()
+        : refreshToken.trim();
+
+    let expiresAt = null;
+    const expiresIn = Number(payload?.expires_in);
+    if (Number.isFinite(expiresIn) && expiresIn > 0) {
+      expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
+    } else if (typeof payload?.expires_at === "string" && payload.expires_at.trim()) {
+      const parsed = Date.parse(payload.expires_at.trim());
+      if (Number.isFinite(parsed)) expiresAt = new Date(parsed).toISOString();
+    }
+
+    return {
+      access_token: accessToken,
+      refresh_token: nextRefresh,
+      expires_at: expiresAt,
+      token_type: typeof payload?.token_type === "string" ? payload.token_type : null,
+    };
+  } catch (error) {
+    if (controller.signal.aborted && controller.signal.reason === timeoutError) {
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
-
-  if (!res.ok) {
-    const err = new Error(`Grok token refresh failed: HTTP ${res.status}`);
-    err.code = "REFRESH_HTTP_ERROR";
-    err.status = res.status;
-    throw err;
-  }
-
-  const payload = await res.json();
-  const accessToken =
-    typeof payload?.access_token === "string" ? payload.access_token.trim() : "";
-  if (!accessToken) {
-    const err = new Error("Grok token refresh response missing access_token");
-    err.code = "REFRESH_INVALID_RESPONSE";
-    throw err;
-  }
-
-  const nextRefresh =
-    typeof payload?.refresh_token === "string" && payload.refresh_token.trim()
-      ? payload.refresh_token.trim()
-      : refreshToken.trim();
-
-  let expiresAt = null;
-  const expiresIn = Number(payload?.expires_in);
-  if (Number.isFinite(expiresIn) && expiresIn > 0) {
-    expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
-  } else if (typeof payload?.expires_at === "string" && payload.expires_at.trim()) {
-    const parsed = Date.parse(payload.expires_at.trim());
-    if (Number.isFinite(parsed)) expiresAt = new Date(parsed).toISOString();
-  }
-
-  return {
-    access_token: accessToken,
-    refresh_token: nextRefresh,
-    expires_at: expiresAt,
-    token_type: typeof payload?.token_type === "string" ? payload.token_type : null,
-  };
 }
 
 async function persistGrokRefreshedAuth(authPath, authFile, scopeKey, entry, newTokens) {
@@ -359,14 +386,25 @@ async function persistGrokRefreshedAuth(authPath, authFile, scopeKey, entry, new
   };
   if (newTokens.expires_at) {
     nextEntry.expires_at = newTokens.expires_at;
+  } else {
+    // Unknown new lifetime: drop the stale timestamp, otherwise the next poll
+    // sees an already-expired expires_at next to a fresh key and refreshes
+    // again on every cycle (burning a rotation each time).
+    delete nextEntry.expires_at;
   }
   const merged = {
     ...authFile,
     [scopeKey]: nextEntry,
   };
   const tmp = `${authPath}.tmp.${process.pid}.${Date.now()}`;
-  await fs.promises.writeFile(tmp, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
-  await fs.promises.rename(tmp, authPath);
+  try {
+    await fs.promises.writeFile(tmp, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
+    await fs.promises.rename(tmp, authPath);
+  } catch (error) {
+    // Never leave a tmp file holding fresh tokens behind.
+    await fs.promises.rm(tmp, { force: true }).catch(() => {});
+    throw error;
+  }
   try {
     await fs.promises.chmod(authPath, 0o600);
   } catch (_error) {
@@ -495,6 +533,20 @@ function normalizeGrokBillingResponse(body) {
   if (usedPercent === null && Number.isFinite(monthlyLimit) && monthlyLimit > 0 && Number.isFinite(used)) {
     usedPercent = (used / monthlyLimit) * 100;
     if (!periodType) periodType = "monthly";
+  }
+
+  // Unified billing omits creditUsagePercent (and productUsage) entirely when
+  // nothing was used this period. A valid currentPeriod window with the usage
+  // fields absent means 0%, not an unparseable response. Present-but-malformed
+  // fields still fall through to the parse error below.
+  if (
+    usedPercent === null &&
+    currentPeriod &&
+    (periodStart || resetAt) &&
+    config.creditUsagePercent === undefined &&
+    config.productUsage === undefined
+  ) {
+    usedPercent = 0;
   }
 
   const onDemandCap = grokValNumber(config.onDemandCap);

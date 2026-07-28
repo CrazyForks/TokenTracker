@@ -803,3 +803,190 @@ describe("resolveGrokAccessToken", () => {
     }
   });
 });
+
+describe("grok refresh hardening", () => {
+  it("treats a zero-usage unified period (creditUsagePercent omitted) as 0%", () => {
+    // Real payload shape from a zero-usage week: unified billing drops
+    // creditUsagePercent and productUsage entirely.
+    const result = normalizeGrokBillingResponse({
+      config: {
+        currentPeriod: {
+          type: "USAGE_PERIOD_TYPE_WEEKLY",
+          start: "2026-07-22T00:00:00+00:00",
+          end: "2026-07-29T00:00:00+00:00",
+        },
+        onDemandCap: { val: 0 },
+        onDemandUsed: { val: 0 },
+        isUnifiedBillingUser: true,
+        billingPeriodStart: "2026-07-22T00:00:00+00:00",
+        billingPeriodEnd: "2026-07-29T00:00:00+00:00",
+      },
+    });
+
+    assert.equal(result.period_type, "weekly");
+    assert.equal(result.credit_usage_percent, 0);
+    assert.deepEqual(result.primary_window, {
+      used_percent: 0,
+      reset_at: "2026-07-29T00:00:00.000Z",
+    });
+  });
+
+  it("still rejects a present-but-malformed creditUsagePercent", () => {
+    assert.throws(
+      () =>
+        normalizeGrokBillingResponse({
+          config: {
+            currentPeriod: {
+              type: "USAGE_PERIOD_TYPE_WEEKLY",
+              start: "2026-07-22T00:00:00+00:00",
+              end: "2026-07-29T00:00:00+00:00",
+            },
+            creditUsagePercent: "40%",
+          },
+        }),
+      /no quota windows/i,
+    );
+  });
+
+  it("aborts a stalled token endpoint with GROK_REFRESH_TIMEOUT", async () => {
+    await assert.rejects(
+      refreshGrokTokens({
+        refreshToken: "refresh-1",
+        clientId: "client-1",
+        timeoutMs: 30,
+        fetchImpl: (url, options) =>
+          new Promise((_, reject) => {
+            options.signal.addEventListener("abort", () => reject(options.signal.reason), {
+              once: true,
+            });
+          }),
+      }),
+      (err) => {
+        assert.equal(err.code, "GROK_REFRESH_TIMEOUT");
+        assert.match(err.message, /timed out/i);
+        return true;
+      },
+    );
+  });
+
+  it("keeps the timeout armed through the response body read", async () => {
+    await assert.rejects(
+      refreshGrokTokens({
+        refreshToken: "refresh-1",
+        clientId: "client-1",
+        timeoutMs: 30,
+        fetchImpl: async (url, options) => ({
+          ok: true,
+          status: 200,
+          json: () =>
+            new Promise((_, reject) => {
+              options.signal.addEventListener("abort", () => reject(options.signal.reason), {
+                once: true,
+              });
+            }),
+        }),
+      }),
+      (err) => err.code === "GROK_REFRESH_TIMEOUT",
+    );
+  });
+
+  it("prefers a keyed auth entry over an earlier refresh-token-only entry", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tt-grok-entry-order-"));
+    try {
+      const grokHome = path.join(tmp, ".grok");
+      fs.mkdirSync(grokHome, { recursive: true });
+      fs.writeFileSync(
+        path.join(grokHome, "auth.json"),
+        JSON.stringify({
+          "https://auth.x.ai::refresh-only": {
+            refresh_token: "r1",
+            oidc_client_id: "refresh-only-client",
+          },
+          "https://auth.x.ai::keyed": { key: "usable-token" },
+        }),
+        "utf8",
+      );
+
+      const env = { GROK_HOME: grokHome };
+      const loaded = require("../src/lib/grok-limits").loadGrokAuthEntry({ home: tmp, env });
+      assert.equal(loaded.entry.key, "usable-token");
+      assert.equal(readGrokAccessToken({ home: tmp, env }), "usable-token");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores refresh-token-only entries with no resolvable client id", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tt-grok-entry-noclient-"));
+    try {
+      const grokHome = path.join(tmp, ".grok");
+      fs.mkdirSync(grokHome, { recursive: true });
+      fs.writeFileSync(
+        path.join(grokHome, "auth.json"),
+        // No oidc_client_id and no "::" suffix to recover it from.
+        JSON.stringify({ "plain-scope": { refresh_token: "r1" } }),
+        "utf8",
+      );
+
+      const loaded = require("../src/lib/grok-limits").loadGrokAuthEntry({
+        home: tmp,
+        env: { GROK_HOME: grokHome },
+      });
+      assert.equal(loaded, null);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("drops a stale expires_at when the refresh response has no lifetime", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tt-grok-persist-stale-"));
+    try {
+      const authPath = path.join(tmp, "auth.json");
+      const scopeKey = "https://auth.x.ai::client-1";
+      const entry = {
+        key: "old-token",
+        refresh_token: "r1",
+        expires_at: "2026-07-19T20:44:02.792386Z",
+        oidc_client_id: "client-1",
+      };
+      const authFile = { [scopeKey]: entry };
+      fs.writeFileSync(authPath, JSON.stringify(authFile), { mode: 0o600 });
+
+      await persistGrokRefreshedAuth(authPath, authFile, scopeKey, entry, {
+        access_token: "new-token",
+        refresh_token: "r2",
+        expires_at: null,
+      });
+
+      const onDisk = JSON.parse(fs.readFileSync(authPath, "utf8"));
+      assert.equal(onDisk[scopeKey].key, "new-token");
+      // Keeping the old timestamp would force a refresh on every poll.
+      assert.equal("expires_at" in onDisk[scopeKey], false);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans up the tmp file when the atomic rename fails", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tt-grok-persist-cleanup-"));
+    try {
+      // rename() onto a non-empty directory fails on POSIX.
+      const authPath = path.join(tmp, "auth.json");
+      fs.mkdirSync(path.join(authPath, "block"), { recursive: true });
+
+      const scopeKey = "https://auth.x.ai::client-1";
+      const entry = { key: "old", refresh_token: "r1" };
+      await assert.rejects(
+        persistGrokRefreshedAuth(authPath, { [scopeKey]: entry }, scopeKey, entry, {
+          access_token: "new-token",
+        }),
+      );
+
+      // No auth.json.tmp.* file with fresh tokens may remain.
+      const leftovers = fs.readdirSync(tmp).filter((name) => name.includes(".tmp."));
+      assert.deepEqual(leftovers, []);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
