@@ -27,9 +27,16 @@ const {
   getExecutableName,
 } = require("./categorizer-utils");
 
-const CACHE_SCHEMA_VERSION = "grok-context-v1";
+const CACHE_SCHEMA_VERSION = "grok-context-v2";
 const CACHE = new Map();
-const CACHE_TTL_MS = 60_000;
+// Result-level TTL. Per-file parse cache is the main win when flipping tabs.
+const CACHE_TTL_MS = 5 * 60_000;
+// Deduplicate concurrent scans when the dashboard remounts the panel quickly.
+const IN_FLIGHT = new Map();
+// Per updates.jsonl parse cache — mirrors Codex PARSED_GROUP_CACHE so switching
+// back to Grok does not re-read every session log on each open.
+const FILE_PARSE_CACHE = new Map();
+const MAX_FILE_PARSE_CACHE_ENTRIES = 512;
 
 // ---------------------------------------------------------------------------
 // Time helpers
@@ -316,7 +323,45 @@ function finalizeExecRows(map) {
     .sort((a, b) => (b.totals?.total_tokens || 0) - (a.totals?.total_tokens || 0));
 }
 
+function fileParseCacheKey(updatesPath, { from, to, timeZoneContext } = {}, stat) {
+  return [
+    CACHE_SCHEMA_VERSION,
+    updatesPath,
+    from || "",
+    to || "",
+    timeZoneContext?.timeZone || "",
+    timeZoneContext?.offsetMinutes ?? "",
+    Number(stat?.size || 0),
+    Math.floor(Number(stat?.mtimeMs || 0)),
+  ].join("|");
+}
+
+function rememberFileParse(key, value) {
+  FILE_PARSE_CACHE.delete(key);
+  FILE_PARSE_CACHE.set(key, value);
+  while (FILE_PARSE_CACHE.size > MAX_FILE_PARSE_CACHE_ENTRIES) {
+    const oldest = FILE_PARSE_CACHE.keys().next().value;
+    if (oldest == null) break;
+    FILE_PARSE_CACHE.delete(oldest);
+  }
+}
+
 async function parseGrokUpdatesFile(updatesPath, { from, to, timeZoneContext } = {}) {
+  let stat = null;
+  try {
+    stat = fs.statSync(updatesPath);
+  } catch {
+    return null;
+  }
+  if (!stat.isFile() || stat.size <= 0) return null;
+
+  const cacheKey = fileParseCacheKey(updatesPath, { from, to, timeZoneContext }, stat);
+  const hit = FILE_PARSE_CACHE.get(cacheKey);
+  if (hit) {
+    rememberFileParse(cacheKey, hit);
+    return hit;
+  }
+
   const byTool = new Map();
   const byExecKind = new Map();
   const byExecExit = new Map();
@@ -512,7 +557,7 @@ async function parseGrokUpdatesFile(updatesPath, { from, to, timeZoneContext } =
     input.destroy?.();
   }
 
-  return {
+  const parsedResult = {
     totals: roundTotals(totals),
     turnCount,
     toolBreakdown: { tool_rows: finalizeToolRows(byTool) },
@@ -525,6 +570,8 @@ async function parseGrokUpdatesFile(updatesPath, { from, to, timeZoneContext } =
       by_exit: finalizeExecRows(byExecExit),
     },
   };
+  rememberFileParse(cacheKey, parsedResult);
+  return parsedResult;
 }
 
 function emptySessionResult() {
@@ -580,37 +627,95 @@ function mergeExecRows(map, rows) {
   }
 }
 
-async function computeGrokContextBreakdown({
-  from = null,
-  to = null,
-  top = 50,
-  timeZoneContext = null,
-  env = process.env,
-} = {}) {
-  const limitedTop = Number.isFinite(top) && top > 0 ? Math.min(Math.floor(top), 200) : 50;
-  const sessions = discoverGrokSessionFiles(env);
-  const inventorySig = crypto
+function buildGrokInventorySignature(sessions) {
+  return crypto
     .createHash("sha256")
     .update(
-      sessions
+      (sessions || [])
         .map((s) => `${s.updatesPath}:${s.size}:${Math.floor(s.mtimeMs)}`)
         .join("|"),
     )
     .digest("hex");
-  const cacheKey = [
+}
+
+function buildGrokResultCacheKey({ from, to, top, timeZoneContext, inventorySig }) {
+  // Include inventorySig so a changed session file cannot serve a stale aggregate.
+  // Unchanged files still skip re-parse via FILE_PARSE_CACHE (Codex-style).
+  return [
     CACHE_SCHEMA_VERSION,
     from || "",
     to || "",
-    limitedTop,
+    top,
     timeZoneContext?.timeZone || "",
     timeZoneContext?.offsetMinutes ?? "",
-    inventorySig,
+    inventorySig || "",
   ].join("|");
+}
+
+async function computeGrokContextBreakdown(options = {}) {
+  const {
+    from = null,
+    to = null,
+    top = 50,
+    timeZoneContext = null,
+    env = process.env,
+  } = options;
+  const limitedTop = Number.isFinite(top) && top > 0 ? Math.min(Math.floor(top), 200) : 50;
+  const sessions = discoverGrokSessionFiles(env);
+  const inventorySig = buildGrokInventorySignature(sessions);
+  const cacheKey = buildGrokResultCacheKey({
+    from,
+    to,
+    top: limitedTop,
+    timeZoneContext,
+    inventorySig,
+  });
 
   const cached = CACHE.get(cacheKey);
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
     return cached.value;
   }
+
+  const existing = IN_FLIGHT.get(cacheKey);
+  if (existing) return existing;
+
+  const run = computeGrokContextBreakdownUncached({
+    from,
+    to,
+    top: limitedTop,
+    timeZoneContext,
+    env,
+    sessions,
+    cacheKey,
+  });
+  IN_FLIGHT.set(cacheKey, run);
+  try {
+    return await run;
+  } finally {
+    if (IN_FLIGHT.get(cacheKey) === run) IN_FLIGHT.delete(cacheKey);
+  }
+}
+
+async function computeGrokContextBreakdownUncached({
+  from = null,
+  to = null,
+  top = 50,
+  timeZoneContext = null,
+  env = process.env,
+  sessions = null,
+  cacheKey = null,
+} = {}) {
+  const limitedTop = Number.isFinite(top) && top > 0 ? Math.min(Math.floor(top), 200) : 50;
+  const sessionList = sessions || discoverGrokSessionFiles(env);
+  const resultCacheKey =
+    cacheKey ||
+    buildGrokResultCacheKey({
+      from,
+      to,
+      top: limitedTop,
+      timeZoneContext,
+      inventorySig: buildGrokInventorySignature(sessionList),
+    });
 
   const grand = emptyTotals();
   const byTool = new Map();
@@ -623,7 +728,7 @@ async function computeGrokContextBreakdown({
   let messageCount = 0;
   let sessionCount = 0;
 
-  for (const sess of sessions) {
+  for (const sess of sessionList) {
     const parsed = await parseGrokUpdatesFile(sess.updatesPath, {
       from,
       to,
@@ -776,7 +881,7 @@ async function computeGrokContextBreakdown({
     },
   };
 
-  CACHE.set(cacheKey, { at: Date.now(), value: result });
+  CACHE.set(resultCacheKey, { at: Date.now(), value: result });
   while (CACHE.size > 32) {
     const oldest = [...CACHE.entries()].sort((a, b) => a[1].at - b[1].at)[0];
     if (oldest) CACHE.delete(oldest[0]);

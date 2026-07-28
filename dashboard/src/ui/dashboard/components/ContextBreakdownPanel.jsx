@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ChevronRight, Info } from "lucide-react";
 import { copy } from "../../../lib/copy";
@@ -690,6 +690,10 @@ export function ContextBreakdownPanel({ from, to, source = "claude", referenceTo
   const [error, setError] = useState(null);
   // Track which top-level disclosure rows are open
   const [openRows, setOpenRows] = useState({});
+  // Keep last successful payload per range+source so flipping provider tabs
+  // (Claude ↔ Codex ↔ Grok) does not flash the full "Scanning session logs…"
+  // skeleton when the server already has a warm cache.
+  const cacheRef = useRef({});
 
   function toggleRow(key) {
     setOpenRows((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -697,6 +701,9 @@ export function ContextBreakdownPanel({ from, to, source = "claude", referenceTo
 
   useEffect(() => {
     let cancelled = false;
+    const cacheKey = `${from || ""}|${to || ""}|${source || "claude"}`;
+    const cached = cacheRef.current[cacheKey];
+    if (cached) setData(cached);
     setLoading(true);
     onLoadingChange?.(true);
     setError(null);
@@ -708,7 +715,10 @@ export function ContextBreakdownPanel({ from, to, source = "claude", referenceTo
       tzOffsetMinutes: getBrowserTimeZoneOffsetMinutes(),
     })
       .then((res) => {
-        if (!cancelled) setData(res);
+        if (!cancelled) {
+          cacheRef.current[cacheKey] = res;
+          setData(res);
+        }
       })
       .catch((e) => {
         if (!cancelled) setError(e?.message || String(e));
