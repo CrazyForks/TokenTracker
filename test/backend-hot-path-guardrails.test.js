@@ -129,6 +129,37 @@ test("the unauthenticated anomaly summary cannot reach any refresh write path", 
   );
 });
 
+test("leaderboard refresh reconciles stale rows after the replacement snapshot is durable", () => {
+  const source = read("dashboard/edge-patches/tokentracker-leaderboard-refresh.ts");
+  const upsertStart = source.indexOf("// Upsert in batches of 200");
+  const staleDelete = source.indexOf('.lt("generated_at", generatedAt)');
+  const completion = source.indexOf("results[period] = { upserted: upsertRows.length }");
+
+  assert.ok(upsertStart > 0, "snapshot upsert must exist");
+  assert.ok(
+    staleDelete > upsertStart,
+    "stale snapshot cleanup must run only after every replacement row is upserted",
+  );
+  assert.ok(
+    completion > staleDelete,
+    "the period must not report success before stale snapshot cleanup finishes",
+  );
+  assert.match(
+    source.slice(upsertStart, completion),
+    /\.from\("tokentracker_leaderboard_snapshots"\)\s*\.delete\(\)\s*\.eq\("period", period\)\s*\.eq\("from_day", from_day\)\s*\.eq\("to_day", to_day\)\s*\.lt\("generated_at", generatedAt\)/u,
+    "refresh must delete rows left behind by excluded or otherwise removed users in the same snapshot window",
+  );
+});
+
+test("leaderboard anti-cheat queue poll runs hourly after the hourly detector", () => {
+  const workflow = read(".github/workflows/leaderboard-anticheat.yml");
+  assert.match(
+    workflow,
+    /cron: "53 \* \* \* \*"/u,
+    "a daily poll can miss a flag created after that day's run for nearly 24 hours",
+  );
+});
+
 test("leaderboard reads expose snapshot freshness and disable response caching", () => {
   const edgeSource = read("dashboard/edge-patches/tokentracker-leaderboard.ts");
   const clientSource = read("dashboard/src/lib/api.ts");

@@ -17,12 +17,13 @@ name: leaderboard anti-cheat queue
 # detector may still clear. Pull identities from the flags table directly; the
 # queries are at the bottom of the ops SQL file.
 
-# Daily, not hourly. The DETECTOR runs hourly and auto-exclusion takes effect
-# within the hour — protection is fast. This is only the human ping, and an
-# hourly ping on a queue that takes a day to review is just noise.
+# Poll shortly after every hourly detector pass. The issue body is rewritten
+# in-place while the queue remains open, so this does not create hourly comment
+# noise; it only closes the blind window where a flag created after a daily poll
+# would otherwise remain invisible to operators until the next day.
 on:
   schedule:
-    - cron: "23 1 * * *"
+    - cron: "53 * * * *"
   workflow_dispatch: {}
 
 concurrency:

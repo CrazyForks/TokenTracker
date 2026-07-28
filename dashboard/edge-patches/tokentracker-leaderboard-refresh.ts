@@ -739,6 +739,29 @@ export default async function (req: Request): Promise<Response> {
     }
 
     if (aggMap.size === 0) {
+      // The snapshot is a materialized replacement, not an append-only log.
+      // If every user disappeared (for example, all were soft-excluded), clear
+      // the previous window rather than leaving an old leaderboard visible.
+      const { error: deleteErr } = await client.database
+        .from("tokentracker_leaderboard_snapshots")
+        .delete()
+        .eq("period", period)
+        .eq("from_day", from_day)
+        .eq("to_day", to_day);
+      if (deleteErr) {
+        logRefreshEvent({
+          event: "period_error",
+          request_id: requestId,
+          source: requestSource,
+          period,
+          from_day,
+          to_day,
+          stage: "delete_empty_snapshot",
+          error: deleteErr.message,
+          duration_ms: Date.now() - periodStartedAt,
+        });
+        return json({ error: deleteErr.message }, 500);
+      }
       results[period] = { upserted: 0 };
       logRefreshEvent({
         event: "period_completed",
@@ -858,6 +881,38 @@ export default async function (req: Request): Promise<Response> {
         });
         return json({ error: upsertErr.message }, 500);
       }
+    }
+
+    // Reconcile the materialized snapshot only after every replacement row is
+    // durable. Upsert alone cannot remove users that disappeared from aggMap
+    // (blocked accounts, anti-cheat exclusions, or accounts with no remaining
+    // usage), which previously left stale ranks visible indefinitely. Using
+    // generated_at as the generation marker avoids a delete-before-insert gap:
+    // if any upsert fails, the old complete snapshot remains available.
+    const { error: staleDeleteErr } = await client.database
+      .from("tokentracker_leaderboard_snapshots")
+      .delete()
+      .eq("period", period)
+      .eq("from_day", from_day)
+      .eq("to_day", to_day)
+      .lt("generated_at", generatedAt);
+    if (staleDeleteErr) {
+      logRefreshEvent({
+        event: "period_error",
+        request_id: requestId,
+        source: requestSource,
+        period,
+        from_day,
+        to_day,
+        stage: "delete_stale_snapshot",
+        error: staleDeleteErr.message,
+        scanned_rows: scannedRows,
+        pages_fetched: pageCount,
+        deduped_buckets: grouped.length,
+        aggregated_users: aggMap.size,
+        duration_ms: Date.now() - periodStartedAt,
+      });
+      return json({ error: staleDeleteErr.message }, 500);
     }
 
     results[period] = { upserted: upsertRows.length };
