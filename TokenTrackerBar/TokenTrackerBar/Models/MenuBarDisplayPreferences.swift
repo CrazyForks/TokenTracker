@@ -232,6 +232,11 @@ enum MenuBarDisplayPreferences {
     static let key = "MenuBarDisplayItems"
     static let defaultIDs = [MenuBarDisplayMetric.todayTokens.rawValue, MenuBarDisplayMetric.todayCost.rawValue]
     static let maxVisibleItems = 2
+    /// Sentinel slot id meaning "show nothing in this slot" (issue #379:
+    /// laptops are tight on menu-bar space; users want a single metric).
+    /// Deliberately not a `MenuBarDisplayMetric` case — every consumer that
+    /// does `MenuBarDisplayMetric(rawValue:)` naturally skips it.
+    static let noneID = "none"
 
     /// Selectable metric ids for the dashboard dropdown.
     /// Token/cost metrics are always included. Limit slots require a healthy
@@ -262,13 +267,20 @@ enum MenuBarDisplayPreferences {
             .map(\.rawValue)
     }
 
-    /// Payload of selectable metrics for the dashboard dropdown.
+    /// Payload of selectable metrics for the dashboard dropdown. Starts with
+    /// the "None" sentinel so either slot can be emptied.
     static func availableItemsPayload(
         for limits: UsageLimitsResponse? = nil,
         keepingSelected selected: [String] = [],
         hiddenProviders: Set<String> = []
     ) -> [[String: String]] {
-        availableItemIDs(for: limits, keepingSelected: selected, hiddenProviders: hiddenProviders)
+        let noneEntry: [String: String] = [
+            "id": noneID,
+            "label": Strings.menuSlotNone,
+            "shortLabel": "",
+            "category": "none",
+        ]
+        return [noneEntry] + availableItemIDs(for: limits, keepingSelected: selected, hiddenProviders: hiddenProviders)
             .compactMap { MenuBarDisplayMetric(rawValue: $0) }
             .map {
                 [
@@ -332,6 +344,10 @@ enum MenuBarDisplayPreferences {
     static func normalize(_ ids: [String], allowedIDs: Set<String>) -> [String] {
         var seen = Set<String>()
         var normalized = ids.compactMap { raw -> String? in
+            // "none" is always a legal slot value and may appear in BOTH
+            // slots (a user hiding everything), so it is exempt from the
+            // allowed-set filter and from de-duplication.
+            if raw == noneID { return raw }
             guard allowedIDs.contains(raw), !seen.contains(raw) else { return nil }
             seen.insert(raw)
             return raw
@@ -345,5 +361,23 @@ enum MenuBarDisplayPreferences {
             seen.insert(fallbackID)
         }
         return Array(normalized.prefix(maxVisibleItems))
+    }
+}
+
+/// Keeps menu-bar visibility decisions consistent across the native menu,
+/// settings bridge, and status-item renderer.
+enum MenuBarSurfacePolicy {
+    static func isIconVisible(hideRequested: Bool, islandEnabled: Bool) -> Bool {
+        !(hideRequested && islandEnabled)
+    }
+
+    static func shouldOfferHidePrompt(
+        promptShown: Bool,
+        hideRequested: Bool,
+        islandEnabled: Bool
+    ) -> Bool {
+        !promptShown
+            && islandEnabled
+            && isIconVisible(hideRequested: hideRequested, islandEnabled: islandEnabled)
     }
 }

@@ -317,6 +317,7 @@ final class NativeBridge {
             }
         case "dynamicIslandEnabled":
             if let bool = value as? Bool {
+                let wasEnabled = dynamicIslandController?.isEnabled == true
                 // Controller persists the flag itself (single write path shared
                 // with the popover menu), then shows/hides the island panel.
                 dynamicIslandController?.setEnabled(bool)
@@ -325,11 +326,19 @@ final class NativeBridge {
                     // clears the hide-icon flag, so re-enabling the island
                     // never silently re-hides the menu bar icon.
                     StatusBarController.setMenuBarIconHidden(false)
+                } else if !wasEnabled {
+                    StatusBarController.offerHideIconPromptAfterIslandEnabled()
                 }
                 NotificationCenter.default.post(name: .nativeSettingsChanged, object: nil)
             }
         case "hideMenuBarIcon":
             if let bool = value as? Bool {
+                // A direct bridge message must obey the same never-zero-surface
+                // invariant as the native menu, even if an older dashboard
+                // sends this setting while the island is disabled.
+                if bool, dynamicIslandController?.isEnabled != true {
+                    dynamicIslandController?.setEnabled(true)
+                }
                 StatusBarController.setMenuBarIconHidden(bool)
                 NotificationCenter.default.post(name: .nativeSettingsChanged, object: nil)
             }

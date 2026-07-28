@@ -51,6 +51,7 @@ final class StatusBarController: NSObject {
     private let menuBarIconSize = NSSize(width: 22, height: 22)
     private let emptyAttributedTitle = NSAttributedString(string: "")
     private var isUpdatingDisplay = false
+    private var isHideIconPromptPending = false
 
     private static let showStatsKey = "MenuBarShowStats"
     private var showStats: Bool {
@@ -165,9 +166,57 @@ final class StatusBarController: NSObject {
     }
 
     static let hideMenuBarIconKey = "HideMenuBarIcon"
+    private static let hideIconPromptShownKey = "HideMenuBarIconPromptShown"
 
     static func setMenuBarIconHidden(_ hidden: Bool) {
         instance?.updateMenuBarIconVisibility(userRequestedHide: hidden)
+    }
+
+    /// One-time native prompt after the island is enabled: offer to hide the
+    /// menu bar icon so both surfaces don't crowd the menu bar.
+    static func offerHideIconPromptAfterIslandEnabled() {
+        instance?.maybeOfferHidingMenuBarIcon()
+    }
+
+    private func maybeOfferHidingMenuBarIcon() {
+        let defaults = UserDefaults.standard
+        let islandEnabled = defaults.bool(forKey: DynamicIslandController.enabledDefaultsKey)
+        let hideRequested = defaults.bool(forKey: Self.hideMenuBarIconKey)
+        guard !isHideIconPromptPending,
+              MenuBarSurfacePolicy.shouldOfferHidePrompt(
+                  promptShown: defaults.bool(forKey: Self.hideIconPromptShownKey),
+                  hideRequested: hideRequested,
+                  islandEnabled: islandEnabled
+              ) else { return }
+
+        // Let the island appear first so the prompt refers to something visible.
+        isHideIconPromptPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self else { return }
+            self.isHideIconPromptPending = false
+
+            let islandEnabled = defaults.bool(forKey: DynamicIslandController.enabledDefaultsKey)
+            let hideRequested = defaults.bool(forKey: Self.hideMenuBarIconKey)
+            guard MenuBarSurfacePolicy.shouldOfferHidePrompt(
+                promptShown: defaults.bool(forKey: Self.hideIconPromptShownKey),
+                hideRequested: hideRequested,
+                islandEnabled: islandEnabled
+            ) else { return }
+
+            defaults.set(true, forKey: Self.hideIconPromptShownKey)
+            let alert = NSAlert()
+            alert.messageText = Strings.alertHideIconTitle
+            alert.informativeText = Strings.alertHideIconMessage
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: Strings.alertHideIconConfirm)
+            alert.addButton(withTitle: Strings.alertHideIconKeep)
+            NSApp.activate(ignoringOtherApps: true)
+            if alert.runModal() == .alertFirstButtonReturn {
+                self.updateMenuBarIconVisibility(userRequestedHide: true)
+                NotificationCenter.default.post(name: .nativeSettingsChanged, object: nil)
+                NativeBridge.shared.pushSettings()
+            }
+        }
     }
 
     func updateMenuBarIconVisibility(userRequestedHide: Bool? = nil) {
@@ -177,8 +226,10 @@ final class StatusBarController: NSObject {
         }
         let islandEnabled = UserDefaults.standard.bool(forKey: DynamicIslandController.enabledDefaultsKey)
         // Never leave the user with zero UI: only hide menu bar icon if Dynamic Island is active.
-        let shouldHide = hideRequested && islandEnabled
-        statusItem.isVisible = !shouldHide
+        statusItem.isVisible = MenuBarSurfacePolicy.isIconVisible(
+            hideRequested: hideRequested,
+            islandEnabled: islandEnabled
+        )
     }
 
     private func observeApplicationActivity() {
@@ -187,7 +238,7 @@ final class StatusBarController: NSObject {
             object: NSApp,
             queue: .main
         ) { [weak self] _ in
-            self?.closePopoverIfShown()
+            MainActor.assumeIsolated { self?.closePopoverIfShown() }
         }
     }
 
@@ -877,7 +928,10 @@ final class StatusBarController: NSObject {
         // ── Group 2: Display Surfaces & Components ──
         let islandEnabled = UserDefaults.standard.bool(forKey: DynamicIslandController.enabledDefaultsKey)
         let isIconHidden = UserDefaults.standard.bool(forKey: Self.hideMenuBarIconKey)
-        let iconVisible = !(isIconHidden && islandEnabled)
+        let iconVisible = MenuBarSurfacePolicy.isIconVisible(
+            hideRequested: isIconHidden,
+            islandEnabled: islandEnabled
+        )
 
         // Dynamic Island
         let islandItem = NSMenuItem(title: Strings.menuDynamicIsland, action: #selector(toggleDynamicIsland), keyEquivalent: "")
@@ -891,8 +945,10 @@ final class StatusBarController: NSObject {
         menuBarIconItem.state = iconVisible ? .on : .off
         menu.addItem(menuBarIconItem)
 
-        if iconVisible {
-            // Icon Style Submenu (only available when Menu Bar Icon is active)
+        if iconVisible || islandEnabled {
+            // Icon Style Submenu — the style drives both the menu bar icon and
+            // the Dynamic Island's left wing glyph, so keep it reachable
+            // whenever either surface is showing (not just the menu bar icon).
             let iconStyleItem = NSMenuItem(title: Strings.menuIconStyle, action: nil, keyEquivalent: "")
             let iconStyleMenu = NSMenu()
             let currentStyle = animator?.iconStyle ?? .clawd
@@ -1022,12 +1078,19 @@ final class StatusBarController: NSObject {
         NotificationCenter.default.post(name: .nativeSettingsChanged, object: nil)
         // Keep an open dashboard Settings page in sync with the new state.
         NativeBridge.shared.pushSettings()
+        if next {
+            maybeOfferHidingMenuBarIcon()
+        }
     }
 
     @objc private func toggleMenuBarIcon() {
         let isIconHidden = UserDefaults.standard.bool(forKey: Self.hideMenuBarIconKey)
         let islandEnabled = UserDefaults.standard.bool(forKey: DynamicIslandController.enabledDefaultsKey)
-        if !isIconHidden {
+        let iconVisible = MenuBarSurfacePolicy.isIconVisible(
+            hideRequested: isIconHidden,
+            islandEnabled: islandEnabled
+        )
+        if iconVisible {
             // User wants to HIDE Menu Bar Icon (turn icon OFF)
             if !islandEnabled {
                 // If Dynamic Island is currently OFF, enable it FIRST so App is never hidden!
@@ -1091,7 +1154,9 @@ final class StatusBarController: NSObject {
         var ids = MenuBarDisplayPreferences.read()
         guard ids.indices.contains(slot) else { return }
         let other = slot == 0 ? 1 : 0
-        if ids.indices.contains(other), ids[other] == id {
+        // "None" may occupy both slots; only real metrics must stay distinct.
+        if id != MenuBarDisplayPreferences.noneID,
+           ids.indices.contains(other), ids[other] == id {
             // Keep both slots distinct by swapping instead of rejecting.
             ids[other] = ids[slot]
         }

@@ -26,6 +26,7 @@ struct DynamicIslandView: View {
     private static let wingPadding: CGFloat = 16
 
     @State private var menuBarIcon: NSImage? = nil
+    @State private var wingMetrics = WingSelection.default
 
     var body: some View {
         // Referenced so currency/locale changes force a re-render.
@@ -54,6 +55,10 @@ struct DynamicIslandView: View {
         }
         .onAppear {
             self.menuBarIcon = StatusBarController.currentMenuBarIcon
+            self.wingMetrics = resolveWingMetrics()
+        }
+        .onChange(of: state.settingsTick) { _ in
+            self.wingMetrics = resolveWingMetrics()
         }
     }
 
@@ -63,7 +68,11 @@ struct DynamicIslandView: View {
         let islandWidth = expanded
             ? max(DynamicIslandGeometry.expandedWidth, geo.collapsedWidth)
             : geo.collapsedWidth
-        let shape = BottomRoundedRectangle(radius: expanded ? 22 : min(12, geo.collapsedHeight / 2.5))
+        let shoulderRadius = expanded ? CGFloat(8) : min(6, geo.collapsedHeight / 4)
+        let shape = IslandRoundedRectangle(
+            topShoulderRadius: shoulderRadius,
+            bottomRadius: expanded ? 22 : min(12, geo.collapsedHeight / 2.5)
+        )
 
         return VStack(spacing: 0) {
             if !expanded {
@@ -79,6 +88,10 @@ struct DynamicIslandView: View {
         // Width is always explicit. Height: nil when expanded lets the VStack
         // size naturally to its content; explicit when collapsed.
         .frame(width: islandWidth, height: expanded ? nil : geo.collapsedHeight, alignment: .top)
+        // The native notch shoulder flares outward at the screen edge, then
+        // curves inward to the content body. Keep that flare outside the
+        // content width so it never squeezes either metric wing.
+        .padding(.horizontal, shoulderRadius)
         .fixedSize(horizontal: false, vertical: expanded)
         .clipShape(shape)
         .background(
@@ -157,17 +170,26 @@ struct DynamicIslandView: View {
         }
     }
 
-    /// The two collapsed-wing metrics: the user's first two menu-bar slots,
-    /// with hidden providers filtered out exactly like the menu bar does.
-    /// Reads preferences once per render.
-    private var wingMetrics: (left: MenuBarDisplayMetric, right: MenuBarDisplayMetric) {
+    /// The two collapsed-wing metrics: the user's two menu-bar slots, kept
+    /// positional so an explicit "none" slot leaves that wing empty. Hidden
+    /// providers are filtered exactly like the menu bar. Reads preferences
+    /// once per render.
+    private func resolveWingMetrics() -> WingSelection {
         let hidden = LimitsSettingsStore.shared.hiddenProviders
-        let selected = MenuBarDisplayPreferences.read()
-            .compactMap { MenuBarDisplayMetric(rawValue: $0) }
-            .filter { metric in metric.providerKey.map { !hidden.contains($0) } ?? true }
-        let left = selected.first ?? .todayTokens
-        let right = selected.count > 1 ? selected[1] : .todayCost
-        return (left, right)
+        let ids = MenuBarDisplayPreferences.read()
+        func metric(at index: Int, fallback: MenuBarDisplayMetric) -> MenuBarDisplayMetric? {
+            guard ids.indices.contains(index) else { return fallback }
+            let id = ids[index]
+            // Explicit "show nothing" slot (issue #379).
+            if id == MenuBarDisplayPreferences.noneID { return nil }
+            guard let parsed = MenuBarDisplayMetric(rawValue: id) else { return fallback }
+            if let provider = parsed.providerKey, hidden.contains(provider) { return nil }
+            return parsed
+        }
+        return WingSelection(
+            left: metric(at: 0, fallback: .todayTokens),
+            right: metric(at: 1, fallback: .todayCost)
+        )
     }
 
     /// Whether either wing renders the animated menu-bar icon (the
@@ -177,7 +199,18 @@ struct DynamicIslandView: View {
         return metrics.left == .todayTokens || metrics.right == .todayTokens
     }
 
-    private func buildWingView(for metric: MenuBarDisplayMetric) -> some View {
+    @ViewBuilder
+    private func buildWingView(for metric: MenuBarDisplayMetric?) -> some View {
+        if let metric {
+            buildMetricWingView(for: metric)
+        } else {
+            // Explicit "none" slot: contribute nothing to the wing (the
+            // shared minWingWidth floor keeps the island shape balanced).
+            Color.clear.frame(width: 0, height: 0)
+        }
+    }
+
+    private func buildMetricWingView(for metric: MenuBarDisplayMetric) -> some View {
         let content = wingContent(for: metric)
         return HStack(spacing: 4) {
             if let providerKey = metric.providerKey,
@@ -315,6 +348,8 @@ struct DynamicIslandView: View {
             .onHover { hovering in
                 withAnimation(.easeOut(duration: 0.12)) { hoveringBrand = hovering }
             }
+            .accessibilityLabel(Strings.openTokenTrackerWebsite)
+            .help(Strings.openTokenTrackerWebsite)
 
             Spacer()
 
@@ -327,7 +362,7 @@ struct DynamicIslandView: View {
                     GithubLogoView(size: 11.5)
                         .opacity(hoveringStar ? 1.0 : 0.9)
 
-                    Text("Star")
+                    Text(Strings.starButton)
                         .font(.system(size: 11, weight: .medium, design: .rounded))
                         .foregroundStyle(Color.white.opacity(hoveringStar ? 1.0 : 0.90))
 
@@ -350,6 +385,8 @@ struct DynamicIslandView: View {
             .onHover { hovering in
                 withAnimation(.easeOut(duration: 0.12)) { hoveringStar = hovering }
             }
+            .accessibilityLabel(Strings.menuStarOnGitHub)
+            .help(Strings.menuStarOnGitHub)
 
             // Settings gear — same visual family as the Star capsule. Surfaces
             // the tray menu on click, since right-clicking the island is easy
@@ -373,6 +410,8 @@ struct DynamicIslandView: View {
             .onHover { hovering in
                 withAnimation(.easeOut(duration: 0.12)) { hoveringGear = hovering }
             }
+            .accessibilityLabel(Strings.menuSettings)
+            .help(Strings.menuSettings)
             .padding(.leading, 8)
         }
         .padding(.horizontal, 14)
@@ -384,8 +423,6 @@ struct DynamicIslandView: View {
     /// Cap for the limits list: island chrome (header + summary cards +
     /// divider + footer + paddings) stays under ~240pt, so this keeps the
     /// whole island within `maxExpandedHeight` and the panel's bounds.
-    private static let limitsMaxHeight: CGFloat = DynamicIslandGeometry.maxExpandedHeight - 240
-
     private var expandedContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             SummaryCardsView(
@@ -405,7 +442,7 @@ struct DynamicIslandView: View {
             ScrollView(.vertical, showsIndicators: false) {
                 UsageLimitsView(limits: viewModel.usageLimits)
             }
-            .frame(maxHeight: Self.limitsMaxHeight)
+            .frame(maxHeight: DynamicIslandLayoutPolicy.limitsHeight(panelHeight: state.panelSize.height))
 
             Divider()
                 .opacity(0.4)
@@ -417,6 +454,13 @@ struct DynamicIslandView: View {
         .padding(.top, 10)
         .padding(.bottom, 10)
     }
+}
+
+private struct WingSelection: Equatable {
+    let left: MenuBarDisplayMetric?
+    let right: MenuBarDisplayMetric?
+
+    static let `default` = WingSelection(left: .todayTokens, right: .todayCost)
 }
 
 /// Rendered height of the island shape, reported after layout for hit-testing.
@@ -436,32 +480,51 @@ private struct WingNaturalWidthKey: PreferenceKey {
     }
 }
 
-/// Rectangle with only the bottom two corners rounded, so the island's top
-/// edge merges seamlessly with the screen edge / hardware notch.
-struct BottomRoundedRectangle: Shape {
-    var radius: CGFloat
+/// Notch-like silhouette with inverse upper shoulders and rounded lower
+/// corners. At the screen edge the black shape is wider, then curves inward
+/// to the content body — matching the concave transition of a native notch.
+struct IslandRoundedRectangle: Shape {
+    var topShoulderRadius: CGFloat
+    var bottomRadius: CGFloat
 
-    var animatableData: CGFloat {
-        get { radius }
-        set { radius = newValue }
+    var animatableData: AnimatablePair<CGFloat, CGFloat> {
+        get { AnimatablePair(topShoulderRadius, bottomRadius) }
+        set {
+            topShoulderRadius = newValue.first
+            bottomRadius = newValue.second
+        }
     }
 
     func path(in rect: CGRect) -> Path {
-        let r = min(radius, min(rect.width, rect.height) / 2)
+        let shoulder = min(max(0, topShoulderRadius), min(rect.width / 4, rect.height / 2))
+        let bodyLeft = rect.minX + shoulder
+        let bodyRight = rect.maxX - shoulder
+        let bodyWidth = max(0, bodyRight - bodyLeft)
+        let bottom = min(max(0, bottomRadius), min(bodyWidth, rect.height) / 2)
         var path = Path()
         path.move(to: CGPoint(x: rect.minX, y: rect.minY))
         path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - r))
-        path.addQuadCurve(
-            to: CGPoint(x: rect.maxX - r, y: rect.maxY),
-            control: CGPoint(x: rect.maxX, y: rect.maxY)
+        path.addCurve(
+            to: CGPoint(x: bodyRight, y: rect.minY + shoulder),
+            control1: CGPoint(x: rect.maxX - shoulder * 0.55, y: rect.minY),
+            control2: CGPoint(x: bodyRight, y: rect.minY + shoulder * 0.45)
         )
-        path.addLine(to: CGPoint(x: rect.minX + r, y: rect.maxY))
+        path.addLine(to: CGPoint(x: bodyRight, y: rect.maxY - bottom))
         path.addQuadCurve(
-            to: CGPoint(x: rect.minX, y: rect.maxY - r),
-            control: CGPoint(x: rect.minX, y: rect.maxY)
+            to: CGPoint(x: bodyRight - bottom, y: rect.maxY),
+            control: CGPoint(x: bodyRight, y: rect.maxY)
         )
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: bodyLeft + bottom, y: rect.maxY))
+        path.addQuadCurve(
+            to: CGPoint(x: bodyLeft, y: rect.maxY - bottom),
+            control: CGPoint(x: bodyLeft, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: bodyLeft, y: rect.minY + shoulder))
+        path.addCurve(
+            to: CGPoint(x: rect.minX, y: rect.minY),
+            control1: CGPoint(x: bodyLeft, y: rect.minY + shoulder * 0.45),
+            control2: CGPoint(x: rect.minX + shoulder * 0.55, y: rect.minY)
+        )
         path.closeSubpath()
         return path
     }
@@ -483,9 +546,12 @@ final class GitHubStarStore: ObservableObject {
 
     func fetchStars() {
         guard let url = URL(string: "https://api.github.com/repos/mm7894215/TokenTracker") else { return }
+        var request = URLRequest(url: url, timeoutInterval: 10)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         Task {
             do {
-                let (data, _) = try await URLSession.shared.data(from: url)
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else { return }
                 if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    let count = json["stargazers_count"] as? Int {
                     self.starCount = count
@@ -537,4 +603,3 @@ struct GithubLogoView: View {
         .frame(width: size, height: size)
     }
 }
-

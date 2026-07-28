@@ -231,6 +231,13 @@ enum Strings {
     static var menuDisplayMetrics: String { t("Display Metrics", "显示指标", "顯示指標", "表示メトリクス", "표시 메트릭") }
     static var menuPrimarySlot: String { t("Primary", "主指标", "主指標", "プライマリ", "기본") }
     static var menuSecondarySlot: String { t("Secondary", "副指标", "副指標", "セカンダリ", "보조") }
+    static var menuSlotNone: String { t("None", "不显示", "不顯示", "表示しない", "표시 안 함") }
+    static var alertHideIconTitle: String { t("Hide the menu bar icon?", "隐藏菜单栏图标？", "隱藏選單列圖示？", "メニューバーアイコンを隠しますか？", "메뉴바 아이콘을 숨길까요?") }
+    static var alertHideIconMessage: String { t("The Dynamic Island is now showing your stats. You can hide the menu bar icon to save space — the island's gear button and right-click menu keep everything reachable.", "灵动岛已经在展示你的统计数据。可以隐藏菜单栏图标以节省空间——通过灵动岛的齿轮按钮或右键菜单仍可访问全部功能。", "靈動島已經在展示你的統計資料。可以隱藏選單列圖示以節省空間——透過靈動島的齒輪按鈕或右鍵選單仍可存取全部功能。", "ダイナミックアイランドが統計を表示しています。メニューバーアイコンを非表示にしてスペースを節約できます。アイランドのギアボタンや右クリックメニューからすべての機能にアクセスできます。", "다이나믹 아일랜드가 통계를 표시하고 있습니다. 메뉴바 아이콘을 숨겨 공간을 절약할 수 있으며, 아일랜드의 기어 버튼과 우클릭 메뉴로 모든 기능에 접근할 수 있습니다.") }
+    static var alertHideIconConfirm: String { t("Hide Icon", "隐藏图标", "隱藏圖示", "アイコンを隠す", "아이콘 숨기기") }
+    static var alertHideIconKeep: String { t("Keep Both", "两者都保留", "兩者都保留", "両方表示する", "둘 다 유지") }
+    static var starButton: String { t("Star", "标星", "標星", "スター", "스타") }
+    static var openTokenTrackerWebsite: String { t("Open TokenTracker website", "打开 TokenTracker 官网", "開啟 TokenTracker 官網", "TokenTracker のサイトを開く", "TokenTracker 웹사이트 열기") }
     static var menuMenuBarIcon: String { t("Menu Bar Icon", "菜单栏图标", "選單欄圖示", "メニューバーアイコン", "메뉴 막대 아이콘") }
     static var iconStyleCat: String { t("Cat", "小猫", "小貓", "ネコ", "고양이") }
     static var iconStyleMyPet: String { t("My Pet", "我的宠物", "我的寵物", "マイペット", "내 펫") }

@@ -178,7 +178,6 @@ struct UsageLimitsView: View {
         }
         .modifier(ProviderClickableStyle(isActive: explainingProvider == id, isStale: isStale))
         .onTapGesture { explainingProvider = (explainingProvider == id) ? nil : id }
-        .pointingHandCursor()
         .popover(isPresented: isOpen, arrowEdge: .trailing) {
             // Keep on one line: codex-reset-bank guardrail tests assert this exact
             // call shape to prove reset-bank rows never leak into the explanation.

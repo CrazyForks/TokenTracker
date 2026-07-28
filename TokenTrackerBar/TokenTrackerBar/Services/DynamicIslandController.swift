@@ -22,6 +22,7 @@ private func CGSSetConnectionProperty(
     _ value: CFTypeRef
 ) -> CGError
 
+@MainActor
 enum BackgroundCursorOverride {
     private static var enabled = false
 
@@ -62,15 +63,15 @@ struct DynamicIslandGeometry: Equatable {
 
     var collapsedWidth: CGFloat { centerGapWidth + wingWidth * 2 }
 
-    static let expandedWidth: CGFloat = 480
+    static let expandedWidth = DynamicIslandLayoutPolicy.expandedWidth
     /// Extra space around the island shape so the drop shadow isn't clipped
     /// by the window server. Applied horizontally (each side) and vertically
     /// (bottom only — top is flush with the screen edge).
-    static let shadowBleed: CGFloat = 28
+    static let shadowBleed = DynamicIslandLayoutPolicy.shadowBleed
     /// Maximum vertical space the panel reserves for island content.
     /// The panel is always this tall (plus shadowBleed); the island shape
     /// grows to fit its content up to this limit.
-    static let maxExpandedHeight: CGFloat = 800
+    static let maxExpandedHeight = DynamicIslandLayoutPolicy.maximumIslandHeight
 
     /// Simulated island for screens without a notch (external displays, older
     /// Macs): a compact pill at the top-center, boring.notch-style.
@@ -243,16 +244,24 @@ final class DynamicIslandController: NSObject {
         guard !state.isExpanded else { return }
         // Panel frame stays put — only the black shape springs open from the
         // top. Resizing the window mid-animation was what opened the seam.
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             state.isExpanded = true
+        } else {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                state.isExpanded = true
+            }
         }
         panel?.updateHitRegion()
     }
 
     private func collapse() {
         guard state.isExpanded else { return }
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             state.isExpanded = false
+        } else {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+                state.isExpanded = false
+            }
         }
         // Refresh hit-test after the spring settles so the large expanded
         // rect doesn't keep stealing clicks under the transparent wings.
@@ -331,7 +340,10 @@ final class DynamicIslandController: NSObject {
     private func panelFrame(on screen: NSScreen) -> NSRect {
         let bleed = DynamicIslandGeometry.shadowBleed
         let panelW = max(DynamicIslandGeometry.expandedWidth, state.geometry.collapsedWidth) + bleed * 2
-        let panelH = DynamicIslandGeometry.maxExpandedHeight + bleed
+        let panelH = DynamicIslandLayoutPolicy.panelHeight(
+            screenTop: screen.frame.maxY,
+            visibleBottom: screen.visibleFrame.minY
+        )
         let centerX = state.geometry.islandCenterX > 0 ? state.geometry.islandCenterX : screen.frame.midX
         return NSRect(
             x: centerX - panelW / 2,
@@ -405,6 +417,11 @@ final class DynamicIslandController: NSObject {
         // controller owns the frame exclusively.
         if #available(macOS 13.0, *) {
             hostingController.sizingOptions = []
+        } else {
+            // Before `sizingOptions` existed, keep the hosted view on the
+            // explicit frame/autoresizing path instead of Auto Layout trying
+            // to resize the borderless panel to SwiftUI's intrinsic content.
+            hostingController.view.translatesAutoresizingMaskIntoConstraints = true
         }
         self.hostingController = hostingController
 

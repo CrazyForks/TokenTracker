@@ -48,16 +48,16 @@ private struct StatCard: View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title)
                 .font(.system(size: 10, weight: .medium, design: .rounded))
-                .foregroundStyle(Color.white.opacity(0.55))
+                .foregroundStyle(.secondary)
             Text(value)
                 .font(.system(.title3, design: .rounded).weight(.bold))
-                .foregroundStyle(Color.white.opacity(0.95))
+                .foregroundStyle(.primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
                 .modifier(NumericTextTransitionModifier(value: value))
             Text(subtitle)
                 .font(.system(size: 10, weight: .medium, design: .rounded))
-                .foregroundStyle(Color.white.opacity(0.48))
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
         .padding(.horizontal, 9)
@@ -65,10 +65,10 @@ private struct StatCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 9)
-                .fill(Color.white.opacity(0.065))
+                .fill(Color.primary.opacity(0.065))
                 .overlay(
                     RoundedRectangle(cornerRadius: 9)
-                        .strokeBorder(Color.white.opacity(0.09), lineWidth: 0.5)
+                        .strokeBorder(Color.primary.opacity(0.09), lineWidth: 0.5)
                 )
         )
         .accessibilityElement(children: .combine)
