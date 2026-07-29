@@ -23,6 +23,29 @@ const ACCOUNT_FUNCTIONS = [
   "tokentracker-account-model-breakdown.ts",
 ];
 
+const USER_JWT_FUNCTIONS = [
+  ...ACCOUNT_FUNCTIONS,
+  "tokentracker-account-devices.ts",
+  "tokentracker-device-flow-grant.ts",
+  "tokentracker-device-rename.ts",
+  "tokentracker-device-token-issue.ts",
+  "tokentracker-leaderboard-profile.ts",
+  "tokentracker-leaderboard-refresh.ts",
+  "tokentracker-profile-likes.ts",
+  "tokentracker-public-visibility.ts",
+];
+
+test("user-authenticated edge functions verify current RS256 and legacy HS256 tokens", () => {
+  for (const file of USER_JWT_FUNCTIONS) {
+    const source = read(`dashboard/edge-patches/${file}`);
+    assert.match(source, /header\.alg === "RS256"/u, `${file} must accept current RS256 access tokens`);
+    assert.match(source, /Deno\.env\.get\("JWT_PUBLIC_KEY"\)/u, `${file} must verify RS256 with the managed public key`);
+    assert.match(source, /RSASSA-PKCS1-v1_5/u, `${file} must use the RS256 Web Crypto algorithm`);
+    assert.match(source, /header\.alg === "HS256"/u, `${file} must preserve legacy sessions during migration`);
+    assert.match(source, /Deno\.env\.get\("JWT_SECRET"\)/u, `${file} must verify legacy HS256 signatures`);
+  }
+});
+
 test("cloud account reads use the shared cached RPC instead of a device lookup plus aggregation", () => {
   for (const file of ACCOUNT_FUNCTIONS) {
     const source = read(`dashboard/edge-patches/${file}`);

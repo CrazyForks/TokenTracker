@@ -40,29 +40,34 @@ function timingSafeEqualStr(a: string, b: string): boolean {
   return diff === 0;
 }
 
-// Verify HS256 JWT against JWT_SECRET; return {sub, role} or null. Mirrors the
-// account-* helper. NOTE: the PUBLIC anon key is itself a validly-signed JWT
-// (role="anon"), so callers must reject role==="anon" to require a real user.
+// Verify legacy HS256 and current RS256 InsForge JWTs; return claims or null.
+// NOTE: the PUBLIC anon key is itself a validly-signed JWT (role="anon"), so
+// callers must reject role==="anon" to require a real user.
 async function verifiedClaimsFromJwt(
   authHeader: string | null,
 ): Promise<{ sub: string; role: string } | null> {
   if (!authHeader) return null;
   const token = authHeader.replace(/^Bearer\s+/i, "").trim();
   if (!token) return null;
-  const secret = Deno.env.get("JWT_SECRET");
-  if (!secret) return null;
   const parts = token.split(".");
   if (parts.length !== 3) return null;
   try {
-    const key = await crypto.subtle.importKey(
-      "raw",
-      new TextEncoder().encode(secret),
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["verify"],
-    );
+    const header = JSON.parse(new TextDecoder().decode(b64urlToBytes(parts[0]))) as Record<string, unknown>;
     const data = new TextEncoder().encode(`${parts[0]}.${parts[1]}`);
-    const ok = await crypto.subtle.verify("HMAC", key, b64urlToBytes(parts[2]), data);
+    const sig = b64urlToBytes(parts[2]);
+    let ok = false;
+    if (header.alg === "HS256") {
+      const secret = Deno.env.get("JWT_SECRET");
+      if (!secret) return null;
+      const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+      ok = await crypto.subtle.verify("HMAC", key, sig, data);
+    } else if (header.alg === "RS256") {
+      const publicKeyPem = Deno.env.get("JWT_PUBLIC_KEY");
+      if (!publicKeyPem) return null;
+      const publicKeyDer = Uint8Array.from(atob(publicKeyPem.replace(/-----[^-]+-----|\s/g, "")), (char) => char.charCodeAt(0));
+      const key = await crypto.subtle.importKey("spki", publicKeyDer, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
+      ok = await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, sig, data);
+    } else return null;
     if (!ok) return null;
     const payload = JSON.parse(new TextDecoder().decode(b64urlToBytes(parts[1]))) as Record<string, unknown>;
     if (typeof payload.exp === "number" && Date.now() / 1000 > payload.exp) return null;
