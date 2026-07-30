@@ -460,11 +460,11 @@ GitHub 프로필이나 프로젝트 README에서 토큰 사용량을 자랑해 �
 
 ## ⭐ Star History
 
-<a href="https://www.star-history.com/?type=date&repos=xiufengsun%2FTokenTracker">
+<a href="https://www.star-history.com/?repos=xiufengsun%2FTokenTracker&type=date&legend=top-left">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=xiufengsun/TokenTracker&type=date&theme=dark&legend=top-left&sealed_token=Xb4biZj6WI7GnAYqiQdvOITTTMcqLjMHZTNJ2UzckXkd4FdNyLLNwz0K6wG1hDug6G3HxW4K4bmIETMQTXK74rD4Io0eTU6igxPnSeLgP-NkOnZz7rlCePm6aVMFVm2JCuPoi92rcR6OhEmdYqopiFIxHt4iwzOa-L1-YcLplRoLIdtjTyjUotxai-QH" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=xiufengsun/TokenTracker&type=date&legend=top-left&sealed_token=Xb4biZj6WI7GnAYqiQdvOITTTMcqLjMHZTNJ2UzckXkd4FdNyLLNwz0K6wG1hDug6G3HxW4K4bmIETMQTXK74rD4Io0eTU6igxPnSeLgP-NkOnZz7rlCePm6aVMFVm2JCuPoi92rcR6OhEmdYqopiFIxHt4iwzOa-L1-YcLplRoLIdtjTyjUotxai-QH" />
-    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=xiufengsun/TokenTracker&type=date&legend=top-left&sealed_token=Xb4biZj6WI7GnAYqiQdvOITTTMcqLjMHZTNJ2UzckXkd4FdNyLLNwz0K6wG1hDug6G3HxW4K4bmIETMQTXK74rD4Io0eTU6igxPnSeLgP-NkOnZz7rlCePm6aVMFVm2JCuPoi92rcR6OhEmdYqopiFIxHt4iwzOa-L1-YcLplRoLIdtjTyjUotxai-QH" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=xiufengsun/TokenTracker&type=date&theme=dark&legend=top-left&sealed_token=Vr7qbPNqOTtzQEdtkxS2yArAReX2QkBZKNJgs3n32Q5oJa1iXddLlrT201teNSnt7QnsXtDcHy_T387xvXJ_HXHrPtvH2QQ1xqQZ67N_HV45ulWrt3j6hziDW5eshRCmu8CAT_W31PY0-WVZpFv7NQD-acv1stVK8ndribTokIp9ukSYAedx3icuUrOu" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=xiufengsun/TokenTracker&type=date&legend=top-left&sealed_token=Vr7qbPNqOTtzQEdtkxS2yArAReX2QkBZKNJgs3n32Q5oJa1iXddLlrT201teNSnt7QnsXtDcHy_T387xvXJ_HXHrPtvH2QQ1xqQZ67N_HV45ulWrt3j6hziDW5eshRCmu8CAT_W31PY0-WVZpFv7NQD-acv1stVK8ndribTokIp9ukSYAedx3icuUrOu" />
+    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=xiufengsun/TokenTracker&type=date&legend=top-left&sealed_token=Vr7qbPNqOTtzQEdtkxS2yArAReX2QkBZKNJgs3n32Q5oJa1iXddLlrT201teNSnt7QnsXtDcHy_T387xvXJ_HXHrPtvH2QQ1xqQZ67N_HV45ulWrt3j6hziDW5eshRCmu8CAT_W31PY0-WVZpFv7NQD-acv1stVK8ndribTokIp9ukSYAedx3icuUrOu" />
   </picture>
 </a>
 
