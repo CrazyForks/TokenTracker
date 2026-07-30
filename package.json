@@ -54,11 +54,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mm7894215/TokenTracker.git"
+    "url": "git+https://github.com/xiufengsun/TokenTracker.git"
   },
   "homepage": "https://www.tokentracker.cc",
   "bugs": {
-    "url": "https://github.com/mm7894215/TokenTracker/issues"
+    "url": "https://github.com/xiufengsun/TokenTracker/issues"
   },
   "keywords": [
     "token",

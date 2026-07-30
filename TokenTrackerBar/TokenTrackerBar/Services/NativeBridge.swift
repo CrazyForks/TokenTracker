@@ -446,7 +446,7 @@ final class NativeBridge {
                 self?.pushSettings()
             }
         case "openAbout":
-            if let url = URL(string: "https://github.com/mm7894215/TokenTracker") {
+            if let url = URL(string: "https://github.com/xiufengsun/TokenTracker") {
                 NSWorkspace.shared.open(url)
             }
         case "openWidgetGallery":

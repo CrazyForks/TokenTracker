@@ -4,7 +4,7 @@ _Last updated: 2026-07-27 · Applies to the `tokentracker-cli` npm package, the 
 
 TokenTracker reads the local logs that AI coding tools already write to your disk, and turns them into token counts and cost estimates. It is local-first: the dashboard, the parsers and the database all run on your machine.
 
-This document lists **every** network request the software can make, what each one sends, and how to switch it off. If you find a request that is not listed here, that is a bug — please [open an issue](https://github.com/mm7894215/TokenTracker/issues).
+This document lists **every** network request the software can make, what each one sends, and how to switch it off. If you find a request that is not listed here, that is a bug — please [open an issue](https://github.com/xiufengsun/TokenTracker/issues).
 
 ---
 
@@ -105,7 +105,7 @@ Signing in is **entirely optional**. TokenTracker is fully functional without an
 
 **Public visibility:** your profile appears on the public leaderboard only while `Settings → Account → Public profile` is on. Turning it off removes you from the leaderboard and turns badges into a "private" placeholder.
 
-**Deleting cloud data:** contact us via [GitHub issues](https://github.com/mm7894215/TokenTracker/issues) and we will remove the account and its rows. Deleting `~/.tokentracker/` removes the local copy immediately.
+**Deleting cloud data:** contact us via [GitHub issues](https://github.com/xiufengsun/TokenTracker/issues) and we will remove the account and its rows. Deleting `~/.tokentracker/` removes the local copy immediately.
 
 ---
 
@@ -141,8 +141,8 @@ TokenTracker is a developer tool and is not directed at children under 13. We do
 
 ## 8. Changes
 
-Material changes to this policy will be noted in the release notes and in the `Last updated` date above. The full history is in [this file's Git log](https://github.com/mm7894215/TokenTracker/commits/main/docs/PRIVACY.md).
+Material changes to this policy will be noted in the release notes and in the `Last updated` date above. The full history is in [this file's Git log](https://github.com/xiufengsun/TokenTracker/commits/main/docs/PRIVACY.md).
 
 ## 9. Contact
 
-Questions, corrections, or deletion requests: [github.com/mm7894215/TokenTracker/issues](https://github.com/mm7894215/TokenTracker/issues)
+Questions, corrections, or deletion requests: [github.com/xiufengsun/TokenTracker/issues](https://github.com/xiufengsun/TokenTracker/issues)
