@@ -1377,6 +1377,7 @@ async function cmdSync(argv, context = {}) {
           settingsFiles: droidSettingsFiles,
           cursors,
           queuePath,
+          projectQueuePath,
           // Full-scan sync: drop cursor entries for any session whose
           // settings.json has disappeared off disk so cursors.droid stays
           // bounded by the actual on-disk session count.

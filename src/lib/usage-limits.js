@@ -3131,9 +3131,9 @@ async function fetchUsageLimitsUncached({
       .catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
     withProviderTimeout(fetchZcodeLimits({ home, env, fetchImpl: providerFetch }), "ZCode", providerTimeoutMs)
       .catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
-    // OpenCode Go: local opencode.db cost-vs-dollar-cap estimate by default
-    // (auth-free, zero-config), upgraded to the exact server-side scrape when an
-    // OPENCODE_GO_AUTH_COOKIE is set. See src/lib/opencode-go-limits.js.
+    // OpenCode Go: authoritative subscription windows come from the dashboard
+    // scrape; local opencode.db cost is available only as an explicit estimate.
+    // See src/lib/opencode-go-limits.js.
     withProviderTimeout(fetchOpencodeGoLimits({ home, env, fetchImpl: providerFetch }), "OpenCode Go", providerTimeoutMs)
       .catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
     withProviderTimeout(

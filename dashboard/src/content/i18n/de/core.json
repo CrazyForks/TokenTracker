@@ -115,6 +115,7 @@
   "limits.label.copilot_chat": "Chat",
   "limits.status.not_connected": "Nicht verbunden",
   "limits.status.no_data": "Keine Echtzeit-Limitdaten zurückgegeben",
+  "limits.opencodeGo.status.inactive": "Das OpenCode-Go-Abonnement ist inaktiv",
   "limits.status.all_hidden": "Alle Limit-Anbieter sind ausgeblendet. Öffne die Anzeigeeinstellungen, um sie wieder einzublenden.",
   "nav.usage": "Nutzung",
   "nav.limits": "Limits",

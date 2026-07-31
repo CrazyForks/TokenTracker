@@ -197,6 +197,7 @@
   "limits.bar.sub_one_percent": "<1",
   "limits.status.not_connected": "연결되지 않음",
   "limits.status.no_data": "실시간 한도 데이터가 반환되지 않았습니다",
+  "limits.opencodeGo.status.inactive": "OpenCode Go 구독이 비활성 상태입니다",
   "limits.status.all_hidden": "모든 한도 제공자가 숨겨져 있습니다. 표시 설정을 열어 다시 표시하세요.",
   "nav.usage": "토큰",
   "nav.limits": "한도",

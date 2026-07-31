@@ -197,6 +197,7 @@
   "limits.bar.sub_one_percent": "<1",
   "limits.status.not_connected": "未接続",
   "limits.status.no_data": "リアルタイムの制限データが返されませんでした",
+  "limits.opencodeGo.status.inactive": "OpenCode Go のサブスクリプションは無効です",
   "limits.status.all_hidden": "すべての制限プロバイダーが非表示になっています。表示設定を開いて再表示してください。",
   "nav.usage": "使用状況",
   "nav.limits": "制限",

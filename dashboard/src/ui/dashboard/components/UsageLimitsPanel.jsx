@@ -484,6 +484,13 @@ function renderProviderGroup(id, data, mode, expanded, onToggle) {
       </ToolGroup>
     );
   }
+  if (id === "opencodeGo" && data.subscription_status === "inactive") {
+    return (
+      <ToolGroup key={id} name={limitProviderName(id)} providerId={id}>
+        <StatusLine>{copy("limits.opencodeGo.status.inactive")}</StatusLine>
+      </ToolGroup>
+    );
+  }
   if (data.error) {
     return (
       <ToolGroup key={id} name={limitProviderName(id)} providerId={id}>

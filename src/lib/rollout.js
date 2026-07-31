@@ -10519,6 +10519,54 @@ function droidSessionIdFromPath(filePath) {
   return base.slice(0, -".settings.json".length);
 }
 
+// Droid's workspace directory slug is lossy: path separators become `-`, which
+// collides with literal dashes in directory names. The sibling transcript keeps
+// the launch cwd losslessly in its session_start record, so project attribution
+// must read that value instead of trying to decode the directory name.
+const DROID_CWD_SCAN_MAX_BYTES = 65536;
+
+async function resolveDroidFileCwd(settingsPath) {
+  if (typeof settingsPath !== "string" || !settingsPath.endsWith(".settings.json")) {
+    return null;
+  }
+  const sidecarPath = settingsPath.slice(0, -".settings.json".length) + ".jsonl";
+  let stream;
+  try {
+    stream = fssync.createReadStream(sidecarPath, {
+      encoding: "utf8",
+      start: 0,
+      end: DROID_CWD_SCAN_MAX_BYTES,
+    });
+  } catch {
+    return null;
+  }
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    for await (const line of rl) {
+      if (!line || !line.includes('"cwd"')) continue;
+      let entry;
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (
+        (entry?.type === "session_start" || entry?.type === "session") &&
+        typeof entry.cwd === "string" &&
+        entry.cwd.trim()
+      ) {
+        return entry.cwd.trim();
+      }
+    }
+  } catch {
+    return null;
+  } finally {
+    rl.close();
+    stream.close?.();
+  }
+  return null;
+}
+
 // Resolve a Droid bucket model id. ccusage's chain: settings.model → sidecar
 // <id>.jsonl scrape → `<provider>-unknown` derived from providerLock or inferred
 // from the model fragment. Extracted so the dup-session repair migration can
@@ -10618,6 +10666,8 @@ async function parseDroidIncremental({
   settingsFiles,
   cursors,
   queuePath,
+  projectQueuePath,
+  publicRepoResolver,
   onProgress,
   env,
   // `prune: true` (the production default) drops cursor entries whose session
@@ -10628,11 +10678,16 @@ async function parseDroidIncremental({
   prune = true,
 } = {}) {
   await ensureDir(path.dirname(queuePath));
+  const projectEnabled = typeof projectQueuePath === "string" && projectQueuePath.length > 0;
   const droidState =
     cursors.droid && typeof cursors.droid === "object" ? cursors.droid : {};
   const sessionTotals =
     droidState.sessionTotals && typeof droidState.sessionTotals === "object"
       ? { ...droidState.sessionTotals }
+      : {};
+  const projectSessionTotals =
+    droidState.projectSessionTotals && typeof droidState.projectSessionTotals === "object"
+      ? { ...droidState.projectSessionTotals }
       : {};
 
   const files = dedupeDroidSettingsFilesBySession(
@@ -10645,13 +10700,24 @@ async function parseDroidIncremental({
     cursors.droid = {
       ...droidState,
       sessionTotals,
+      ...(projectEnabled ? { projectSessionTotals } : {}),
       updatedAt: new Date().toISOString(),
     };
-    return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+    return {
+      recordsProcessed: 0,
+      eventsAggregated: 0,
+      bucketsQueued: 0,
+      projectBucketsQueued: 0,
+    };
   }
 
   const hourlyState = normalizeHourlyState(cursors?.hourly);
   const touchedBuckets = new Set();
+  const projectState = projectEnabled ? normalizeProjectState(cursors?.projectHourly) : null;
+  const projectTouchedBuckets = projectEnabled ? new Set() : null;
+  const projectMetaCache = projectEnabled ? new Map() : null;
+  const publicRepoCache = projectEnabled ? new Map() : null;
+  const projectFreshnessCache = projectEnabled ? new Map() : null;
   const cb = typeof onProgress === "function" ? onProgress : null;
   let recordsProcessed = 0;
   let eventsAggregated = 0;
@@ -10690,8 +10756,33 @@ async function parseDroidIncremental({
       thinking: 0,
       mtimeMs: 0,
     };
+    const projectPrev = projectSessionTotals[sessionId] || {
+      input: 0,
+      output: 0,
+      cacheCreation: 0,
+      cacheRead: 0,
+      thinking: 0,
+      mtimeMs: 0,
+      filePath: null,
+      attributed: false,
+      projectFileContext: null,
+    };
     const isFirstSeenSession = !sessionTotals[sessionId];
-    if (mtimeMs && mtimeMs === prev.mtimeMs) continue;
+    const globalNeedsUpdate = !(mtimeMs && mtimeMs === prev.mtimeMs);
+    let projectNeedsUpdate = false;
+    if (projectEnabled) {
+      const projectFileChanged =
+        !mtimeMs || mtimeMs !== projectPrev.mtimeMs || projectPrev.filePath !== filePath;
+      if (!projectSessionTotals[sessionId] || projectFileChanged) {
+        projectNeedsUpdate = true;
+      } else if (projectPrev.attributed !== true) {
+        projectNeedsUpdate = !(await isProjectFileContextFresh(
+          projectPrev.projectFileContext,
+          { freshnessCache: projectFreshnessCache },
+        ));
+      }
+    }
+    if (!globalNeedsUpdate && !projectNeedsUpdate) continue;
 
     let raw;
     try {
@@ -10726,6 +10817,12 @@ async function parseDroidIncremental({
       inputNow + outputNow + cacheCreationNow + cacheReadNow + thinkingNow;
     const sumPrev =
       prev.input + prev.output + prev.cacheCreation + prev.cacheRead + prev.thinking;
+    const projectSumPrev =
+      projectPrev.input +
+      projectPrev.output +
+      projectPrev.cacheCreation +
+      projectPrev.cacheRead +
+      projectPrev.thinking;
 
     // Transient empty: settings.json was observed with zero tokens (mid-write
     // or a brief wipe before the next turn restores totals). Do NOT clobber
@@ -10733,48 +10830,36 @@ async function parseDroidIncremental({
     // the same empty payload next sync. If we overwrote prev with zeros, a
     // later non-empty read would emit the full cumulative as a fresh delta.
     if (sumNow === 0) {
-      if (sumPrev > 0) {
-        sessionTotals[sessionId] = { ...prev, mtimeMs };
-      } else {
-        sessionTotals[sessionId] = {
-          input: 0,
-          output: 0,
-          cacheCreation: 0,
-          cacheRead: 0,
-          thinking: 0,
-          mtimeMs,
-        };
+      if (globalNeedsUpdate) {
+        if (sumPrev > 0) {
+          sessionTotals[sessionId] = { ...prev, mtimeMs };
+        } else {
+          sessionTotals[sessionId] = {
+            input: 0,
+            output: 0,
+            cacheCreation: 0,
+            cacheRead: 0,
+            thinking: 0,
+            mtimeMs,
+          };
+        }
       }
-      continue;
-    }
-
-    // Reset only when the TOTAL shrinks — a real session reuse (Droid wiped
-    // tokenUsage and started over). A single field dropping while the sum
-    // grows is a schema change or cache eviction; clamping per-field deltas
-    // to >=0 is the right behavior for those.
-    const isReset = sumNow < sumPrev;
-
-    const dInput = isReset ? inputNow : Math.max(0, inputNow - prev.input);
-    const dOutput = isReset ? outputNow : Math.max(0, outputNow - prev.output);
-    const dCacheCreation = isReset
-      ? cacheCreationNow
-      : Math.max(0, cacheCreationNow - prev.cacheCreation);
-    const dCacheRead = isReset
-      ? cacheReadNow
-      : Math.max(0, cacheReadNow - prev.cacheRead);
-    const dThinking = isReset
-      ? thinkingNow
-      : Math.max(0, thinkingNow - prev.thinking);
-
-    if (dInput + dOutput + dCacheCreation + dCacheRead + dThinking === 0) {
-      sessionTotals[sessionId] = {
-        input: inputNow,
-        output: outputNow,
-        cacheCreation: cacheCreationNow,
-        cacheRead: cacheReadNow,
-        thinking: thinkingNow,
-        mtimeMs,
-      };
+      if (projectNeedsUpdate) {
+        projectSessionTotals[sessionId] =
+          projectSumPrev > 0
+            ? { ...projectPrev, mtimeMs, filePath }
+            : {
+                input: 0,
+                output: 0,
+                cacheCreation: 0,
+                cacheRead: 0,
+                thinking: 0,
+                mtimeMs,
+                filePath,
+                attributed: false,
+                projectFileContext: buildProjectFileContext(null),
+              };
+      }
       continue;
     }
 
@@ -10790,31 +10875,146 @@ async function parseDroidIncremental({
     // empty-model sessions bucket identically across both tools.
     const model = resolveDroidModel(settings, filePath);
 
-    // Token normalization: inputTokens already excludes cache reads (matches
-    // Anthropic API convention), so cache columns slot in directly. Thinking
-    // is reasoning_output_tokens — folded into cost via existing pricing path.
-    const bucketDelta = {
-      input_tokens: dInput,
-      cached_input_tokens: dCacheRead,
-      cache_creation_input_tokens: dCacheCreation,
-      output_tokens: dOutput,
-      reasoning_output_tokens: dThinking,
-      total_tokens: dInput + dOutput + dCacheCreation + dCacheRead + dThinking,
-      conversation_count: isFirstSeenSession || isReset ? 1 : 0,
-    };
-    const bucket = getHourlyBucket(hourlyState, "droid", model, bucketStart);
-    addTotals(bucket.totals, bucketDelta);
-    touchedBuckets.add(bucketKey("droid", model, bucketStart));
+    if (globalNeedsUpdate) {
+      // Reset only when the TOTAL shrinks — a real session reuse (Droid wiped
+      // tokenUsage and started over). A single field dropping while the sum
+      // grows is a schema change or cache eviction; clamping per-field deltas
+      // to >=0 is the right behavior for those.
+      const isReset = sumNow < sumPrev;
+      const dInput = isReset ? inputNow : Math.max(0, inputNow - prev.input);
+      const dOutput = isReset ? outputNow : Math.max(0, outputNow - prev.output);
+      const dCacheCreation = isReset
+        ? cacheCreationNow
+        : Math.max(0, cacheCreationNow - prev.cacheCreation);
+      const dCacheRead = isReset
+        ? cacheReadNow
+        : Math.max(0, cacheReadNow - prev.cacheRead);
+      const dThinking = isReset
+        ? thinkingNow
+        : Math.max(0, thinkingNow - prev.thinking);
 
-    sessionTotals[sessionId] = {
-      input: inputNow,
-      output: outputNow,
-      cacheCreation: cacheCreationNow,
-      cacheRead: cacheReadNow,
-      thinking: thinkingNow,
-      mtimeMs,
-    };
-    eventsAggregated++;
+      if (dInput + dOutput + dCacheCreation + dCacheRead + dThinking > 0) {
+        // Token normalization: inputTokens already excludes cache reads (matches
+        // Anthropic API convention), so cache columns slot in directly. Thinking
+        // is reasoning_output_tokens — folded into cost via existing pricing path.
+        const bucketDelta = {
+          input_tokens: dInput,
+          cached_input_tokens: dCacheRead,
+          cache_creation_input_tokens: dCacheCreation,
+          output_tokens: dOutput,
+          reasoning_output_tokens: dThinking,
+          total_tokens: dInput + dOutput + dCacheCreation + dCacheRead + dThinking,
+          conversation_count: isFirstSeenSession || isReset ? 1 : 0,
+        };
+        const bucket = getHourlyBucket(hourlyState, "droid", model, bucketStart);
+        addTotals(bucket.totals, bucketDelta);
+        touchedBuckets.add(bucketKey("droid", model, bucketStart));
+        eventsAggregated++;
+      }
+
+      sessionTotals[sessionId] = {
+        input: inputNow,
+        output: outputNow,
+        cacheCreation: cacheCreationNow,
+        cacheRead: cacheReadNow,
+        thinking: thinkingNow,
+        mtimeMs,
+      };
+    }
+
+    if (projectNeedsUpdate) {
+      const cwd = await resolveDroidFileCwd(filePath);
+      const projectContext = cwd
+        ? await resolveProjectContextForPath({
+            startDir: wsl.mapWslCwdToUnc(cwd, filePath),
+            projectMetaCache,
+            publicRepoCache,
+            publicRepoResolver,
+            projectState,
+          })
+        : null;
+      const projectRef = projectContext?.projectRef || null;
+      const projectKey = projectContext?.projectKey || null;
+      const projectFileContext = buildProjectFileContext(projectContext);
+
+      // Keep this baseline independent from the global cursor so project
+      // attribution can be backfilled once without replaying global usage.
+      // If the repo is not public/verified yet, leave it unadvanced so a later
+      // sync can retry after project metadata or network availability changes.
+      if (projectKey && projectRef) {
+        const projectReset = sumNow < projectSumPrev;
+        const projectDInput = projectReset
+          ? inputNow
+          : Math.max(0, inputNow - projectPrev.input);
+        const projectDOutput = projectReset
+          ? outputNow
+          : Math.max(0, outputNow - projectPrev.output);
+        const projectDCacheCreation = projectReset
+          ? cacheCreationNow
+          : Math.max(0, cacheCreationNow - projectPrev.cacheCreation);
+        const projectDCacheRead = projectReset
+          ? cacheReadNow
+          : Math.max(0, cacheReadNow - projectPrev.cacheRead);
+        const projectDThinking = projectReset
+          ? thinkingNow
+          : Math.max(0, thinkingNow - projectPrev.thinking);
+        const projectTotal =
+          projectDInput +
+          projectDOutput +
+          projectDCacheCreation +
+          projectDCacheRead +
+          projectDThinking;
+        if (projectTotal > 0) {
+          const projectDelta = {
+            input_tokens: projectDInput,
+            cached_input_tokens: projectDCacheRead,
+            cache_creation_input_tokens: projectDCacheCreation,
+            output_tokens: projectDOutput,
+            reasoning_output_tokens: projectDThinking,
+            total_tokens: projectTotal,
+            conversation_count: !projectSessionTotals[sessionId] || projectReset ? 1 : 0,
+          };
+          const projectBucket = getProjectBucket(
+            projectState,
+            projectKey,
+            "droid",
+            bucketStart,
+            projectRef,
+          );
+          addTotals(projectBucket.totals, projectDelta);
+          projectTouchedBuckets.add(
+            projectBucketKey(projectKey, "droid", bucketStart),
+          );
+        }
+        projectSessionTotals[sessionId] = {
+          input: inputNow,
+          output: outputNow,
+          cacheCreation: cacheCreationNow,
+          cacheRead: cacheReadNow,
+          thinking: thinkingNow,
+          mtimeMs,
+          filePath,
+          projectKey,
+          projectRef,
+          attributed: true,
+          projectFileContext,
+        };
+      } else {
+        projectSessionTotals[sessionId] = {
+          input: 0,
+          output: 0,
+          cacheCreation: 0,
+          cacheRead: 0,
+          thinking: 0,
+          mtimeMs,
+          filePath,
+          projectKey: null,
+          projectRef,
+          attributed: false,
+          projectFileContext,
+        };
+      }
+    }
 
     if (cb) {
       cb({
@@ -10836,6 +11036,9 @@ async function parseDroidIncremental({
     for (const id of Object.keys(sessionTotals)) {
       if (!seenSessionIds.has(id)) delete sessionTotals[id];
     }
+    for (const id of Object.keys(projectSessionTotals)) {
+      if (!seenSessionIds.has(id)) delete projectSessionTotals[id];
+    }
   }
 
   const bucketsQueued = await enqueueTouchedBuckets({
@@ -10843,16 +11046,28 @@ async function parseDroidIncremental({
     hourlyState,
     touchedBuckets,
   });
+  const projectBucketsQueued = projectEnabled
+    ? await enqueueTouchedProjectBuckets({
+        projectQueuePath,
+        projectState,
+        projectTouchedBuckets,
+      })
+    : 0;
   const updatedAt = new Date().toISOString();
   hourlyState.updatedAt = updatedAt;
   cursors.hourly = hourlyState;
+  if (projectState) {
+    projectState.updatedAt = updatedAt;
+    cursors.projectHourly = projectState;
+  }
   cursors.droid = {
     ...droidState,
     sessionTotals,
+    ...(projectEnabled ? { projectSessionTotals } : {}),
     updatedAt,
   };
 
-  return { recordsProcessed, eventsAggregated, bucketsQueued };
+  return { recordsProcessed, eventsAggregated, bucketsQueued, projectBucketsQueued };
 }
 
 async function parseKilocodeIncremental({

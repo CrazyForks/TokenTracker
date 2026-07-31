@@ -213,6 +213,25 @@ describe("UsageLimitsPanel", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows an inactive OpenCode Go status without rendering historical bars", () => {
+    render(
+      <UsageLimitsPanel
+        opencodeGo={{
+          configured: true,
+          error: null,
+          subscription_status: "inactive",
+          primary_window: { used_percent: 12, reset_at: "2026-06-24T20:00:00.000Z" },
+        }}
+        order={["opencodeGo"]}
+      />,
+    );
+
+    expect(screen.getByText("OpenCode Go")).toBeInTheDocument();
+    expect(screen.getByText("OpenCode Go subscription is inactive")).toBeInTheDocument();
+    expect(screen.queryByText("5h")).not.toBeInTheDocument();
+    expect(screen.queryByText("12%")).not.toBeInTheDocument();
+  });
+
   it("renders Qoder credits with exact amounts in the hover detail", () => {
     render(
       <UsageLimitsPanel
