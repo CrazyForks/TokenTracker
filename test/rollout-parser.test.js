@@ -7238,6 +7238,135 @@ test("resolveWorkbuddyProjectFiles recurses into nested subagent logs and skips 
   }
 });
 
+test("resolveWorkbuddyProjectFiles includes completed trace summaries after JSONL", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-workbuddy-traces-"));
+  try {
+    const projectDir = path.join(tmp, "projects", "encoded-cwd");
+    const traceDir = path.join(tmp, "traces", "1234");
+    await fs.mkdir(projectDir, { recursive: true });
+    await fs.mkdir(traceDir, { recursive: true });
+    const jsonl = path.join(projectDir, "session.jsonl");
+    const trace = path.join(traceDir, "trace_abc.json");
+    await fs.writeFile(jsonl, "");
+    await fs.writeFile(trace, JSON.stringify({ trace: { traceId: "trace_abc" } }));
+
+    const files = resolveWorkbuddyProjectFiles({ WORKBUDDY_HOME: tmp });
+    assert.deepEqual(files, [jsonl, { path: trace, kind: "trace" }]);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("parseWorkbuddyIncremental uses trace modelInfo only when detailed JSONL is absent", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-workbuddy-trace-"));
+  try {
+    const traceDir = path.join(tmp, "traces", "1234");
+    await fs.mkdir(traceDir, { recursive: true });
+    const tracePath = path.join(traceDir, "trace_trace-only.json");
+    await fs.writeFile(tracePath, JSON.stringify({
+      trace: {
+        traceId: "trace-only-id",
+        startedAt: "2026-04-05T14:00:00.000Z",
+        metadata: {
+          sessionId: "trace-only-session",
+          modelInfo: {
+            models: ["hy3-preview-agent"],
+            totalInputTokens: 1000,
+            totalOutputTokens: 200,
+            totalCachedTokens: 600,
+          },
+        },
+      },
+    }));
+
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1 };
+    const first = await parseWorkbuddyIncremental({
+      projectFiles: [{ path: tracePath, kind: "trace" }],
+      cursors,
+      queuePath,
+      env: { WORKBUDDY_HOME: tmp, HOME: tmp },
+    });
+    assert.equal(first.eventsAggregated, 1);
+    const queued = await readJsonLines(queuePath);
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].model, "hy3-preview-agent");
+    assert.equal(queued[0].input_tokens, 400);
+    assert.equal(queued[0].cached_input_tokens, 600);
+    assert.equal(queued[0].output_tokens, 200);
+    assert.equal(queued[0].total_tokens, 1200);
+    assert.deepEqual(cursors.workbuddy.tracedSessionIds, ["trace-only-session"]);
+
+    const second = await parseWorkbuddyIncremental({
+      projectFiles: [{ path: tracePath, kind: "trace" }],
+      cursors,
+      queuePath,
+      env: { WORKBUDDY_HOME: tmp, HOME: tmp },
+    });
+    assert.equal(second.eventsAggregated, 0);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("parseWorkbuddyIncremental prefers detailed JSONL over a partial trace summary", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-workbuddy-trace-jsonl-"));
+  try {
+    const projectDir = path.join(tmp, "projects", "encoded-cwd");
+    const traceDir = path.join(tmp, "traces", "1234");
+    await fs.mkdir(projectDir, { recursive: true });
+    await fs.mkdir(traceDir, { recursive: true });
+    const sessionFile = path.join(projectDir, "same-session.jsonl");
+    const tracePath = path.join(traceDir, "trace_same.json");
+    await fs.writeFile(sessionFile, buildWorkbuddyLine({
+      id: "jsonl-usage",
+      type: "function_call",
+      timestamp: Date.UTC(2026, 3, 5, 14, 0, 0),
+      rawUsage: {
+        prompt_tokens: 100,
+        completion_tokens: 20,
+        total_tokens: 120,
+        prompt_tokens_details: { cached_tokens: 0 },
+        completion_tokens_details: { reasoning_tokens: 0 },
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      },
+    }));
+    await fs.writeFile(tracePath, JSON.stringify({
+      trace: {
+        traceId: "trace-same-id",
+        startedAt: "2026-04-05T14:00:00.000Z",
+        metadata: {
+          sessionId: "wb-sess",
+          modelInfo: {
+            models: ["hy3"],
+            totalInputTokens: 1000,
+            totalOutputTokens: 200,
+            totalCachedTokens: 600,
+          },
+        },
+      },
+    }));
+
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1 };
+    const result = await parseWorkbuddyIncremental({
+      projectFiles: [sessionFile, { path: tracePath, kind: "trace" }],
+      cursors,
+      queuePath,
+      env: { WORKBUDDY_HOME: tmp, HOME: tmp },
+    });
+    assert.equal(result.eventsAggregated, 1);
+    const queued = await readJsonLines(queuePath);
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].total_tokens, 120);
+    assert.equal(queued[0].output_tokens, 20);
+    assert.equal(cursors.workbuddy.tracedSessionIds?.length || 0, 0);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("parseWorkbuddyIncremental dedupes by response id across runs and buckets by half-hour", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-workbuddy-"));
   try {

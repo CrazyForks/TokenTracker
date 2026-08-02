@@ -7840,9 +7840,45 @@ function resolveCodebuddyDefaultModel(env = process.env) {
   return fallback;
 }
 
+// Modern CodeBuddy writes token usage into providerData.rawUsage on JSONL
+// records. Older IDE installs may have no usable JSONL usage and rely on the
+// extension log fallback below. Keep the sniff bounded: it is used only to
+// decide whether enabling the legacy log source would create a second copy of
+// the same round trips.
+function codebuddyJsonlHasUsage(filePath) {
+  let fd;
+  try {
+    fd = fssync.openSync(filePath, "r");
+    const buffer = Buffer.alloc(64 * 1024);
+    const bytesRead = fssync.readSync(fd, buffer, 0, buffer.length, 0);
+    const lines = buffer.toString("utf8", 0, bytesRead).split("\n");
+    const limit = Math.min(lines.length, 100);
+    for (let i = 0; i < limit; i += 1) {
+      const line = lines[i];
+      if (!line || (!line.includes("rawUsage") && !line.includes("\"usage\""))) continue;
+      let entry;
+      try { entry = JSON.parse(line); } catch { continue; }
+      if (!entry || typeof entry !== "object") continue;
+      const provider = entry.providerData;
+      if (provider && typeof provider === "object" && provider.rawUsage && typeof provider.rawUsage === "object") {
+        return true;
+      }
+      if (entry.usage && typeof entry.usage === "object") return true;
+    }
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) {
+      try { fssync.closeSync(fd); } catch {}
+    }
+  }
+  return false;
+}
+
 function resolveCodebuddyProjectFiles(env = process.env) {
   const codebuddyHome = resolveCodebuddyHome(env);
-  const files = [];
+  const jsonlFiles = [];
+  const logFiles = [];
 
   // 1. Recursive JSONL scan in codebuddyHome/projects
   if (codebuddyHome) {
@@ -7863,7 +7899,7 @@ function resolveCodebuddyProjectFiles(env = process.env) {
             } catch { continue; }
           }
           if (isDir) walkJsonl(full);
-          else if (isFile && entry.name.endsWith(".jsonl")) files.push(full);
+          else if (isFile && entry.name.endsWith(".jsonl")) jsonlFiles.push(full);
         }
       };
       walkJsonl(projectsDir);
@@ -7916,10 +7952,10 @@ function resolveCodebuddyProjectFiles(env = process.env) {
           walkLogs(full);
         } else if (isFile && entry.name.endsWith(".log")) {
           if (root.pattern === "*.log") {
-            files.push(full);
+            logFiles.push(full);
           } else if (root.pattern === "codebuddy-extension-log") {
             if (full.toLowerCase().includes("tencent-cloud.coding-copilot")) {
-              files.push(full);
+              logFiles.push(full);
             }
           }
         }
@@ -7928,6 +7964,11 @@ function resolveCodebuddyProjectFiles(env = process.env) {
     walkLogs(root.dir);
   }
 
+  const fallbackMode = String(env.TOKENTRACKER_CODEBUDDY_LOG_FALLBACK || "").trim();
+  const includeLogs =
+    fallbackMode === "1" ||
+    (fallbackMode !== "0" && !jsonlFiles.some((filePath) => codebuddyJsonlHasUsage(filePath)));
+  const files = [...jsonlFiles, ...(includeLogs ? logFiles : [])];
   files.sort((a, b) => a.localeCompare(b));
   return files;
 }
@@ -8389,6 +8430,12 @@ async function parseCodebuddyIncremental({
 //
 //   model is the auto-router placeholder ("auto") — WorkBuddy does not expose
 //   the underlying model in the log, so we emit it verbatim.
+//
+//   4. Completed ~/.workbuddy/traces/**/trace_*.json summaries expose aggregate
+//      modelInfo input/output/cache totals. They are a fallback only when the
+//      session has no detailed JSONL usage; SQLite's session_usage table has no
+//      output/cache/reasoning columns, so SQLite-only rows intentionally remain
+//      input/total-only instead of fabricating a token split.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function resolveWorkbuddyHome(env = process.env) {
@@ -8423,14 +8470,16 @@ function resolveWorkbuddyDefaultModel(env = process.env) {
 
 // Recursively collect every *.jsonl under ~/.workbuddy/projects so that
 // per-session conversation logs AND their nested subagents/agent-*.jsonl files
-// are both discovered. Non-.jsonl artefacts (tool-results/*.txt) are ignored.
+// are both discovered. WorkBuddy also writes completed trace summaries under
+// ~/.workbuddy/traces/<pid>/trace_*.json. Those summaries are useful only when
+// the detailed JSONL for a session is absent, so they are returned as typed
+// entries and parsed after JSONL (JSONL remains authoritative when both exist).
 function resolveWorkbuddyProjectFiles(env = process.env) {
   const workbuddyHome = resolveWorkbuddyHome(env);
   if (!workbuddyHome) return [];
   const projectsDir = path.join(workbuddyHome, "projects");
-  if (!fssync.existsSync(projectsDir)) return [];
   const files = [];
-  const walk = (dir) => {
+  const walkJsonl = (dir) => {
     let entries;
     try { entries = fssync.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) {
@@ -8445,12 +8494,43 @@ function resolveWorkbuddyProjectFiles(env = process.env) {
           isFile = st.isFile();
         } catch { continue; }
       }
-      if (isDir) walk(full);
+      if (isDir) walkJsonl(full);
       else if (isFile && entry.name.endsWith(".jsonl")) files.push(full);
     }
   };
-  walk(projectsDir);
-  files.sort((a, b) => a.localeCompare(b));
+  if (fssync.existsSync(projectsDir)) walkJsonl(projectsDir);
+
+  const tracesDir = path.join(workbuddyHome, "traces");
+  const walkTraces = (dir) => {
+    let entries;
+    try { entries = fssync.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      let isDir = entry.isDirectory();
+      let isFile = entry.isFile();
+      if (!isDir && !isFile) {
+        try {
+          const st = fssync.statSync(full);
+          isDir = st.isDirectory();
+          isFile = st.isFile();
+        } catch { continue; }
+      }
+      if (isDir) walkTraces(full);
+      else if (isFile && /^trace_[^/]+\.json$/i.test(entry.name)) {
+        files.push({ path: full, kind: "trace" });
+      }
+    }
+  };
+  if (fssync.existsSync(tracesDir)) walkTraces(tracesDir);
+  files.sort((a, b) => {
+    const aPath = typeof a === "string" ? a : a?.path || "";
+    const bPath = typeof b === "string" ? b : b?.path || "";
+    // JSONL first is intentional: trace summaries are a lossy fallback and
+    // must not win over a detailed rawUsage record on the same session.
+    const aKind = typeof a === "string" ? 0 : 1;
+    const bKind = typeof b === "string" ? 0 : 1;
+    return aKind - bKind || aPath.localeCompare(bPath);
+  });
   return files;
 }
 
@@ -8480,11 +8560,22 @@ async function parseWorkbuddyIncremental({
     workbuddyState.detailedSessions && typeof workbuddyState.detailedSessions === "object"
       ? { ...workbuddyState.detailedSessions }
       : {};
+  const seenTraceIds = new Set(
+    Array.isArray(workbuddyState.seenTraceIds) ? workbuddyState.seenTraceIds : [],
+  );
+  const tracedSessionIds = new Set(
+    Array.isArray(workbuddyState.tracedSessionIds) ? workbuddyState.tracedSessionIds : [],
+  );
   const detailedSessionsWithUsage = new Set();
 
-  const files = Array.isArray(projectFiles)
+  const allFiles = Array.isArray(projectFiles)
     ? projectFiles
     : resolveWorkbuddyProjectFiles(env || process.env);
+  const jsonlFiles = allFiles.filter((entry) => typeof entry === "string");
+  const traceFiles = allFiles.filter(
+    (entry) => entry && typeof entry === "object" && typeof entry.path === "string" && entry.kind === "trace",
+  );
+  const files = [...jsonlFiles, ...traceFiles];
   const fallbackModel = defaultModel || resolveWorkbuddyDefaultModel(env || process.env);
 
   const workbuddyHome = resolveWorkbuddyHome(env || process.env);
@@ -8495,6 +8586,8 @@ async function parseWorkbuddyIncremental({
     cursors.workbuddy = {
       ...workbuddyState,
       seenIds: Array.from(seenIds),
+      seenTraceIds: Array.from(seenTraceIds),
+      tracedSessionIds: Array.from(tracedSessionIds),
       fileOffsets,
       sqliteSessions,
       detailedSessions,
@@ -8509,8 +8602,8 @@ async function parseWorkbuddyIncremental({
   let recordsProcessed = 0;
   let eventsAggregated = 0;
 
-  for (let fileIdx = 0; fileIdx < files.length; fileIdx++) {
-    const filePath = files[fileIdx];
+  for (let fileIdx = 0; fileIdx < jsonlFiles.length; fileIdx++) {
+    const filePath = jsonlFiles[fileIdx];
     let stat;
     try { stat = fssync.statSync(filePath); } catch { continue; }
 
@@ -8548,7 +8641,10 @@ async function parseWorkbuddyIncremental({
         typeof entry.sessionId === "string" && entry.sessionId
           ? entry.sessionId
           : path.basename(filePath, ".jsonl");
-      if (Object.prototype.hasOwnProperty.call(sqliteSessions, sessionId)) {
+      if (
+        Object.prototype.hasOwnProperty.call(sqliteSessions, sessionId) ||
+        tracedSessionIds.has(sessionId)
+      ) {
         continue;
       }
       const tsMs =
@@ -8660,6 +8756,99 @@ async function parseWorkbuddyIncremental({
     };
   }
 
+  // Trace summaries are a fallback for sessions whose JSONL has no detailed
+  // providerData.rawUsage. A trace's modelInfo totals include the cache read
+  // portion of input, so split input into uncached input + cached input. Do
+  // not merge a trace with the same session's JSONL (or SQLite) data: the
+  // JSONL path has per-round detail and the trace summary can be partial on
+  // older WorkBuddy versions.
+  for (let fileIdx = 0; fileIdx < traceFiles.length; fileIdx++) {
+    const entry = traceFiles[fileIdx];
+    const filePath = entry.path;
+    let stat;
+    try { stat = fssync.statSync(filePath); } catch { continue; }
+    const prevEntry = fileOffsets[filePath] || {};
+    const prevSize = Number(prevEntry.size) || 0;
+    const prevIno = prevEntry.ino;
+    const inodeChanged = typeof prevIno === "number" && prevIno !== stat.ino;
+    const startOffset = stat.size < prevSize || inodeChanged ? 0 : prevSize;
+    if (stat.size <= startOffset) continue;
+
+    let traceDoc;
+    try {
+      traceDoc = JSON.parse(fssync.readFileSync(filePath, "utf8"));
+    } catch {
+      continue;
+    }
+    const trace = traceDoc && typeof traceDoc === "object" && traceDoc.trace && typeof traceDoc.trace === "object"
+      ? traceDoc.trace
+      : null;
+    const traceId = typeof trace?.traceId === "string" && trace.traceId
+      ? trace.traceId
+      : path.basename(filePath, ".json");
+    const metadata = trace?.metadata && typeof trace.metadata === "object" ? trace.metadata : {};
+    const modelInfo = trace?.modelInfo && typeof trace.modelInfo === "object"
+      ? trace.modelInfo
+      : metadata.modelInfo && typeof metadata.modelInfo === "object"
+        ? metadata.modelInfo
+        : {};
+    const sessionId =
+      (typeof trace?.sessionId === "string" && trace.sessionId) ||
+      (typeof metadata.sessionId === "string" && metadata.sessionId) ||
+      traceId;
+    const startedAtRaw = trace?.startedAt || metadata.startedAt;
+    const tsMs = typeof startedAtRaw === "number" && Number.isFinite(startedAtRaw)
+      ? (startedAtRaw > 10000000000 ? startedAtRaw : startedAtRaw * 1000)
+      : Date.parse(String(startedAtRaw || ""));
+    const totalInput = toNonNegativeInt(modelInfo.totalInputTokens);
+    const totalOutput = toNonNegativeInt(modelInfo.totalOutputTokens);
+    const totalCached = Math.min(totalInput, toNonNegativeInt(modelInfo.totalCachedTokens));
+    if (seenTraceIds.has(traceId) || detailedSessions[sessionId] || detailedSessionsWithUsage.has(sessionId) || tracedSessionIds.has(sessionId)) {
+      seenTraceIds.add(traceId);
+      fileOffsets[filePath] = { size: stat.size, mtimeMs: stat.mtimeMs, ino: stat.ino };
+      continue;
+    }
+    if (!Number.isFinite(tsMs) || tsMs <= 0 || (totalInput <= 0 && totalOutput <= 0)) {
+      // Keep the file offset but do not permanently suppress a trace that may
+      // still be finalized in place by WorkBuddy.
+      fileOffsets[filePath] = { size: stat.size, mtimeMs: stat.mtimeMs, ino: stat.ino };
+      continue;
+    }
+
+    const bucketStart = toUtcHalfHourStart(new Date(tsMs).toISOString());
+    if (!bucketStart) continue;
+    const model =
+      normalizeModelInput(Array.isArray(modelInfo.models) ? modelInfo.models[0] : modelInfo.model) ||
+      fallbackModel;
+    const inputTokens = Math.max(0, totalInput - totalCached);
+    const delta = {
+      input_tokens: inputTokens,
+      cached_input_tokens: totalCached,
+      cache_creation_input_tokens: 0,
+      output_tokens: totalOutput,
+      reasoning_output_tokens: 0,
+      total_tokens: inputTokens + totalCached + totalOutput,
+      conversation_count: 1,
+    };
+    const bucket = getHourlyBucket(hourlyState, "workbuddy", model, bucketStart);
+    addTotals(bucket.totals, delta);
+    touchedBuckets.add(bucketKey("workbuddy", model, bucketStart));
+    seenTraceIds.add(traceId);
+    tracedSessionIds.add(sessionId);
+    recordsProcessed++;
+    eventsAggregated++;
+    fileOffsets[filePath] = { size: stat.size, mtimeMs: stat.mtimeMs, ino: stat.ino };
+    if (cb) {
+      cb({
+        index: jsonlFiles.length + fileIdx + 1,
+        total: files.length,
+        recordsProcessed,
+        eventsAggregated,
+        bucketsQueued: touchedBuckets.size,
+      });
+    }
+  }
+
   if (dbExists) {
     const query = `
       SELECT
@@ -8692,7 +8881,11 @@ async function parseWorkbuddyIncremental({
         if (!row || typeof row !== "object") continue;
         const sessionId = typeof row.session_id === "string" ? row.session_id.trim() : "";
         if (!sessionId) continue;
-        if (detailedSessions[sessionId] || detailedSessionsWithUsage.has(sessionId)) continue;
+        if (
+          detailedSessions[sessionId] ||
+          detailedSessionsWithUsage.has(sessionId) ||
+          tracedSessionIds.has(sessionId)
+        ) continue;
 
         const usedNow = toNonNegativeInt(row.used);
         const updatedAtRaw = toNonNegativeInt(row.updated_at);
@@ -8729,13 +8922,16 @@ async function parseWorkbuddyIncremental({
 
         const model = normalizeModelInput(rawModel) || fallbackModel;
 
+        // session_usage only exposes a cumulative `used` value. It has no
+        // output/cache/reasoning columns, so SQLite-only history can safely
+        // contribute input/total but must not invent a token split.
         const delta = {
           input_tokens: inputTokens,
           cached_input_tokens: cacheRead,
           cache_creation_input_tokens: cacheCreation,
           output_tokens: completionTokens,
           reasoning_output_tokens: reasoningTokens,
-          total_tokens: inputTokens,
+        total_tokens: inputTokens + completionTokens + cacheRead + cacheCreation + reasoningTokens,
           conversation_count: prevUsed === 0 || isReset ? 1 : 0,
         };
 
@@ -8773,6 +8969,14 @@ async function parseWorkbuddyIncremental({
     detailedSessionEntries.length > 10_000
       ? Object.fromEntries(detailedSessionEntries.slice(detailedSessionEntries.length - 10_000))
       : detailedSessions;
+  const traceArr = Array.from(seenTraceIds);
+  const cappedSeenTraceIds =
+    traceArr.length > 10_000 ? traceArr.slice(traceArr.length - 10_000) : traceArr;
+  const tracedSessionArr = Array.from(tracedSessionIds);
+  const cappedTracedSessionIds =
+    tracedSessionArr.length > 10_000
+      ? tracedSessionArr.slice(tracedSessionArr.length - 10_000)
+      : tracedSessionArr;
 
   const bucketsQueued = await enqueueTouchedBuckets({
     queuePath,
@@ -8785,6 +8989,8 @@ async function parseWorkbuddyIncremental({
   cursors.workbuddy = {
     ...workbuddyState,
     seenIds: cappedSeen,
+    seenTraceIds: cappedSeenTraceIds,
+    tracedSessionIds: cappedTracedSessionIds,
     fileOffsets,
     sqliteSessions: cappedSqliteSessions,
     detailedSessions: cappedDetailedSessions,
@@ -15481,6 +15687,7 @@ module.exports = {
   resolveKimiCodeDefaultModel,
   parseKimiCodeIncremental,
   resolveCodebuddyHome,
+  codebuddyJsonlHasUsage,
   resolveCodebuddyProjectFiles,
   resolveCodebuddyDefaultModel,
   parseCodebuddyIncremental,
