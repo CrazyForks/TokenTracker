@@ -7842,9 +7842,8 @@ function resolveCodebuddyDefaultModel(env = process.env) {
 
 // Modern CodeBuddy writes token usage into providerData.rawUsage on JSONL
 // records. Older IDE installs may have no usable JSONL usage and rely on the
-// extension log fallback below. Keep the sniff bounded: it is used only to
-// decide whether enabling the legacy log source would create a second copy of
-// the same round trips.
+// extension log fallback below. Keep the sniff bounded: it is used by the
+// guarded historical migration to decide whether a JSONL rebuild is safe.
 function codebuddyJsonlHasUsage(filePath) {
   let fd;
   try {
@@ -7873,6 +7872,60 @@ function codebuddyJsonlHasUsage(filePath) {
     }
   }
   return false;
+}
+
+// Legacy IDE extension logs and modern JSONL records do not share an id. Keep
+// a bounded, source-neutral fingerprint ledger so a log line can be matched to
+// the JSONL round-trip it mirrors without collapsing legitimate same-second
+// requests. The ledger is persisted in the CodeBuddy cursor because the two
+// sources can arrive on different syncs.
+function codebuddyUsageFingerprint({ model, timestampMs, inputTokens, cacheRead, cacheCreation, outputTokens, reasoningTokens }) {
+  if (!Number.isFinite(Number(timestampMs)) || Number(timestampMs) <= 0) return null;
+  const second = Math.floor(Number(timestampMs) / 1000);
+  return [
+    second,
+    normalizeModelInput(model) || "unknown",
+    toNonNegativeInt(inputTokens),
+    toNonNegativeInt(cacheRead),
+    toNonNegativeInt(cacheCreation),
+    toNonNegativeInt(outputTokens),
+    toNonNegativeInt(reasoningTokens),
+  ].join(":");
+}
+
+function restoreCodebuddyUsageFingerprints(raw) {
+  const state = new Map();
+  if (!raw || typeof raw !== "object") return state;
+  for (const [key, value] of Object.entries(raw)) {
+    const jsonl = toNonNegativeInt(value?.jsonl);
+    const log = toNonNegativeInt(value?.log);
+    if (jsonl > 0 || log > 0) state.set(key, { jsonl, log });
+  }
+  return state;
+}
+
+function addCodebuddyJsonlFingerprint(state, fingerprint) {
+  if (!fingerprint) return false;
+  const current = state.get(fingerprint) || { jsonl: 0, log: 0 };
+  const mirrored = current.log > current.jsonl;
+  current.jsonl += 1;
+  state.set(fingerprint, current);
+  return mirrored;
+}
+
+function consumeCodebuddyLogFingerprint(state, fingerprint) {
+  if (!fingerprint) return false;
+  const current = state.get(fingerprint) || { jsonl: 0, log: 0 };
+  const mirrored = current.jsonl > current.log;
+  current.log += 1;
+  state.set(fingerprint, current);
+  return mirrored;
+}
+
+function capCodebuddyUsageFingerprints(state, maxEntries = 10_000) {
+  const entries = Array.from(state.entries());
+  if (entries.length <= maxEntries) return Object.fromEntries(entries);
+  return Object.fromEntries(entries.slice(entries.length - maxEntries));
 }
 
 function resolveCodebuddyProjectFiles(env = process.env) {
@@ -7965,9 +8018,12 @@ function resolveCodebuddyProjectFiles(env = process.env) {
   }
 
   const fallbackMode = String(env.TOKENTRACKER_CODEBUDDY_LOG_FALLBACK || "").trim();
-  const includeLogs =
-    fallbackMode === "1" ||
-    (fallbackMode !== "0" && !jsonlFiles.some((filePath) => codebuddyJsonlHasUsage(filePath)));
+  // Auto mode keeps both sources available. The parser performs bounded,
+  // count-aware cross-source fingerprint matching, so mixed histories retain
+  // legacy-only log sessions while mirrored rounds are counted once. Env=0 is
+  // still a supported escape hatch for users who want to suppress extension
+  // logs entirely; env=1 remains an explicit force-on value.
+  const includeLogs = fallbackMode !== "0";
   const files = [...jsonlFiles, ...(includeLogs ? logFiles : [])];
   files.sort((a, b) => a.localeCompare(b));
   return files;
@@ -8030,10 +8086,21 @@ async function parseCodebuddyIncremental({
     codebuddyState.logModelsByAgent && typeof codebuddyState.logModelsByAgent === "object"
       ? { ...codebuddyState.logModelsByAgent }
       : {};
+  const usageFingerprints = restoreCodebuddyUsageFingerprints(codebuddyState.usageFingerprints);
 
-  const files = Array.isArray(projectFiles)
+  const discoveredFiles = Array.isArray(projectFiles)
     ? projectFiles
     : resolveCodebuddyProjectFiles(env || process.env);
+  // JSONL must be parsed before extension logs so the fingerprint ledger can
+  // match mirrored rounds in the same sync. Keep the legacy bare-string API
+  // accepted for callers and tests.
+  const files = [...discoveredFiles].sort((a, b) => {
+    const aPath = typeof a === "string" ? a : a?.path || "";
+    const bPath = typeof b === "string" ? b : b?.path || "";
+    const aLog = aPath.endsWith(".log") ? 1 : 0;
+    const bLog = bPath.endsWith(".log") ? 1 : 0;
+    return aLog - bLog || aPath.localeCompare(bPath);
+  });
   const fallbackModel = defaultModel || resolveCodebuddyDefaultModel(env || process.env);
 
   if (files.length === 0) {
@@ -8041,6 +8108,7 @@ async function parseCodebuddyIncremental({
       ...codebuddyState,
       seenIds: Array.from(seenIds),
       fileOffsets,
+      usageFingerprints: capCodebuddyUsageFingerprints(usageFingerprints),
       updatedAt: new Date().toISOString(),
     };
     return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
@@ -8192,6 +8260,20 @@ async function parseCodebuddyIncremental({
           fallbackModel;
         const model = normalizeModelInput(rawModel);
 
+        const fingerprint = codebuddyUsageFingerprint({
+          model,
+          timestampMs: tsMs,
+          inputTokens,
+          cacheRead,
+          cacheCreation,
+          outputTokens: completionTokens,
+          reasoningTokens,
+        });
+        if (consumeCodebuddyLogFingerprint(usageFingerprints, fingerprint)) {
+          seenIds.add(messageId);
+          continue;
+        }
+
         const delta = {
           input_tokens: inputTokens,
           cached_input_tokens: cacheRead,
@@ -8318,6 +8400,20 @@ async function parseCodebuddyIncremental({
           normalizeModelInput(entry.model) ||
           fallbackModel;
 
+        const fingerprint = codebuddyUsageFingerprint({
+          model,
+          timestampMs: tsMs,
+          inputTokens,
+          cacheRead,
+          cacheCreation,
+          outputTokens: completionTokens,
+          reasoningTokens,
+        });
+        if (addCodebuddyJsonlFingerprint(usageFingerprints, fingerprint)) {
+          seenIds.add(messageId);
+          continue;
+        }
+
         const delta = {
           input_tokens: inputTokens,
           cached_input_tokens: cacheRead,
@@ -8333,6 +8429,13 @@ async function parseCodebuddyIncremental({
         addTotals(bucket.totals, delta);
         touchedBuckets.add(bucketKey("codebuddy", model, bucketStart));
         seenIds.add(messageId);
+        // Preserve the pre-fingerprint cursor key as well. Older releases
+        // keyed JSONL rows by entry.id; retaining it prevents the first
+        // post-upgrade sync from replaying an already-counted row when
+        // providerData.messageId is now preferred.
+        if (typeof entry.id === "string" && entry.id && entry.id !== messageId) {
+          seenIds.add(entry.id);
+        }
         eventsAggregated++;
 
         if (cb) {
@@ -8380,6 +8483,7 @@ async function parseCodebuddyIncremental({
     seenIds: cappedSeen,
     fileOffsets,
     logModelsByAgent: cappedLogModelsByAgent,
+    usageFingerprints: capCodebuddyUsageFingerprints(usageFingerprints),
     updatedAt,
   };
 
@@ -8433,9 +8537,11 @@ async function parseCodebuddyIncremental({
 //
 //   4. Completed ~/.workbuddy/traces/**/trace_*.json summaries expose aggregate
 //      modelInfo input/output/cache totals. They are a fallback only when the
-//      session has no detailed JSONL usage; SQLite's session_usage table has no
-//      output/cache/reasoning columns, so SQLite-only rows intentionally remain
-//      input/total-only instead of fabricating a token split.
+//      session has no detailed JSONL usage. The current SQLite session_usage
+//      table exposes bounded context-window state (`used`/`size`) plus credits,
+//      not billable token columns, so SQLite-only rows are ignored rather than
+//      mislabelled as input usage. A future schema with explicit token columns
+//      is accepted by workbuddySqliteUsageSnapshot.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function resolveWorkbuddyHome(env = process.env) {
@@ -8532,6 +8638,49 @@ function resolveWorkbuddyProjectFiles(env = process.env) {
     return aKind - bKind || aPath.localeCompare(bPath);
   });
   return files;
+}
+
+// WorkBuddy's current session_usage table stores context-window state in
+// `used`/`size` and model credit dollars in `credit_json`; neither is a token
+// accounting breakdown. Only consume a SQLite row when a future schema (or a
+// newer installation) exposes explicit cumulative token columns. This keeps
+// the fallback forward-compatible without treating a context snapshot as
+// billable usage.
+function workbuddySqliteUsageSnapshot(row) {
+  if (!row || typeof row !== "object") return null;
+  const hasAny = (keys) => keys.some((key) => Object.prototype.hasOwnProperty.call(row, key));
+  const inputKeys = ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"];
+  const cacheReadKeys = [
+    "cached_input_tokens",
+    "cachedInputTokens",
+    "cache_read_input_tokens",
+    "cacheReadInputTokens",
+    "cache_read_tokens",
+    "cacheReadTokens",
+  ];
+  const cacheCreationKeys = [
+    "cache_creation_input_tokens",
+    "cacheCreationInputTokens",
+    "prompt_cache_write_tokens",
+    "promptCacheWriteTokens",
+  ];
+  const outputKeys = ["output_tokens", "outputTokens", "completion_tokens", "completionTokens"];
+  const reasoningKeys = [
+    "reasoning_output_tokens",
+    "reasoningOutputTokens",
+    "reasoning_tokens",
+    "reasoningTokens",
+  ];
+  if (!hasAny([...inputKeys, ...cacheReadKeys, ...cacheCreationKeys, ...outputKeys, ...reasoningKeys])) {
+    return null;
+  }
+  return {
+    input: firstPresentNonNegativeInt(inputKeys.map((key) => row[key])),
+    cacheRead: firstPresentNonNegativeInt(cacheReadKeys.map((key) => row[key])),
+    cacheCreation: firstPresentNonNegativeInt(cacheCreationKeys.map((key) => row[key])),
+    output: firstPresentNonNegativeInt(outputKeys.map((key) => row[key])),
+    reasoning: firstPresentNonNegativeInt(reasoningKeys.map((key) => row[key])),
+  };
 }
 
 async function parseWorkbuddyIncremental({
@@ -8641,26 +8790,28 @@ async function parseWorkbuddyIncremental({
         typeof entry.sessionId === "string" && entry.sessionId
           ? entry.sessionId
           : path.basename(filePath, ".jsonl");
-      if (
-        Object.prototype.hasOwnProperty.call(sqliteSessions, sessionId) ||
-        tracedSessionIds.has(sessionId)
-      ) {
+      const sqliteSession = sqliteSessions[sessionId];
+      if (sqliteSession?.detailed || tracedSessionIds.has(sessionId)) {
         continue;
       }
       const tsMs =
         Number.isFinite(Number(entry.timestamp)) && Number(entry.timestamp) > 0
           ? Number(entry.timestamp)
           : null;
-      // One usage record per LLM round-trip; the response id is the most stable
-      // dedup key, then providerData.messageId, then session+timestamp.
+      // One usage record per LLM round-trip; providerData.messageId is the
+      // response-level id shared by function_call/message records and must win
+      // over the per-record append id. Fall back to entry.uuid/id only when the
+      // response-level id is absent.
       const messageId =
-        typeof entry.id === "string" && entry.id
-          ? entry.id
-          : typeof provider.messageId === "string" && provider.messageId
+        typeof provider?.messageId === "string" && provider.messageId
             ? provider.messageId
-            : tsMs != null
-              ? `${sessionId}:${tsMs}`
-              : null;
+            : typeof entry.uuid === "string" && entry.uuid
+              ? entry.uuid
+              : typeof entry.id === "string" && entry.id
+                ? entry.id
+                : tsMs != null
+                  ? `${sessionId}:${tsMs}`
+                  : null;
       if (!messageId) continue;
       if (seenIds.has(messageId)) continue;
 
@@ -8732,6 +8883,11 @@ async function parseWorkbuddyIncremental({
       addTotals(bucket.totals, delta);
       touchedBuckets.add(bucketKey("workbuddy", model, bucketStart));
       seenIds.add(messageId);
+      // Keep legacy entry-id keys alongside the response id so upgrading a
+      // cursor cannot replay a row that an older build already counted.
+      if (typeof entry.id === "string" && entry.id && entry.id !== messageId) {
+        seenIds.add(entry.id);
+      }
       detailedSessions[sessionId] = true;
       detailedSessionsWithUsage.add(sessionId);
       eventsAggregated++;
@@ -8852,11 +9008,9 @@ async function parseWorkbuddyIncremental({
   if (dbExists) {
     const query = `
       SELECT
-        su.session_id,
-        su.used,
-        su.updated_at,
-        s.model,
-        s.cwd
+        su.*,
+        s.model AS session_model,
+        s.cwd AS session_cwd
       FROM session_usage su
       LEFT JOIN sessions s ON s.id = su.session_id
       WHERE su.used IS NOT NULL
@@ -8887,33 +9041,68 @@ async function parseWorkbuddyIncremental({
           tracedSessionIds.has(sessionId)
         ) continue;
 
-        const usedNow = toNonNegativeInt(row.used);
         const updatedAtRaw = toNonNegativeInt(row.updated_at);
-        const rawModel = typeof row.model === "string" ? row.model.trim() : "";
+        const rawModel = typeof row.session_model === "string"
+          ? row.session_model.trim()
+          : typeof row.model === "string" ? row.model.trim() : "";
 
-        if (usedNow <= 0 || updatedAtRaw <= 0) continue;
+        if (updatedAtRaw <= 0) continue;
 
-        const prev = sqliteSessions[sessionId] || { used: 0 };
-        const prevUsed = toNonNegativeInt(prev.used);
-        const isReset = usedNow > 0 && prevUsed > 0 && usedNow < prevUsed;
-        const inputDelta = isReset ? usedNow : Math.max(0, usedNow - prevUsed);
-        if (inputDelta === 0) {
+        const snapshot = workbuddySqliteUsageSnapshot(row);
+        const usedNow = toNonNegativeInt(row.used);
+        const prev = sqliteSessions[sessionId] || {};
+
+        // Current WorkBuddy releases expose only context state (`used` versus
+        // `size`) here. Do not turn that bounded snapshot into a fake usage
+        // delta; detailed JSONL/trace sources remain the authoritative path.
+        if (!snapshot) {
           sqliteSessions[sessionId] = {
             ...prev,
             used: usedNow,
             updatedAt: updatedAtRaw,
             model: rawModel || prev.model || fallbackModel,
+            detailed: false,
+          };
+          continue;
+        }
+
+        const previousTokens = prev.tokens && typeof prev.tokens === "object"
+          ? prev.tokens
+          : { input: 0, cacheRead: 0, cacheCreation: 0, output: 0, reasoning: 0 };
+        const isReset = ["input", "cacheRead", "cacheCreation", "output", "reasoning"]
+          .some((key) => snapshot[key] < toNonNegativeInt(previousTokens[key]));
+        const deltaTokens = {
+          input: isReset ? snapshot.input : Math.max(0, snapshot.input - toNonNegativeInt(previousTokens.input)),
+          cacheRead: isReset ? snapshot.cacheRead : Math.max(0, snapshot.cacheRead - toNonNegativeInt(previousTokens.cacheRead)),
+          cacheCreation: isReset ? snapshot.cacheCreation : Math.max(0, snapshot.cacheCreation - toNonNegativeInt(previousTokens.cacheCreation)),
+          output: isReset ? snapshot.output : Math.max(0, snapshot.output - toNonNegativeInt(previousTokens.output)),
+          reasoning: isReset ? snapshot.reasoning : Math.max(0, snapshot.reasoning - toNonNegativeInt(previousTokens.reasoning)),
+        };
+        if (
+          deltaTokens.input === 0 &&
+          deltaTokens.cacheRead === 0 &&
+          deltaTokens.cacheCreation === 0 &&
+          deltaTokens.output === 0 &&
+          deltaTokens.reasoning === 0
+        ) {
+          sqliteSessions[sessionId] = {
+            ...prev,
+            used: usedNow,
+            updatedAt: updatedAtRaw,
+            model: rawModel || prev.model || fallbackModel,
+            tokens: snapshot,
+            detailed: true,
           };
           continue;
         }
 
         recordsProcessed++;
 
-        const inputTokens = inputDelta;
-        const completionTokens = 0;
-        const cacheRead = 0;
-        const cacheCreation = 0;
-        const reasoningTokens = 0;
+        const inputTokens = deltaTokens.input;
+        const completionTokens = deltaTokens.output;
+        const cacheRead = deltaTokens.cacheRead;
+        const cacheCreation = deltaTokens.cacheCreation;
+        const reasoningTokens = deltaTokens.reasoning;
 
         const tsMs = updatedAtRaw > 10000000000 ? updatedAtRaw : updatedAtRaw * 1000;
         const tsIso = new Date(tsMs).toISOString();
@@ -8922,9 +9111,6 @@ async function parseWorkbuddyIncremental({
 
         const model = normalizeModelInput(rawModel) || fallbackModel;
 
-        // session_usage only exposes a cumulative `used` value. It has no
-        // output/cache/reasoning columns, so SQLite-only history can safely
-        // contribute input/total but must not invent a token split.
         const delta = {
           input_tokens: inputTokens,
           cached_input_tokens: cacheRead,
@@ -8932,7 +9118,7 @@ async function parseWorkbuddyIncremental({
           output_tokens: completionTokens,
           reasoning_output_tokens: reasoningTokens,
         total_tokens: inputTokens + completionTokens + cacheRead + cacheCreation + reasoningTokens,
-          conversation_count: prevUsed === 0 || isReset ? 1 : 0,
+          conversation_count: Object.keys(previousTokens).every((key) => toNonNegativeInt(previousTokens[key]) === 0) || isReset ? 1 : 0,
         };
 
         const bucket = getHourlyBucket(hourlyState, "workbuddy", model, bucketStart);
@@ -8942,6 +9128,8 @@ async function parseWorkbuddyIncremental({
           used: usedNow,
           updatedAt: updatedAtRaw,
           model,
+          tokens: snapshot,
+          detailed: true,
         };
         eventsAggregated++;
       }

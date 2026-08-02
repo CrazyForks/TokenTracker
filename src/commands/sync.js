@@ -144,6 +144,7 @@ const ROLLOUT_CUMULATIVE_DELTA_MIGRATION_KEY = "rolloutCumulativeDeltaReparse_20
 const CLAUDE_MEM_OBSERVER_REINCLUDE_KEY = "claudeMemObserverReinclude_2026_05_v3";
 const GROK_APPEND_ONLY_REPAIR_MIGRATION_KEY = "grokAppendOnlyRepair_2026_05_v4";
 const CODEBUDDY_LOG_JSONL_REPAIR_KEY = "codebuddyLogJsonlOverlapRepair_2026_08";
+const WORKBUDDY_CONTEXT_USAGE_REPAIR_KEY = "workbuddyContextUsageRepair_2026_08";
 const CLAUDE_MEM_OBSERVER_PATH_SEGMENT = "--claude-mem-observer-sessions";
 // v1 had a cursor-format bug (wrote plain integer instead of {inode, offset,
 // updatedAt}), which made parseClaudeIncremental reread every jsonl from
@@ -1837,6 +1838,19 @@ async function cmdSync(argv, context = {}) {
       ? mergeBothFileSources({ resolveFiles: resolveWorkbuddyProjectFiles, env: process.env })
       : [];
     if (sourceAllowed("workbuddy")) {
+      if (isFullSourceScan) {
+        try {
+          await repairWorkbuddyContextUsage({
+            cursors,
+            queuePath,
+            queueStatePath,
+            workbuddyFiles,
+            env: process.env,
+          });
+        } catch (err) {
+          warnProviderParseFailure("WorkBuddy context-usage repair", err, opts);
+        }
+      }
       if (progress?.enabled) {
         progress.start(`Parsing WorkBuddy ${renderBar(0)} | buckets 0`);
       }
@@ -2762,6 +2776,8 @@ module.exports = {
   migrateCursorUnknownBuckets,
   migrateRolloutCumulativeDeltaBuckets,
   repairCodebuddyLogJsonlOverlap,
+  repairWorkbuddyContextUsage,
+  WORKBUDDY_CONTEXT_USAGE_REPAIR_KEY,
   repairCodexRescanInflation,
   repairCodexForkReplayInflation,
   repairCodexInterleavedUsageInflation,
@@ -3965,7 +3981,10 @@ async function repairCodebuddyLogJsonlOverlap({
   let rebuiltRows = [];
   try {
     await parseCodebuddyIncremental({
-      projectFiles: jsonlFiles,
+      // Rebuild from both sources. The parser now preserves legacy-only log
+      // sessions while consuming mirrored log fingerprints against JSONL, so
+      // rebuilding JSONL alone would silently discard valid pre-rawUsage data.
+      projectFiles: files,
       cursors: tmpCursors,
       queuePath: tmpQueue,
       env,
@@ -4046,6 +4065,172 @@ async function repairCodebuddyLogJsonlOverlap({
     appliedAt: new Date().toISOString(),
     jsonlFiles: jsonlFiles.length,
     logFiles: logFiles.length,
+    previousBuckets: liveKeys.size,
+    rebuiltBuckets: rebuiltKeys.size,
+    retractedBuckets: staleRetractions.length,
+  };
+  return true;
+}
+
+// WorkBuddy's 0.87.9 SQLite fallback treated the bounded session_usage.used
+// context snapshot as cumulative input tokens. A current database proves that
+// assumption false (`size` is a 192k context limit while trace input totals can
+// exceed it), so rebuild historical WorkBuddy buckets from JSONL/trace sources
+// once the new parser is available. The same missing-source guard used by the
+// other data migrations keeps this recoverable: if a previously contributing
+// file is gone, leave history untouched and stop adding new context snapshots.
+async function repairWorkbuddyContextUsage({
+  cursors,
+  queuePath,
+  queueStatePath,
+  workbuddyFiles,
+  env = process.env,
+} = {}) {
+  if (!cursors || typeof cursors !== "object") return false;
+  const migrations = (cursors.migrations ||= {});
+  const prior = migrations[WORKBUDDY_CONTEXT_USAGE_REPAIR_KEY];
+  if (prior && !(typeof prior === "object" && prior.skipped)) return false;
+
+  const hourly = cursors.hourly && typeof cursors.hourly === "object" ? cursors.hourly : {};
+  const liveHourlyKeys = new Set(
+    Object.keys(hourly.buckets || {}).filter((key) => key.startsWith("workbuddy|")),
+  );
+  let queueRaw = "";
+  try {
+    queueRaw = await fs.readFile(queuePath, "utf8");
+  } catch (e) {
+    if (e?.code !== "ENOENT") throw e;
+  }
+  const queueWorkbuddyKeys = new Set();
+  const keptQueueLines = [];
+  for (const line of queueRaw.split("\n")) {
+    if (!line.trim()) continue;
+    let row;
+    try { row = JSON.parse(line); } catch (_e) {
+      keptQueueLines.push(line);
+      continue;
+    }
+    if (row && row.source === "workbuddy" && typeof row.model === "string" && typeof row.hour_start === "string") {
+      queueWorkbuddyKeys.add(bucketKey("workbuddy", row.model || "unknown", row.hour_start));
+    } else {
+      keptQueueLines.push(line);
+    }
+  }
+  const liveKeys = new Set([...liveHourlyKeys, ...queueWorkbuddyKeys]);
+  if (liveKeys.size === 0) {
+    migrations[WORKBUDDY_CONTEXT_USAGE_REPAIR_KEY] = {
+      status: "noop",
+      appliedAt: new Date().toISOString(),
+      reason: "no-workbuddy-history",
+    };
+    return false;
+  }
+
+  const files = Array.isArray(workbuddyFiles) ? workbuddyFiles : [];
+  const discoveredPaths = new Set(
+    files.map((entry) => typeof entry === "string" ? entry : entry?.path).filter(Boolean),
+  );
+  const priorFiles = cursors.workbuddy?.fileOffsets && typeof cursors.workbuddy.fileOffsets === "object"
+    ? Object.keys(cursors.workbuddy.fileOffsets)
+    : [];
+  if (files.length === 0 || priorFiles.some((filePath) => !discoveredPaths.has(filePath))) {
+    migrations[WORKBUDDY_CONTEXT_USAGE_REPAIR_KEY] = {
+      skipped: true,
+      reason: files.length === 0 ? "no-rebuild-sources" : "workbuddy_file_unreproducible",
+      at: new Date().toISOString(),
+    };
+    return false;
+  }
+
+  const tmpQueue = `${queuePath}.workbuddyrebuild.${process.pid}.${Date.now()}`;
+  const tmpCursors = {
+    version: 1,
+    hourly: { buckets: {}, groupQueued: {} },
+    workbuddy: {},
+  };
+  let rebuiltRows = [];
+  try {
+    await parseWorkbuddyIncremental({
+      projectFiles: files,
+      cursors: tmpCursors,
+      queuePath: tmpQueue,
+      env,
+    });
+    let rebuiltRaw = "";
+    try { rebuiltRaw = await fs.readFile(tmpQueue, "utf8"); } catch (e) {
+      if (e?.code !== "ENOENT") throw e;
+    }
+    rebuiltRows = rebuiltRaw.split("\n").filter((line) => line.trim());
+  } catch (e) {
+    console.error("[sync] WorkBuddy context-usage repair: rebuild failed, leaving history untouched:", e?.message || e);
+    return false;
+  } finally {
+    await fs.rm(tmpQueue, { force: true }).catch(() => {});
+  }
+
+  const rebuiltKeys = new Set();
+  const validRebuiltRows = [];
+  for (const line of rebuiltRows) {
+    let row;
+    try { row = JSON.parse(line); } catch (_e) { continue; }
+    if (!row || row.source !== "workbuddy" || typeof row.model !== "string" || typeof row.hour_start !== "string") continue;
+    rebuiltKeys.add(bucketKey("workbuddy", row.model || "unknown", row.hour_start));
+    validRebuiltRows.push(line);
+  }
+
+  const staleRetractions = [];
+  for (const key of liveKeys) {
+    if (rebuiltKeys.has(key)) continue;
+    const [, model, ...hourParts] = key.split("|");
+    staleRetractions.push(JSON.stringify({
+      source: "workbuddy",
+      model: model || "unknown",
+      hour_start: hourParts.join("|"),
+      input_tokens: 0,
+      cached_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+      output_tokens: 0,
+      reasoning_output_tokens: 0,
+      total_tokens: 0,
+      billable_total_tokens: 0,
+      conversation_count: 0,
+    }));
+  }
+
+  const nextQueueLines = keptQueueLines.concat(staleRetractions, validRebuiltRows);
+  await ensureDir(path.dirname(queuePath));
+  const queueTmp = `${queuePath}.tmp.${process.pid}.${Date.now()}`;
+  await fs.writeFile(queueTmp, nextQueueLines.length ? `${nextQueueLines.join("\n")}\n` : "", "utf8");
+  await fs.rename(queueTmp, queuePath);
+
+  const nextHourly = (cursors.hourly ||= { buckets: {}, groupQueued: {} });
+  nextHourly.buckets ||= {};
+  nextHourly.groupQueued ||= {};
+  for (const key of Object.keys(nextHourly.buckets)) {
+    if (key.startsWith("workbuddy|")) delete nextHourly.buckets[key];
+  }
+  for (const key of Object.keys(nextHourly.groupQueued)) {
+    if (key.startsWith("workbuddy|")) delete nextHourly.groupQueued[key];
+  }
+  for (const [key, bucket] of Object.entries(tmpCursors.hourly.buckets || {})) {
+    if (key.startsWith("workbuddy|")) nextHourly.buckets[key] = bucket;
+  }
+  for (const [key, value] of Object.entries(tmpCursors.hourly.groupQueued || {})) {
+    if (key.startsWith("workbuddy|")) nextHourly.groupQueued[key] = value;
+  }
+  cursors.workbuddy = tmpCursors.workbuddy || {};
+
+  let uploadState = {};
+  try { uploadState = JSON.parse(await fs.readFile(queueStatePath, "utf8")); } catch (_e) {}
+  uploadState.offset = 0;
+  uploadState.updatedAt = new Date().toISOString();
+  uploadState.note = "reset_after_workbuddy_context_usage_repair_2026_08";
+  await ensureDir(path.dirname(queueStatePath));
+  await fs.writeFile(queueStatePath, JSON.stringify(uploadState, null, 2) + "\n", "utf8");
+
+  migrations[WORKBUDDY_CONTEXT_USAGE_REPAIR_KEY] = {
+    status: "applied",
+    appliedAt: new Date().toISOString(),
     previousBuckets: liveKeys.size,
     rebuiltBuckets: rebuiltKeys.size,
     retractedBuckets: staleRetractions.length,

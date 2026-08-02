@@ -7063,6 +7063,112 @@ test("parseCodebuddyIncremental keeps extension log model across incremental tai
   }
 });
 
+test("parseCodebuddyIncremental keeps legacy-only log rounds while deduping mirrored JSONL rounds", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-codebuddy-mixed-sources-"));
+  try {
+    const jsonlPath = path.join(tmp, "session.jsonl");
+    const logPath = path.join(tmp, "extension.log");
+    // Extension log timestamps are local wall-clock time; use the same local
+    // instant for JSONL so the cross-source fingerprint is comparable.
+    const mirroredTs = Date.parse("2026-07-01T16:56:02.200");
+    await fs.writeFile(jsonlPath, JSON.stringify({
+      id: "jsonl-row",
+      timestamp: mirroredTs,
+      sessionId: "session-1",
+      providerData: {
+        messageId: "response-1",
+        model: "kimi-k2.7",
+        rawUsage: {
+          prompt_tokens: 1000,
+          completion_tokens: 100,
+          prompt_tokens_details: { cached_tokens: 0 },
+          completion_tokens_details: { reasoning_tokens: 0 },
+        },
+      },
+    }) + "\n", "utf8");
+    await fs.writeFile(logPath, [
+      "[2026/7/1 16:56:01.100] [info] [CraftInvokableAgent] [agent-1] Model prepared: Kimi-K2.7-Code (kimi-k2.7)",
+      '[2026/7/1 16:56:02.200] [info] [AgentReporter] [agent-1] Agent execution successful with usage: {"inputTokens":1000,"outputTokens":100,"totalTokens":1100}',
+      '[2026/7/1 16:56:05.200] [info] [AgentReporter] [agent-2] Agent execution successful with usage: {"inputTokens":500,"outputTokens":50,"totalTokens":550}',
+    ].join("\n") + "\n", "utf8");
+
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1 };
+    const first = await parseCodebuddyIncremental({
+      projectFiles: [logPath, jsonlPath],
+      cursors,
+      queuePath,
+      defaultModel: "kimi-k2.7",
+    });
+    assert.equal(first.eventsAggregated, 2, "one mirrored round plus one legacy-only round");
+    let queued = await readJsonLines(queuePath);
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].total_tokens, 1650);
+
+    const second = await parseCodebuddyIncremental({
+      projectFiles: [logPath, jsonlPath],
+      cursors,
+      queuePath,
+      defaultModel: "kimi-k2.7",
+    });
+    assert.equal(second.eventsAggregated, 0);
+    queued = await readJsonLines(queuePath);
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].total_tokens, 1650);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("parseCodebuddyIncremental dedupes when the legacy log arrives before JSONL", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-codebuddy-reverse-sources-"));
+  try {
+    const jsonlPath = path.join(tmp, "session.jsonl");
+    const logPath = path.join(tmp, "extension.log");
+    const timestamp = Date.parse("2026-07-01T16:56:02.200");
+    await fs.writeFile(logPath, [
+      "[2026/7/1 16:56:01.100] [info] [CraftInvokableAgent] [agent-1] Model prepared: Kimi-K2.7-Code (kimi-k2.7)",
+      '[2026/7/1 16:56:02.200] [info] [AgentReporter] [agent-1] Agent execution successful with usage: {"inputTokens":1000,"outputTokens":100,"totalTokens":1100}',
+    ].join("\n") + "\n", "utf8");
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1 };
+    const first = await parseCodebuddyIncremental({
+      projectFiles: [logPath],
+      cursors,
+      queuePath,
+      defaultModel: "kimi-k2.7",
+    });
+    assert.equal(first.eventsAggregated, 1);
+    assert.equal((await readJsonLines(queuePath))[0].total_tokens, 1100);
+
+    await fs.writeFile(jsonlPath, JSON.stringify({
+      id: "jsonl-row",
+      timestamp,
+      sessionId: "session-1",
+      providerData: {
+        messageId: "response-1",
+        model: "kimi-k2.7",
+        rawUsage: {
+          prompt_tokens: 1000,
+          completion_tokens: 100,
+          prompt_tokens_details: { cached_tokens: 0 },
+          completion_tokens_details: { reasoning_tokens: 0 },
+        },
+      },
+    }) + "\n", "utf8");
+    const second = await parseCodebuddyIncremental({
+      projectFiles: [logPath, jsonlPath],
+      cursors,
+      queuePath,
+      defaultModel: "kimi-k2.7",
+    });
+    assert.equal(second.eventsAggregated, 0);
+    assert.equal((await readJsonLines(queuePath))[0].total_tokens, 1100);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("resolveCodebuddyProjectFiles walks ~/.codebuddy/projects/<cwd>/*.jsonl and skips others", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-codebuddy-"));
   try {
@@ -7428,6 +7534,45 @@ test("parseWorkbuddyIncremental dedupes by response id across runs and buckets b
   }
 });
 
+test("parseWorkbuddyIncremental dedupes function_call/message records by provider response id", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-workbuddy-response-id-"));
+  try {
+    const projectDir = path.join(tmp, "projects", "encoded-cwd");
+    await fs.mkdir(projectDir, { recursive: true });
+    const timestamp = Date.UTC(2026, 3, 5, 14, 0, 0);
+    const usage = {
+      prompt_tokens: 1000,
+      completion_tokens: 100,
+      total_tokens: 1100,
+      prompt_tokens_details: { cached_tokens: 0 },
+      completion_tokens_details: { reasoning_tokens: 0 },
+    };
+    const make = (id, type) => JSON.stringify({
+      id,
+      type,
+      timestamp,
+      sessionId: "same-session",
+      providerData: { model: "hy3", messageId: "response-1", rawUsage: usage },
+    });
+    const sessionFile = path.join(projectDir, "same-session.jsonl");
+    await fs.writeFile(sessionFile, `${make("function-call-row", "function_call")}\n${make("message-row", "message")}\n`);
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1 };
+    const result = await parseWorkbuddyIncremental({
+      projectFiles: [sessionFile],
+      cursors,
+      queuePath,
+      env: { WORKBUDDY_HOME: path.join(tmp, "missing-workbuddy-home"), HOME: tmp },
+    });
+    assert.equal(result.eventsAggregated, 1);
+    const queued = await readJsonLines(queuePath);
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].total_tokens, 1100);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("parseWorkbuddyIncremental emits provider.model verbatim (auto vs hy3) and falls back to 'auto'", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-workbuddy-"));
   try {
@@ -7470,7 +7615,7 @@ test("parseWorkbuddyIncremental emits provider.model verbatim (auto vs hy3) and 
   }
 });
 
-test("parseWorkbuddyIncremental SQLite fallback emits cumulative deltas, not full snapshots", async () => {
+test("parseWorkbuddyIncremental ignores SQLite context snapshots without token columns", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-workbuddy-sqlite-"));
   try {
     const dbPath = path.join(tmp, "workbuddy.db");
@@ -7492,7 +7637,7 @@ test("parseWorkbuddyIncremental SQLite fallback emits cumulative deltas, not ful
       queuePath,
       env: { WORKBUDDY_HOME: tmp, HOME: tmp },
     });
-    assert.equal(first.eventsAggregated, 1);
+    assert.equal(first.eventsAggregated, 0);
 
     sqliteCli.execFileSync("sqlite3", [
       dbPath,
@@ -7504,14 +7649,10 @@ test("parseWorkbuddyIncremental SQLite fallback emits cumulative deltas, not ful
       queuePath,
       env: { WORKBUDDY_HOME: tmp, HOME: tmp },
     });
-    assert.equal(second.eventsAggregated, 1);
+    assert.equal(second.eventsAggregated, 0);
 
     const queued = await readJsonLines(queuePath);
-    assert.equal(queued.length, 2);
-    assert.equal(queued[0].input_tokens, 100);
-    assert.equal(queued[1].input_tokens, 150);
-    assert.equal(queued[1].total_tokens, 150);
-    assert.equal(queued[1].conversation_count, 1);
+    assert.equal(queued.length, 0);
     assert.equal(cursors.workbuddy.sqliteSessions.s1.used, 150);
 
     sqliteCli.execFileSync("sqlite3", [
@@ -7525,13 +7666,13 @@ test("parseWorkbuddyIncremental SQLite fallback emits cumulative deltas, not ful
       env: { WORKBUDDY_HOME: tmp, HOME: tmp },
     });
     assert.equal(third.eventsAggregated, 0);
-    assert.equal((await readJsonLines(queuePath)).length, 2);
+    assert.equal((await readJsonLines(queuePath)).length, 0);
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });
 
-test("parseWorkbuddyIncremental uses SQLite fallback when JSONL files are empty", async () => {
+test("parseWorkbuddyIncremental does not treat an empty JSONL plus context SQLite row as usage", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-workbuddy-sqlite-empty-jsonl-"));
   try {
     const dbPath = path.join(tmp, "workbuddy.db");
@@ -7559,12 +7700,66 @@ test("parseWorkbuddyIncremental uses SQLite fallback when JSONL files are empty"
       env: { WORKBUDDY_HOME: tmp, HOME: tmp },
     });
 
-    assert.equal(result.eventsAggregated, 1);
+    assert.equal(result.eventsAggregated, 0);
     const queued = await readJsonLines(queuePath);
-    assert.equal(queued.length, 1);
-    assert.equal(queued[0].source, "workbuddy");
-    assert.equal(queued[0].input_tokens, 100);
-    assert.equal(queued[0].total_tokens, 100);
+    assert.equal(queued.length, 0);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("parseWorkbuddyIncremental uses explicit cumulative SQLite token columns when available", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-workbuddy-sqlite-detailed-columns-"));
+  try {
+    const dbPath = path.join(tmp, "workbuddy.db");
+    sqliteCli.execFileSync("sqlite3", [
+      dbPath,
+      [
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT, model TEXT);",
+        "CREATE TABLE session_usage (session_id TEXT PRIMARY KEY, used INTEGER, size INTEGER, updated_at INTEGER, input_tokens INTEGER, output_tokens INTEGER, cached_input_tokens INTEGER, cache_creation_input_tokens INTEGER, reasoning_output_tokens INTEGER);",
+        "INSERT INTO sessions VALUES ('s1','/tmp/project','hy3');",
+        "INSERT INTO session_usage VALUES ('s1',100,192000,1780000000000,80,20,10,5,5);",
+      ].join(" "),
+    ]);
+
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1 };
+    const first = await parseWorkbuddyIncremental({
+      projectFiles: [],
+      cursors,
+      queuePath,
+      env: { WORKBUDDY_HOME: tmp, HOME: tmp },
+    });
+    assert.equal(first.eventsAggregated, 1);
+    let queued = await readJsonLines(queuePath);
+    assert.equal(queued[0].input_tokens, 80);
+    assert.equal(queued[0].cached_input_tokens, 10);
+    assert.equal(queued[0].cache_creation_input_tokens, 5);
+    assert.equal(queued[0].output_tokens, 20);
+    assert.equal(queued[0].reasoning_output_tokens, 5);
+    assert.equal(queued[0].total_tokens, 120);
+
+    sqliteCli.execFileSync("sqlite3", [
+      dbPath,
+      "UPDATE session_usage SET input_tokens=100, output_tokens=25, cached_input_tokens=12, cache_creation_input_tokens=6, reasoning_output_tokens=7, updated_at=1780000010000 WHERE session_id='s1';",
+    ]);
+    const second = await parseWorkbuddyIncremental({
+      projectFiles: [],
+      cursors,
+      queuePath,
+      env: { WORKBUDDY_HOME: tmp, HOME: tmp },
+    });
+    assert.equal(second.eventsAggregated, 1);
+    queued = await readJsonLines(queuePath);
+    assert.equal(queued.length, 2);
+    // Queue rows are cumulative bucket snapshots; the second row reflects the
+    // bucket after applying the 20/2/1/5/2 delta.
+    assert.equal(queued[1].input_tokens, 100);
+    assert.equal(queued[1].cached_input_tokens, 12);
+    assert.equal(queued[1].cache_creation_input_tokens, 6);
+    assert.equal(queued[1].output_tokens, 25);
+    assert.equal(queued[1].reasoning_output_tokens, 7);
+    assert.equal(queued[1].total_tokens, 150);
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
@@ -7622,6 +7817,63 @@ test("parseWorkbuddyIncremental keeps detailed JSONL authoritative over SQLite f
     assert.equal(queued[0].total_tokens, 120);
     assert.equal(cursors.workbuddy.detailedSessions["wb-sess"], true);
     assert.equal(cursors.workbuddy.sqliteSessions?.["wb-sess"], undefined);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("parseWorkbuddyIncremental lets detailed JSONL replace a prior context-only SQLite cursor", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-workbuddy-sqlite-cursor-upgrade-"));
+  try {
+    const dbPath = path.join(tmp, "workbuddy.db");
+    sqliteCli.execFileSync("sqlite3", [
+      dbPath,
+      [
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT, model TEXT);",
+        "CREATE TABLE session_usage (session_id TEXT PRIMARY KEY, used INTEGER, size INTEGER, updated_at INTEGER, credit_json TEXT);",
+        "INSERT INTO sessions VALUES ('wb-sess','/tmp/project','auto');",
+        "INSERT INTO session_usage VALUES ('wb-sess',100,192000,1780000000000,'{}');",
+      ].join(" "),
+    ]);
+    const projectDir = path.join(tmp, "projects", "encoded-cwd");
+    await fs.mkdir(projectDir, { recursive: true });
+    const sessionFile = path.join(projectDir, "wb-sess.jsonl");
+    await fs.writeFile(sessionFile, JSON.stringify({
+      id: "response-1",
+      type: "function_call",
+      timestamp: Date.UTC(2026, 3, 5, 14, 0, 0),
+      sessionId: "wb-sess",
+      providerData: {
+        messageId: "response-1",
+        model: "hy3",
+        rawUsage: {
+          prompt_tokens: 1000,
+          completion_tokens: 100,
+          prompt_tokens_details: { cached_tokens: 0 },
+          completion_tokens_details: { reasoning_tokens: 0 },
+        },
+      },
+    }) + "\n");
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = {
+      version: 1,
+      workbuddy: {
+        sqliteSessions: {
+          "wb-sess": { used: 100, updatedAt: 1780000000000, model: "auto", detailed: false },
+        },
+      },
+    };
+    const result = await parseWorkbuddyIncremental({
+      projectFiles: [sessionFile],
+      cursors,
+      queuePath,
+      env: { WORKBUDDY_HOME: tmp, HOME: tmp },
+    });
+    assert.equal(result.eventsAggregated, 1);
+    const queued = await readJsonLines(queuePath);
+    assert.equal(queued.length, 1);
+    assert.equal(queued[0].model, "hy3");
+    assert.equal(queued[0].total_tokens, 1100);
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
