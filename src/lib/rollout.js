@@ -15968,4 +15968,167 @@ module.exports = {
   parseAntigravityIncremental,
   estimateAntigravityTokens,
   isCjkCodePoint,
+
+  // Trae SOLO (ByteDance AI IDE)
+  resolveTraePath,
+  resolveTraeStoragePath,
+  parseTraeIncremental,
 };
+
+// ── Trae SOLO (ByteDance AI IDE) ─────────────────────────────────────────────
+// https://www.trae.ai
+function resolveTraePath(env = process.env) {
+  const override = env.TOKENTRACKER_TRAE_HOME;
+  if (typeof override === "string" && override.trim().length > 0) {
+    return override.trim();
+  }
+  const home = require("node:os").homedir();
+  if (process.platform === "darwin") {
+    return path.join(home, "Library", "Application Support", "TRAE SOLO");
+  }
+  if (process.platform === "win32") {
+    const appData = typeof env.APPDATA === "string" ? env.APPDATA.trim() : "";
+    if (appData) return path.join(appData, "TRAE SOLO");
+  }
+  return path.join(home, ".trae-solo");
+}
+
+function resolveTraeStoragePath(env = process.env) {
+  const traHome = resolveTraePath(env);
+  if (!traHome) return null;
+  const p = path.join(traHome, "User", "globalStorage", "storage.json");
+  return fssync.existsSync(p) ? p : null;
+}
+
+/**
+ * Parse Trae SOLO entitlement data from storage.json.
+ * Trae stores plan & usage limits in iCubeServerData://icube.cloudide.
+ * Unlike session-based providers, Trae reports plan/limits rather than
+ * per-session token counts — we emit a synthetic hourly bucket with
+ * the entitlement snapshot so the dashboard can display Trae plan info.
+ */
+async function parseTraeIncremental({ traHome, storagePath, cursors, queuePath, onProgress } = {}) {
+  await ensureDir(path.dirname(queuePath));
+
+  // Prefer an explicit storagePath; otherwise fall back to the platform
+  // resolver, honoring the supplied traHome override so callers that pass a
+  // custom Trae home don't get re-resolved against process.env.
+  const targetPath =
+    storagePath ??
+    resolveTraeStoragePath(
+      traHome
+        ? { ...process.env, TOKENTRACKER_TRAE_HOME: traHome }
+        : process.env,
+    );
+  if (!targetPath) {
+    return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+  }
+
+  // Follow the parsePiIncremental cursor pattern: derive a mutable cursor
+  // state and assign it back to cursors.trae before every return so cursor
+  // advances survive even when cursors.trae did not exist yet.
+  const cursorState = cursors.trae && typeof cursors.trae === "object" ? cursors.trae : {};
+  const lastMtime = cursorState.lastMtime || 0;
+
+  // Synchronous open+read via a stable file descriptor: openSync atomically
+  // resolves the path, so fstat/read on the same fd cannot race a concurrent
+  // replace/delete the way a separate stat+readFile sequence can. Mirrors the
+  // fd-based sniff used by codebuddyJsonlHasUsage.
+  let fd;
+  try {
+    fd = fssync.openSync(targetPath, "r");
+  } catch {
+    return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+  }
+  let stat = null;
+  let raw;
+  try {
+    stat = fssync.fstatSync(fd);
+    if (stat.mtimeMs <= lastMtime) {
+      return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+    }
+    raw = fssync.readFileSync(fd, "utf8");
+  } finally {
+    try {
+      fssync.closeSync(fd);
+    } catch {
+      // fd already closed; nothing to do.
+    }
+  }
+  let storage;
+  try {
+    storage = JSON.parse(raw);
+  } catch {
+    // Unparseable JSON: keep the old cursor so a repaired storage.json is
+    // retried on the next sync rather than skipped forever.
+    return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+  }
+
+  const serverKey = "iCubeServerData://icube.cloudide";
+  const serverData = storage[serverKey];
+  if (!serverData) {
+    cursorState.lastMtime = stat.mtimeMs;
+    cursorState.updatedAt = new Date().toISOString();
+    cursors.trae = cursorState;
+    return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+  }
+
+  let ent;
+  try {
+    ent = typeof serverData === "string" ? JSON.parse(serverData) : serverData;
+  } catch {
+    return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+  }
+
+  const entitlementInfo = ent.entitlementInfo;
+  if (!entitlementInfo || typeof entitlementInfo !== "object") {
+    // No valid entitlement snapshot: advance the cursor so a storage.json
+    // that never carries entitlement data is not re-read on every sync,
+    // and report zero processing counts like the missing-serverData path.
+    // Avoids synthesizing trae-unknown entries from an empty entitlement.
+    cursorState.lastMtime = stat.mtimeMs;
+    cursorState.updatedAt = new Date().toISOString();
+    cursors.trae = cursorState;
+    return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+  }
+
+  const detail = entitlementInfo.detail || {};
+  const hourStart = new Date(
+    new Date().toISOString().slice(0, 13) + ":00:00.000Z"
+  ).toISOString();
+
+  const model = "trae-" + (entitlementInfo.identityStr || "unknown").toLowerCase();
+
+  const queueLine = JSON.stringify({
+    source: "trae",
+    model,
+    hour_start: hourStart,
+    input_tokens: 0,
+    cached_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+    output_tokens: 0,
+    reasoning_output_tokens: 0,
+    total_tokens: 0,
+    billable_total_tokens: 0,
+    conversation_count: 0,
+    trae_entitlement: {
+      identity: entitlementInfo.identityStr,
+      identity_code: entitlementInfo.identity,
+      has_package: entitlementInfo.hasPackage,
+      is_dollar_billing: entitlementInfo.isDollarUsageBilling,
+      pro_period: entitlementInfo.proPeriod,
+      enable_solo_builder: entitlementInfo.enableSoloBuilder,
+      enable_solo_coder: entitlementInfo.enableSoloCoder,
+      fast_request_per: detail.fastRequestPer,
+      in_waitlist: detail.inWaitlist,
+    },
+  });
+
+  await fs.appendFile(queuePath, queueLine + "\n");
+
+  cursorState.lastMtime = stat.mtimeMs;
+  cursorState.updatedAt = new Date().toISOString();
+  cursors.trae = cursorState;
+
+  return { recordsProcessed: 1, eventsAggregated: 1, bucketsQueued: 1 };
+}

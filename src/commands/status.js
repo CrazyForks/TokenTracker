@@ -71,6 +71,7 @@ const {
   resolveGooseDbPath,
   listDroidSettingsFiles,
   resolveDroidSessionsDir,
+  resolveTraeStoragePath,
   resolveGrokBuildSessions,
   resolveHermesPath,
   resolveHermesDbPath,
@@ -547,6 +548,10 @@ async function cmdStatus(argv = []) {
   const droidSettingsFiles = listDroidSettingsFiles(process.env);
   const droidInstalled = droidSettingsFiles.length > 0;
 
+  // Trae SOLO (ByteDance AI IDE) — passive entitlement snapshot reader.
+  const traeStoragePath = resolveTraeStoragePath(process.env);
+  const traeInstalled = Boolean(traeStoragePath);
+
   // Grok Build (xAI TUI)
   const grokHookState = await probeGrokHookState({ home, trackerDir, env: process.env });
   const grokSessions = grokHookState.hasGrokInstall || grokHookState.sessionsDir
@@ -818,6 +823,9 @@ async function cmdStatus(argv = []) {
         droid: droidInstalled
           ? { installed: true, files: droidSettingsFiles.length, detail: droidSessionsDir }
           : { installed: false },
+        trae: traeInstalled
+          ? { installed: true, detail: traeStoragePath }
+          : { installed: false },
         grok_build: grokInstalled
           ? {
               installed: true,
@@ -965,6 +973,9 @@ async function cmdStatus(argv = []) {
         : null,
       droidInstalled
         ? `- Droid (Factory): passive reader (${droidSettingsFiles.length} session${droidSettingsFiles.length !== 1 ? "s" : ""} in ${droidSessionsDir}, cumulative-delta)`
+        : null,
+      traeInstalled
+        ? `- Trae SOLO: passive reader (entitlement snapshot from ${traeStoragePath})`
         : null,
       ...(() => {
         if (!hermesInstalled) return [];
