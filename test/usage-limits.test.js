@@ -19,6 +19,8 @@ const {
   resetUsageLimitsCache,
   normalizeAntigravityResponse,
   parseListeningPorts,
+  parseWindowsListeningPorts,
+  listAntigravityPorts,
   detectAntigravityProcess,
   fetchAntigravityLimits,
   fetchCopilotLimits,
@@ -2925,6 +2927,49 @@ lang      123 me    23u  IPv4 0x124                0t0  TCP 127.0.0.1:51235 (LIS
 `;
 
     assert.deepEqual(parseListeningPorts(output), [51234, 51235]);
+  });
+
+  it("parses Windows listening ports from PowerShell JSON", () => {
+    assert.deepEqual(parseWindowsListeningPorts("[51235,51234,51235]"), [51234, 51235]);
+    assert.deepEqual(parseWindowsListeningPorts("51234"), [51234]);
+    assert.deepEqual(parseWindowsListeningPorts("not-json"), []);
+  });
+
+  it("discovers native Windows listening ports for the Antigravity PID", async () => {
+    const calls = [];
+    const commandRunner = (command, args) => {
+      calls.push({ command, args });
+      return { stdout: "[51235,51234]", status: 0 };
+    };
+
+    const ports = await listAntigravityPorts(654, { commandRunner, platform: "win32" });
+
+    assert.equal(calls[0].command, "powershell.exe");
+    assert.match(calls[0].args.at(-1), /Get-NetTCPConnection -State Listen -OwningProcess 654/);
+    assert.deepEqual(ports, [51234, 51235]);
+  });
+
+  it("detects Antigravity from native Windows process enumeration", async () => {
+    const calls = [];
+    const commandRunner = (command, args) => {
+      calls.push({ command, args });
+      return {
+        stdout: JSON.stringify([
+          { ProcessId: 321, CommandLine: "C:\\Program Files\\Windsurf\\language_server_windows_x64.exe --app_data_dir windsurf" },
+          { ProcessId: 654, CommandLine: '"C:\\Program Files\\Antigravity\\language_server_windows_x64.exe" --app_data_dir antigravity --csrf_token win-token --extension_server_port 42427' },
+        ]),
+        status: 0,
+      };
+    };
+
+    const result = await detectAntigravityProcess({ commandRunner, platform: "win32" });
+
+    assert.equal(calls[0].command, "powershell.exe");
+    assert.deepEqual(calls[0].args.slice(0, 3), ["-NoProfile", "-NonInteractive", "-Command"]);
+    assert.equal(result.configured, true);
+    assert.equal(result.pid, 654);
+    assert.equal(result.csrfToken, "win-token");
+    assert.equal(result.extensionPort, 42427);
   });
 
   it("detects antigravity process info from ps output", async () => {

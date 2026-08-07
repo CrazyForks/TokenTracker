@@ -2153,16 +2153,48 @@ function extractCommandFlag(command, flag) {
   return match?.[1] || null;
 }
 
-async function detectAntigravityProcess({ commandRunner } = {}) {
-  const result = await runCommand(commandRunner, "/bin/ps", ["-ax", "-o", "pid=,command="], {
-    timeout: 4000,
-  });
-  const lines = String(result?.stdout || "").split("\n");
+function parseWindowsProcesses(output) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(output || "").trim());
+  } catch (_error) {
+    return [];
+  }
+  return (Array.isArray(parsed) ? parsed : [parsed])
+    .map((entry) => ({
+      pid: Number(entry?.ProcessId),
+      command: typeof entry?.CommandLine === "string" ? entry.CommandLine : "",
+    }))
+    .filter((entry) => Number.isFinite(entry.pid) && entry.command);
+}
+
+async function detectAntigravityProcess({ commandRunner, platform = process.platform } = {}) {
+  let processes;
+  if (platform === "win32") {
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      "$processes = Get-CimInstance Win32_Process | Select-Object ProcessId, CommandLine",
+      "ConvertTo-Json -Compress -InputObject @($processes)",
+    ].join("; ");
+    const result = await runCommand(
+      commandRunner,
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { timeout: 4000 },
+    );
+    processes = parseWindowsProcesses(result?.stdout);
+  } else {
+    const result = await runCommand(commandRunner, "/bin/ps", ["-ax", "-o", "pid=,command="], {
+      timeout: 4000,
+    });
+    processes = String(result?.stdout || "")
+      .split("\n")
+      .map(parseProcessLine)
+      .filter(Boolean);
+  }
 
   let sawProcess = false;
-  for (const line of lines) {
-    const parsed = parseProcessLine(line);
-    if (!parsed) continue;
+  for (const parsed of processes) {
     if (!isAntigravityCommandLine(parsed.command)) continue;
     sawProcess = true;
     const csrfToken = extractCommandFlag(parsed.command, "--csrf_token") || null;
@@ -2521,7 +2553,38 @@ function parseListeningPorts(output) {
   return Array.from(ports).sort((a, b) => a - b);
 }
 
-async function listAntigravityPorts(pid, { commandRunner } = {}) {
+function parseWindowsListeningPorts(output) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(output || "").trim());
+  } catch (_error) {
+    return [];
+  }
+  const ports = (Array.isArray(parsed) ? parsed : [parsed])
+    .map(Number)
+    .filter((port) => Number.isInteger(port) && port > 0 && port <= 65535);
+  return Array.from(new Set(ports)).sort((a, b) => a - b);
+}
+
+async function listAntigravityPorts(pid, { commandRunner, platform = process.platform } = {}) {
+  if (platform === "win32") {
+    const script = [
+      `$ports = Get-NetTCPConnection -State Listen -OwningProcess ${Number(pid)} -ErrorAction Stop`,
+      "$ports = $ports | Select-Object -ExpandProperty LocalPort | Sort-Object -Unique",
+      "ConvertTo-Json -Compress -InputObject @($ports)",
+    ].join("; ");
+    const result = await runCommand(
+      commandRunner,
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { timeout: 4000 },
+    );
+    const ports = parseWindowsListeningPorts(result?.stdout);
+    if (!ports.length) {
+      throw new Error("Antigravity is running but not exposing ports yet. Try again in a few seconds.");
+    }
+    return ports;
+  }
   const lsof = await resolveLsofBinary({ commandRunner });
   if (!lsof) {
     throw new Error("Antigravity port detection needs lsof. Install it, then retry.");
@@ -2827,7 +2890,7 @@ function hasAntigravityInstallEvidence({ home } = {}) {
     });
 }
 
-async function fetchAntigravityLimits({ home, commandRunner, requestFn, fetchImpl = fetch, timeoutMs = 8000, nowMs = Date.now() } = {}) {
+async function fetchAntigravityLimits({ home, commandRunner, requestFn, fetchImpl = fetch, timeoutMs = 8000, nowMs = Date.now(), platform = process.platform } = {}) {
   const finalize = (payload, normalizeOptions) => {
     const result = {
       configured: true,
@@ -2849,7 +2912,7 @@ async function fetchAntigravityLimits({ home, commandRunner, requestFn, fetchImp
   };
 
   try {
-    const processInfo = await detectAntigravityProcess({ commandRunner });
+    const processInfo = await detectAntigravityProcess({ commandRunner, platform });
     if (!processInfo.configured) {
       const cached = readAntigravityLimitsCache({ home, nowMs });
       if (cached) return cached;
@@ -2863,7 +2926,7 @@ async function fetchAntigravityLimits({ home, commandRunner, requestFn, fetchImp
     if (processInfo.error) {
       return { configured: true, error: processInfo.error };
     }
-    const ports = await listAntigravityPorts(processInfo.pid, { commandRunner });
+    const ports = await listAntigravityPorts(processInfo.pid, { commandRunner, platform });
     let workingPort = null;
     let workingScheme = "https";
     for (const port of ports) {
@@ -3353,6 +3416,8 @@ module.exports = {
   fetchKiroLimits,
   normalizeAntigravityResponse,
   parseListeningPorts,
+  parseWindowsListeningPorts,
+  listAntigravityPorts,
   detectAntigravityProcess,
   fetchAntigravityLimits,
   fetchCopilotLimits,
