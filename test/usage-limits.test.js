@@ -2930,27 +2930,35 @@ lang      123 me    23u  IPv4 0x124                0t0  TCP 127.0.0.1:51235 (LIS
     assert.deepEqual(parseListeningPorts(output), [51234, 51235]);
   });
 
-  it("parses Windows listening ports from PowerShell JSON", () => {
-    assert.deepEqual(parseWindowsListeningPorts("[51235,51234,51235]"), [51234, 51235]);
-    assert.deepEqual(parseWindowsListeningPorts("51234"), [51234]);
-    assert.deepEqual(parseWindowsListeningPorts("not-json"), []);
+  it("parses localized Windows netstat listeners for only the requested PID", () => {
+    const output = `
+  Proto  Local Address          Foreign Address        State           PID
+  TCP    127.0.0.1:51234        0.0.0.0:0              LISTENING       654
+  TCP    [::1]:51235            [::]:0                 侦听            654
+  TCP    127.0.0.1:59999        0.0.0.0:0              LISTENING       777
+  TCP    127.0.0.1:51236        127.0.0.1:61000        ESTABLISHED     654
+`;
+    assert.deepEqual(parseWindowsListeningPorts(output, 654), [51234, 51235]);
   });
 
   it("discovers native Windows listening ports for the Antigravity PID", async () => {
     const calls = [];
     const commandRunner = (command, args) => {
       calls.push({ command, args });
-      return { stdout: "[51235,51234]", status: 0 };
+      return {
+        stdout: "TCP  127.0.0.1:51235  0.0.0.0:0  LISTENING  654\nTCP  [::1]:51234  [::]:0  LISTENING  654",
+        status: 0,
+      };
     };
 
     const ports = await listAntigravityPorts(654, { commandRunner, platform: "win32" });
 
-    assert.equal(calls[0].command, "powershell.exe");
-    assert.match(calls[0].args.at(-1), /Get-NetTCPConnection -State Listen -OwningProcess 654/);
+    assert.equal(calls[0].command, "netstat.exe");
+    assert.deepEqual(calls[0].args, ["-ano", "-p", "tcp"]);
     assert.deepEqual(ports, [51234, 51235]);
   });
 
-  it("native Windows Get-NetTCPConnection finds a live Node listener", { skip: process.platform !== "win32" }, async () => {
+  it("native Windows port discovery finds a live Node listener", { skip: process.platform !== "win32" }, async () => {
     const server = net.createServer();
     await new Promise((resolve, reject) => {
       server.once("error", reject);

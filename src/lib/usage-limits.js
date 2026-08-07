@@ -2553,33 +2553,35 @@ function parseListeningPorts(output) {
   return Array.from(ports).sort((a, b) => a - b);
 }
 
-function parseWindowsListeningPorts(output) {
-  let parsed;
-  try {
-    parsed = JSON.parse(String(output || "").trim());
-  } catch (_error) {
-    return [];
+function windowsEndpointPort(endpoint) {
+  const match = String(endpoint || "").match(/:(\d+)$/);
+  return match ? Number(match[1]) : null;
+}
+
+function parseWindowsListeningPorts(output, pid) {
+  const ports = new Set();
+  for (const line of String(output || "").split("\n")) {
+    const fields = line.trim().split(/\s+/);
+    if (fields.length < 5 || fields[0]?.toUpperCase() !== "TCP") continue;
+    if (Number(fields.at(-1)) !== Number(pid)) continue;
+    // netstat localizes its state label. A TCP listener's foreign endpoint is
+    // always the wildcard address with port 0, which stays language-neutral.
+    if (windowsEndpointPort(fields[2]) !== 0) continue;
+    const port = windowsEndpointPort(fields[1]);
+    if (Number.isInteger(port) && port > 0 && port <= 65535) ports.add(port);
   }
-  const ports = (Array.isArray(parsed) ? parsed : [parsed])
-    .map(Number)
-    .filter((port) => Number.isInteger(port) && port > 0 && port <= 65535);
-  return Array.from(new Set(ports)).sort((a, b) => a - b);
+  return Array.from(ports).sort((a, b) => a - b);
 }
 
 async function listAntigravityPorts(pid, { commandRunner, platform = process.platform } = {}) {
   if (platform === "win32") {
-    const script = [
-      `$ports = Get-NetTCPConnection -State Listen -OwningProcess ${Number(pid)} -ErrorAction Stop`,
-      "$ports = $ports | Select-Object -ExpandProperty LocalPort | Sort-Object -Unique",
-      "ConvertTo-Json -Compress -InputObject @($ports)",
-    ].join("; ");
     const result = await runCommand(
       commandRunner,
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", script],
+      "netstat.exe",
+      ["-ano", "-p", "tcp"],
       { timeout: 4000 },
     );
-    const ports = parseWindowsListeningPorts(result?.stdout);
+    const ports = parseWindowsListeningPorts(result?.stdout, pid);
     if (!ports.length) {
       throw new Error("Antigravity is running but not exposing ports yet. Try again in a few seconds.");
     }
