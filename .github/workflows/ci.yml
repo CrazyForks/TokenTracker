@@ -120,7 +120,7 @@ jobs:
         run: |
           npm ci
           node --test test/openclaw-parser.test.js
-          node --test --test-name-pattern=Antigravity test/usage-limits.test.js
+          node --test --test-name-pattern="native Windows" test/usage-limits.test.js
 
       - name: Test Windows updater
         run: dotnet test TokenTrackerWin.Tests/TokenTrackerWin.Tests.csproj --configuration Release

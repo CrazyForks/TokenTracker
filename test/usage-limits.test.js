@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const { describe, it } = require("node:test");
 const fs = require("node:fs");
+const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 
@@ -2947,6 +2948,21 @@ lang      123 me    23u  IPv4 0x124                0t0  TCP 127.0.0.1:51235 (LIS
     assert.equal(calls[0].command, "powershell.exe");
     assert.match(calls[0].args.at(-1), /Get-NetTCPConnection -State Listen -OwningProcess 654/);
     assert.deepEqual(ports, [51234, 51235]);
+  });
+
+  it("native Windows Get-NetTCPConnection finds a live Node listener", { skip: process.platform !== "win32" }, async () => {
+    const server = net.createServer();
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    try {
+      const expectedPort = server.address().port;
+      const ports = await listAntigravityPorts(process.pid, { platform: "win32" });
+      assert.ok(ports.includes(expectedPort), `expected ${expectedPort} in ${ports.join(", ")}`);
+    } finally {
+      await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
   });
 
   it("detects Antigravity from native Windows process enumeration", async () => {
