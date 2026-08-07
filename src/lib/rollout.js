@@ -15972,6 +15972,7 @@ module.exports = {
   // Trae SOLO (ByteDance AI IDE)
   resolveTraePath,
   resolveTraeStoragePath,
+  readTraeEntitlementFromStorage,
   parseTraeIncremental,
 };
 
@@ -15998,6 +15999,88 @@ function resolveTraeStoragePath(env = process.env) {
   if (!traHome) return null;
   const p = path.join(traHome, "User", "globalStorage", "storage.json");
   return fssync.existsSync(p) ? p : null;
+}
+
+/**
+ * Extract the Trae SOLO entitlement snapshot from parsed storage.json
+ * serverData (the value under iCubeServerData://icube.cloudide).
+ * Returns a normalized entitlement object, or null when the serverData
+ * carries no valid entitlementInfo. Shared by parseTraeIncremental (write
+ * path) and readTraeEntitlementFromStorage (status read path).
+ */
+function normalizeTraeEntitlement(serverData) {
+  let ent;
+  try {
+    ent = typeof serverData === "string" ? JSON.parse(serverData) : serverData;
+  } catch {
+    return null;
+  }
+  // The parsed serverData may legitimately be JSON `null` (e.g. the string
+  // "null") or another non-object — treat it as no valid snapshot.
+  if (!ent || typeof ent !== "object" || Array.isArray(ent)) return null;
+  const entitlementInfo = ent.entitlementInfo;
+  if (!entitlementInfo || typeof entitlementInfo !== "object") return null;
+  const detail = entitlementInfo.detail || {};
+  return {
+    identity: entitlementInfo.identityStr,
+    identity_code: entitlementInfo.identity,
+    has_package: entitlementInfo.hasPackage,
+    is_dollar_billing: entitlementInfo.isDollarUsageBilling,
+    pro_period: entitlementInfo.proPeriod,
+    enable_solo_builder: entitlementInfo.enableSoloBuilder,
+    enable_solo_coder: entitlementInfo.enableSoloCoder,
+    fast_request_per: detail.fastRequestPer,
+    in_waitlist: detail.inWaitlist,
+  };
+}
+
+/**
+ * Read the current Trae SOLO entitlement snapshot straight from the Trae
+ * Local State storage.json, without touching the token-count-only queue
+ * (CLAUDE.md privacy contract). Returns a normalized entitlement object
+ * with a captured_at timestamp, or null when storage.json is missing,
+ * unparseable, or carries no valid entitlement snapshot.
+ */
+function readTraeEntitlementFromStorage(storagePath) {
+  if (!storagePath) return null;
+  let fd;
+  try {
+    fd = fssync.openSync(storagePath, "r");
+  } catch {
+    return null;
+  }
+  let stat = null;
+  let raw;
+  try {
+    stat = fssync.fstatSync(fd);
+    raw = fssync.readFileSync(fd, "utf8");
+  } catch {
+    return null;
+  } finally {
+    try {
+      fssync.closeSync(fd);
+    } catch {
+      // fd already closed; nothing to do.
+    }
+  }
+  let storage;
+  try {
+    storage = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!storage || typeof storage !== "object" || Array.isArray(storage)) {
+    return null;
+  }
+  const serverKey = "iCubeServerData://icube.cloudide";
+  const serverData = storage[serverKey];
+  if (!serverData) return null;
+  const entitlement = normalizeTraeEntitlement(serverData);
+  if (!entitlement) return null;
+  return {
+    ...entitlement,
+    captured_at: stat ? new Date(stat.mtimeMs).toISOString() : null,
+  };
 }
 
 /**
@@ -16099,25 +16182,28 @@ async function parseTraeIncremental({ traHome, storagePath, cursors, queuePath, 
     return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
   }
 
-  const entitlementInfo = ent.entitlementInfo;
-  if (!entitlementInfo || typeof entitlementInfo !== "object") {
-    // No valid entitlement snapshot: advance the cursor so a storage.json
-    // that never carries entitlement data is not re-read on every sync,
-    // and report zero processing counts like the missing-serverData path.
-    // Avoids synthesizing trae-unknown entries from an empty entitlement.
+  // No valid entitlement snapshot: advance the cursor so a storage.json
+  // that never carries entitlement data is not re-read on every sync,
+  // and report zero processing counts like the missing-serverData path.
+  // Avoids synthesizing trae-unknown entries from an empty entitlement.
+  const entitlement = normalizeTraeEntitlement(ent);
+  if (!entitlement) {
     cursorState.lastMtime = stat.mtimeMs;
     cursorState.updatedAt = new Date().toISOString();
     cursors.trae = cursorState;
     return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
   }
 
-  const detail = entitlementInfo.detail || {};
   // Repo UTC half-hour contract: bucket starts land on :00 or :30 UTC
   // (same as every other provider), never a forced :00 hour.
   const hourStart = toUtcHalfHourStart(new Date());
 
-  const model = "trae-" + (entitlementInfo.identityStr || "unknown").toLowerCase();
+  const model = "trae-" + (entitlement.identity || "unknown").toLowerCase();
 
+  // Queue rows stay token-count-only per the repo contract (CLAUDE.md):
+  // never persist plan/billing/limits metadata into queue.jsonl. The
+  // entitlement snapshot is served from Trae Local State on demand by
+  // readTraeEntitlementFromStorage.
   const queueLine = JSON.stringify({
     source: "trae",
     model,
@@ -16130,17 +16216,6 @@ async function parseTraeIncremental({ traHome, storagePath, cursors, queuePath, 
     total_tokens: 0,
     billable_total_tokens: 0,
     conversation_count: 0,
-    trae_entitlement: {
-      identity: entitlementInfo.identityStr,
-      identity_code: entitlementInfo.identity,
-      has_package: entitlementInfo.hasPackage,
-      is_dollar_billing: entitlementInfo.isDollarUsageBilling,
-      pro_period: entitlementInfo.proPeriod,
-      enable_solo_builder: entitlementInfo.enableSoloBuilder,
-      enable_solo_coder: entitlementInfo.enableSoloCoder,
-      fast_request_per: detail.fastRequestPer,
-      in_waitlist: detail.inWaitlist,
-    },
   });
 
   await fs.appendFile(queuePath, queueLine + "\n");

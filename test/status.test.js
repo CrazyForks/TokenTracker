@@ -376,7 +376,7 @@ test("status does not migrate legacy tracker directory", async () => {
   }
 });
 
-test("status renders the Trae SOLO entitlement snapshot from the queue", async () => {
+test("status renders the Trae SOLO entitlement snapshot from Local State", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-status-trae-"));
   const prevHome = process.env.HOME;
   const prevUserProfile = process.env.USERPROFILE;
@@ -419,28 +419,8 @@ test("status renders the Trae SOLO entitlement snapshot from the queue", async (
       JSON.stringify({ baseUrl: "https://config.example", deviceToken: "t" }) + "\n",
       "utf8",
     );
-    // One source=trae queue row carrying the entitlement snapshot.
-    await fs.writeFile(
-      path.join(trackerDir, "queue.jsonl"),
-      JSON.stringify({
-        source: "trae",
-        model: "trae-pro",
-        hour_start: "2026-08-07T01:30:00.000Z",
-        total_tokens: 0,
-        trae_entitlement: {
-          identity: "Pro",
-          identity_code: 3,
-          has_package: true,
-          is_dollar_billing: false,
-          pro_period: "year",
-          enable_solo_builder: true,
-          enable_solo_coder: false,
-          fast_request_per: 20,
-          in_waitlist: false,
-        },
-      }) + "\n",
-      "utf8",
-    );
+    // No source=trae queue row is needed: the entitlement render path reads
+    // the Trae Local State storage.json directly (queue is token-count-only).
     await fs.writeFile(
       path.join(trackerDir, "queue.state.json"),
       JSON.stringify({ offset: 0 }) + "\n",
@@ -468,7 +448,8 @@ test("status renders the Trae SOLO entitlement snapshot from the queue", async (
     assert.equal(summary.providers.trae.entitlement.pro_period, "year");
     assert.equal(summary.providers.trae.entitlement.enable_solo_builder, true);
     assert.equal(summary.providers.trae.entitlement.fast_request_per, 20);
-    assert.equal(summary.providers.trae.entitlement.captured_at, "2026-08-07T01:30:00.000Z");
+    // captured_at is the storage.json mtime, not a queue hour_start.
+    assert.match(summary.providers.trae.entitlement.captured_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
 
     // Text render: the plan line must describe the snapshot.
     out = "";
@@ -476,7 +457,7 @@ test("status renders the Trae SOLO entitlement snapshot from the queue", async (
     assert.match(out, /- Trae SOLO: passive reader \(entitlement snapshot from /);
     assert.match(out, /- Trae SOLO plan: plan Pro, year period, package billing/);
     assert.match(out, /20 fast requests\/hr/);
-    assert.match(out, /snapshot 2026-08-07T01:30:00\.000Z/);
+    assert.match(out, /snapshot \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
   } finally {
     process.stdout.write = prevWrite;
     if (prevHome === undefined) delete process.env.HOME;

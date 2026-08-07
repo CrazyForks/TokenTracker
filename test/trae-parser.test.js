@@ -9,7 +9,10 @@
  *   - missing iCubeServerData / entitlementInfo advance the cursor without
  *     synthesizing trae-unknown queue entries
  *   - a full entitlement snapshot emits exactly one zero-token hourly queue
- *     entry carrying plan/limits metadata
+ *     entry (token-count-only per the queue contract — plan/limits metadata
+ *     is served from Trae Local State, never persisted into queue.jsonl)
+ *   - readTraeEntitlementFromStorage reads the normalized entitlement
+ *     snapshot straight from storage.json for the status render path
  *   - cursor mutations are persisted back onto cursors.trae (fresh cursor
  *     included), following the parsePiIncremental pattern
  *   - the supplied traHome override wins over process.env for fallback
@@ -26,6 +29,7 @@ const os = require("node:os");
 const {
   resolveTraePath,
   resolveTraeStoragePath,
+  readTraeEntitlementFromStorage,
   parseTraeIncremental,
   toUtcHalfHourStart,
 } = require("../src/lib/rollout");
@@ -222,7 +226,7 @@ test("parseTraeIncremental invokes onProgress on the successful path", async () 
   assert.equal(progressCalls[0].bucketsQueued, 1);
 });
 
-test("parseTraeIncremental emits one entitlement snapshot queue entry", async () => {
+test("parseTraeIncremental emits one token-count-only queue entry", async () => {
   const traeHome = makeTraeHome();
   const queuePath = path.join(traeHome, "queue.ndjson");
   const storagePath = writeStorage(traeHome, { entitlementInfo: sampleEntitlement() });
@@ -239,32 +243,52 @@ test("parseTraeIncremental emits one entitlement snapshot queue entry", async ()
   assert.equal(row.billable_total_tokens, 0);
   assert.equal(row.conversation_count, 0);
   assert.match(row.hour_start, /^\d{4}-\d{2}-\d{2}T\d{2}:(00|30):00\.000Z$/);
-  assert.deepEqual(
-    {
-      identity: row.trae_entitlement.identity,
-      identity_code: row.trae_entitlement.identity_code,
-      has_package: row.trae_entitlement.has_package,
-      is_dollar_billing: row.trae_entitlement.is_dollar_billing,
-      pro_period: row.trae_entitlement.pro_period,
-      enable_solo_builder: row.trae_entitlement.enable_solo_builder,
-      enable_solo_coder: row.trae_entitlement.enable_solo_coder,
-      fast_request_per: row.trae_entitlement.fast_request_per,
-      in_waitlist: row.trae_entitlement.in_waitlist,
-    },
-    {
-      identity: "Pro",
-      identity_code: 3,
-      has_package: true,
-      is_dollar_billing: false,
-      pro_period: "year",
-      enable_solo_builder: true,
-      enable_solo_coder: false,
-      fast_request_per: 20,
-      in_waitlist: false,
-    },
-  );
+  // Queue rows are token-count-only (CLAUDE.md privacy rule): plan/limits
+  // metadata must NOT be persisted into queue.jsonl.
+  assert.equal("trae_entitlement" in row, false);
   assert.ok(cursors.trae.lastMtime > 0, "cursor should advance");
   assert.ok(cursors.trae.updatedAt, "cursor updatedAt should be set");
+});
+
+test("readTraeEntitlementFromStorage returns a normalized snapshot from Local State", () => {
+  const traeHome = makeTraeHome();
+  const storagePath = writeStorage(traeHome, { entitlementInfo: sampleEntitlement() });
+  const ent = readTraeEntitlementFromStorage(storagePath);
+  assert.deepEqual(ent, {
+    identity: "Pro",
+    identity_code: 3,
+    has_package: true,
+    is_dollar_billing: false,
+    pro_period: "year",
+    enable_solo_builder: true,
+    enable_solo_coder: false,
+    fast_request_per: 20,
+    in_waitlist: false,
+    captured_at: ent.captured_at,
+  });
+  assert.match(ent.captured_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+});
+
+test("readTraeEntitlementFromStorage returns null for missing storage.json", () => {
+  const traeHome = makeTraeHome();
+  assert.equal(
+    readTraeEntitlementFromStorage(path.join(traeHome, "User", "globalStorage", "storage.json")),
+    null,
+  );
+});
+
+test("readTraeEntitlementFromStorage returns null for top-level null storage.json", () => {
+  const traeHome = makeTraeHome();
+  const storagePath = path.join(traeHome, "User", "globalStorage", "storage.json");
+  fs.mkdirSync(path.dirname(storagePath), { recursive: true });
+  fs.writeFileSync(storagePath, "null");
+  assert.equal(readTraeEntitlementFromStorage(storagePath), null);
+});
+
+test("readTraeEntitlementFromStorage returns null when serverData has no entitlementInfo", () => {
+  const traeHome = makeTraeHome();
+  const storagePath = writeStorage(traeHome, { noEntitlement: true });
+  assert.equal(readTraeEntitlementFromStorage(storagePath), null);
 });
 
 test("parseTraeIncremental persists cursor back onto an existing cursors.trae", async () => {

@@ -72,6 +72,7 @@ const {
   listDroidSettingsFiles,
   resolveDroidSessionsDir,
   resolveTraeStoragePath,
+  readTraeEntitlementFromStorage,
   resolveGrokBuildSessions,
   resolveHermesPath,
   resolveHermesDbPath,
@@ -100,45 +101,11 @@ function formatResolvedPaths(paths, filename) {
   return active;
 }
 
-// Read the newest Trae SOLO entitlement snapshot from the local queue. The
-// sync parser writes one zero-token `trae` row per storage.json change,
-// carrying the plan/limits snapshot in `trae_entitlement`; this is the read
-// side of that contract so users can actually see the advertised plan data
-// (not just a row they cannot consume).
-async function readLatestTraeEntitlement(queuePath) {
-  let raw;
-  try {
-    raw = await fs.readFile(queuePath, "utf8");
-  } catch {
-    return null;
-  }
-  if (!raw) return null;
-  // Scan from the tail: the newest snapshot is the last source=trae queue
-  // row that carries a trae_entitlement object.
-  const lines = raw.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i];
-    if (!line.trim()) continue;
-    try {
-      const row = JSON.parse(line);
-      if (
-        row &&
-        row.source === "trae" &&
-        row.trae_entitlement &&
-        typeof row.trae_entitlement === "object"
-      ) {
-        return {
-          ...row.trae_entitlement,
-          captured_at: typeof row.hour_start === "string" ? row.hour_start : null,
-        };
-      }
-    } catch {
-      // skip malformed line
-    }
-  }
-  return null;
-}
-
+// The Trae SOLO entitlement snapshot is read directly from the Trae Local
+// State storage.json via the shared parser (readTraeEntitlementFromStorage).
+// The queue.jsonl contract is token-count-only (CLAUDE.md privacy rule), so
+// plan/limits metadata is never persisted into queue rows — this is the read
+// side of that contract so users can actually see the advertised plan data.
 function formatTraeEntitlementLine(ent) {
   const parts = [];
   if (ent.identity) parts.push(`plan ${ent.identity}`);
@@ -611,10 +578,12 @@ async function cmdStatus(argv = []) {
   // Trae SOLO (ByteDance AI IDE) — passive entitlement snapshot reader.
   const traeStoragePath = resolveTraeStoragePath(process.env);
   const traeInstalled = Boolean(traeStoragePath);
-  // Render path for the entitlement snapshot the sync parser writes to the
-  // queue: the newest source=trae row carries the plan/limits metadata.
+  // Render path for the entitlement snapshot: read it straight from the
+  // Trae Local State storage.json via the shared parser. The queue stays
+  // token-count-only, so the status read path never depends on queue rows
+  // carrying plan/limits metadata.
   const traeEntitlement = traeInstalled
-    ? await readLatestTraeEntitlement(queuePath)
+    ? readTraeEntitlementFromStorage(traeStoragePath)
     : null;
 
   // Grok Build (xAI TUI)
