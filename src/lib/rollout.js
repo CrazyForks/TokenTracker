@@ -4372,22 +4372,26 @@ function resolveQoderDbPath({
   home = os.homedir(),
   env = process.env,
   platform = process.platform,
+  appDir = "Qoder",
+  envPrefix = "QODER",
 } = {}) {
-  if (typeof env.QODER_DB_PATH === "string" && env.QODER_DB_PATH.trim()) {
-    return path.resolve(env.QODER_DB_PATH.trim());
+  const dbPathKey = `${envPrefix}_DB_PATH`;
+  const homeKey = `${envPrefix}_HOME`;
+  if (typeof env[dbPathKey] === "string" && env[dbPathKey].trim()) {
+    return path.resolve(env[dbPathKey].trim());
   }
   let root;
-  if (typeof env.QODER_HOME === "string" && env.QODER_HOME.trim()) {
-    root = path.resolve(env.QODER_HOME.trim());
+  if (typeof env[homeKey] === "string" && env[homeKey].trim()) {
+    root = path.resolve(env[homeKey].trim());
   } else if (platform === "darwin") {
-    root = path.join(home, "Library", "Application Support", "Qoder");
+    root = path.join(home, "Library", "Application Support", appDir);
   } else if (platform === "win32") {
     root = path.join(
       env.APPDATA || path.join(home, "AppData", "Roaming"),
-      "Qoder",
+      appDir,
     );
   } else {
-    root = path.join(home, ".config", "Qoder");
+    root = path.join(home, ".config", appDir);
   }
   return path.join(root, "SharedClientCache", "cache", "db", "local.db");
 }
@@ -4396,17 +4400,21 @@ function resolveQoderDbPaths({
   home = os.homedir(),
   env = process.env,
   platform = process.platform,
+  appDir = "Qoder",
+  envPrefix = "QODER",
   deps = {},
 } = {}) {
-  const nativeValue = resolveQoderDbPath({ home, env, platform });
-  if (platform !== "win32" || env.QODER_DB_PATH || env.QODER_HOME) {
+  const dbPathKey = `${envPrefix}_DB_PATH`;
+  const homeKey = `${envPrefix}_HOME`;
+  const nativeValue = resolveQoderDbPath({ home, env, platform, appDir, envPrefix });
+  if (platform !== "win32" || env[dbPathKey] || env[homeKey]) {
     return { native: nativeValue, wsl: null };
   }
   const existsSync = deps.existsSync || fssync.existsSync;
   const native = wsl.shouldProbeNative(env) && existsSync(nativeValue) ? nativeValue : null;
   const discoverWslHome = deps.discoverWslHome || wsl.discoverWslHome;
   const wslRoot = wsl.shouldProbeWsl(env)
-    ? discoverWslHome(".config/Qoder", { ...deps, env })
+    ? discoverWslHome(`.config/${appDir}`, { ...deps, env })
     : null;
   const wslValue = wslRoot
     ? path.join(wslRoot, "SharedClientCache", "cache", "db", "local.db")
@@ -4418,6 +4426,23 @@ function resolveQoderDbPaths({
     env,
     platform: "win32",
   });
+}
+
+// Qoder CN keeps its own data directory (Application Support/QoderCN on macOS,
+// AppData/Roaming/QoderCN on Windows, .config/QoderCN on Linux), so it needs
+// its own path resolution. The token schema is identical to the international
+// edition — the same QODER_USAGE_SQL and parser are reused with a distinct
+// source/cursor namespace to avoid rowid collisions between the two DBs. CN
+// honors its own env overrides (QODER_CN_DB_PATH / QODER_CN_HOME) so that
+// QODER_HOME/QODER_DB_PATH, which point at the international install, never
+// redirect the CN resolver onto the same database (that would double-count).
+function resolveQoderCnDbPaths({
+  home = os.homedir(),
+  env = process.env,
+  platform = process.platform,
+  deps = {},
+} = {}) {
+  return resolveQoderDbPaths({ home, env, platform, appDir: "QoderCN", envPrefix: "QODER_CN", deps });
 }
 
 async function readQoderDbMessages(dbPath, sqliteOptions = {}) {
@@ -4517,11 +4542,13 @@ async function parseQoderDbIncremental({
   projectQueuePath,
   onProgress,
   publicRepoResolver,
+  sourceKey = "qoder",
+  cursorKey = "qoder",
 } = {}) {
   await ensureDir(path.dirname(queuePath));
   const rows = Array.isArray(dbMessages) ? dbMessages : [];
   const hourlyState = normalizeHourlyState(cursors?.hourly);
-  const qoderState = normalizeQoderState(cursors?.qoder);
+  const qoderState = normalizeQoderState(cursors?.[cursorKey]);
   const touchedBuckets = new Set();
   const projectEnabled = typeof projectQueuePath === "string" && projectQueuePath.length > 0;
   const projectState = projectEnabled ? normalizeProjectState(cursors?.projectHourly) : null;
@@ -4606,40 +4633,40 @@ async function parseQoderDbIncremental({
       if (previousTotals && previous.bucketStart && previous.model) {
         const oldBucket = getHourlyBucket(
           hourlyState,
-          "qoder",
+          sourceKey,
           previous.model,
           previous.bucketStart,
         );
         subtractTotals(oldBucket.totals, previousTotals);
-        touchedBuckets.add(bucketKey("qoder", previous.model, previous.bucketStart));
+        touchedBuckets.add(bucketKey(sourceKey, previous.model, previous.bucketStart));
         if (projectEnabled && previous.projectKey) {
           const oldProjectBucket = getProjectBucket(
             projectState,
             previous.projectKey,
-            "qoder",
+            sourceKey,
             previous.bucketStart,
             previous.projectRef || null,
           );
           subtractTotals(oldProjectBucket.totals, previousTotals);
           projectTouchedBuckets.add(
-            projectBucketKey(previous.projectKey, "qoder", previous.bucketStart),
+            projectBucketKey(previous.projectKey, sourceKey, previous.bucketStart),
           );
         }
       }
 
-      const bucket = getHourlyBucket(hourlyState, "qoder", model, bucketStart);
+      const bucket = getHourlyBucket(hourlyState, sourceKey, model, bucketStart);
       addTotals(bucket.totals, currentTotals);
-      touchedBuckets.add(bucketKey("qoder", model, bucketStart));
+      touchedBuckets.add(bucketKey(sourceKey, model, bucketStart));
       if (projectEnabled && projectKey) {
         const projectBucket = getProjectBucket(
           projectState,
           projectKey,
-          "qoder",
+          sourceKey,
           bucketStart,
           projectRef,
         );
         addTotals(projectBucket.totals, currentTotals);
-        projectTouchedBuckets.add(projectBucketKey(projectKey, "qoder", bucketStart));
+        projectTouchedBuckets.add(projectBucketKey(projectKey, sourceKey, bucketStart));
       }
       qoderState.messages[messageKey] = {
         totals: currentTotals,
@@ -4682,7 +4709,7 @@ async function parseQoderDbIncremental({
   hourlyState.updatedAt = updatedAt;
   qoderState.updatedAt = updatedAt;
   cursors.hourly = hourlyState;
-  cursors.qoder = qoderState;
+  cursors[cursorKey] = qoderState;
   if (projectState) {
     projectState.updatedAt = updatedAt;
     cursors.projectHourly = projectState;
@@ -15816,6 +15843,7 @@ module.exports = {
   readZcodeDbMessages,
   resolveQoderDbPath,
   resolveQoderDbPaths,
+  resolveQoderCnDbPaths,
   readQoderDbMessages,
   resolveKiroBasePath,
   resolveKiroDbPath,
