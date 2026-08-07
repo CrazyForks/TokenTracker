@@ -12082,18 +12082,25 @@ function resolvePiSessionFiles(env = process.env) {
   const sessionsDir = path.join(agentDir, "sessions");
   if (!fssync.existsSync(sessionsDir)) return [];
   const files = [];
+  const walk = (dir) => {
+    let entries;
+    try { entries = fssync.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+        files.push(full);
+      }
+    }
+  };
   try {
     for (const cwdDir of fssync.readdirSync(sessionsDir)) {
       const cwdPath = path.join(sessionsDir, cwdDir);
       let stat;
       try { stat = fssync.statSync(cwdPath); } catch { continue; }
       if (!stat.isDirectory()) continue;
-      let entries;
-      try { entries = fssync.readdirSync(cwdPath); } catch { continue; }
-      for (const entry of entries) {
-        if (!entry.endsWith(".jsonl")) continue;
-        files.push(path.join(cwdPath, entry));
-      }
+      walk(cwdPath);
     }
   } catch {
     // ignore — return what we have
