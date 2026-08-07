@@ -16063,6 +16063,16 @@ async function parseTraeIncremental({ traHome, storagePath, cursors, queuePath, 
     // retried on the next sync rather than skipped forever.
     return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
   }
+  // A valid JSON document may still be `null` (or a scalar/array) — guard
+  // before property dereference so a non-object snapshot is treated as no
+  // valid data (advance cursor, zero counts) instead of crashing with
+  // TypeError reading a property of null.
+  if (!storage || typeof storage !== "object" || Array.isArray(storage)) {
+    cursorState.lastMtime = stat.mtimeMs;
+    cursorState.updatedAt = new Date().toISOString();
+    cursors.trae = cursorState;
+    return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+  }
 
   const serverKey = "iCubeServerData://icube.cloudide";
   const serverData = storage[serverKey];
@@ -16079,6 +16089,15 @@ async function parseTraeIncremental({ traHome, storagePath, cursors, queuePath, 
   } catch {
     return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
   }
+  // The parsed serverData may legitimately be JSON `null` (e.g. the string
+  // "null") or another non-object — treat it as no valid snapshot and
+  // advance the cursor rather than dereferencing a property of null.
+  if (!ent || typeof ent !== "object" || Array.isArray(ent)) {
+    cursorState.lastMtime = stat.mtimeMs;
+    cursorState.updatedAt = new Date().toISOString();
+    cursors.trae = cursorState;
+    return { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+  }
 
   const entitlementInfo = ent.entitlementInfo;
   if (!entitlementInfo || typeof entitlementInfo !== "object") {
@@ -16093,9 +16112,9 @@ async function parseTraeIncremental({ traHome, storagePath, cursors, queuePath, 
   }
 
   const detail = entitlementInfo.detail || {};
-  const hourStart = new Date(
-    new Date().toISOString().slice(0, 13) + ":00:00.000Z"
-  ).toISOString();
+  // Repo UTC half-hour contract: bucket starts land on :00 or :30 UTC
+  // (same as every other provider), never a forced :00 hour.
+  const hourStart = toUtcHalfHourStart(new Date());
 
   const model = "trae-" + (entitlementInfo.identityStr || "unknown").toLowerCase();
 
@@ -16129,6 +16148,13 @@ async function parseTraeIncremental({ traHome, storagePath, cursors, queuePath, 
   cursorState.lastMtime = stat.mtimeMs;
   cursorState.updatedAt = new Date().toISOString();
   cursors.trae = cursorState;
+
+  // sync.js passes an onProgress callback; report the completed record
+  // counts after the queue append and cursor update so interactive sync
+  // advances its progress UI (mirrors the other parsers).
+  if (onProgress) {
+    onProgress({ index: 1, total: 1, bucketsQueued: 1 });
+  }
 
   return { recordsProcessed: 1, eventsAggregated: 1, bucketsQueued: 1 };
 }

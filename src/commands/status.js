@@ -100,6 +100,66 @@ function formatResolvedPaths(paths, filename) {
   return active;
 }
 
+// Read the newest Trae SOLO entitlement snapshot from the local queue. The
+// sync parser writes one zero-token `trae` row per storage.json change,
+// carrying the plan/limits snapshot in `trae_entitlement`; this is the read
+// side of that contract so users can actually see the advertised plan data
+// (not just a row they cannot consume).
+async function readLatestTraeEntitlement(queuePath) {
+  let raw;
+  try {
+    raw = await fs.readFile(queuePath, "utf8");
+  } catch {
+    return null;
+  }
+  if (!raw) return null;
+  // Scan from the tail: the newest snapshot is the last source=trae queue
+  // row that carries a trae_entitlement object.
+  const lines = raw.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    try {
+      const row = JSON.parse(line);
+      if (
+        row &&
+        row.source === "trae" &&
+        row.trae_entitlement &&
+        typeof row.trae_entitlement === "object"
+      ) {
+        return {
+          ...row.trae_entitlement,
+          captured_at: typeof row.hour_start === "string" ? row.hour_start : null,
+        };
+      }
+    } catch {
+      // skip malformed line
+    }
+  }
+  return null;
+}
+
+function formatTraeEntitlementLine(ent) {
+  const parts = [];
+  if (ent.identity) parts.push(`plan ${ent.identity}`);
+  if (ent.pro_period) parts.push(`${ent.pro_period} period`);
+  if (typeof ent.is_dollar_billing === "boolean") {
+    parts.push(ent.is_dollar_billing ? "dollar billing" : "package billing");
+  }
+  if (typeof ent.enable_solo_builder === "boolean") {
+    parts.push(`solo builder: ${ent.enable_solo_builder ? "yes" : "no"}`);
+  }
+  if (typeof ent.enable_solo_coder === "boolean") {
+    parts.push(`solo coder: ${ent.enable_solo_coder ? "yes" : "no"}`);
+  }
+  if (typeof ent.fast_request_per === "number") {
+    parts.push(`${ent.fast_request_per} fast requests/hr`);
+  }
+  if (ent.in_waitlist === true) parts.push("in waitlist");
+  if (ent.captured_at) parts.push(`snapshot ${ent.captured_at}`);
+  return parts.length ? parts.join(", ") : "unknown";
+}
+
 async function cmdStatus(argv = []) {
   const opts = parseArgs(argv);
   if (opts.diagnostics) {
@@ -551,6 +611,11 @@ async function cmdStatus(argv = []) {
   // Trae SOLO (ByteDance AI IDE) — passive entitlement snapshot reader.
   const traeStoragePath = resolveTraeStoragePath(process.env);
   const traeInstalled = Boolean(traeStoragePath);
+  // Render path for the entitlement snapshot the sync parser writes to the
+  // queue: the newest source=trae row carries the plan/limits metadata.
+  const traeEntitlement = traeInstalled
+    ? await readLatestTraeEntitlement(queuePath)
+    : null;
 
   // Grok Build (xAI TUI)
   const grokHookState = await probeGrokHookState({ home, trackerDir, env: process.env });
@@ -824,7 +889,11 @@ async function cmdStatus(argv = []) {
           ? { installed: true, files: droidSettingsFiles.length, detail: droidSessionsDir }
           : { installed: false },
         trae: traeInstalled
-          ? { installed: true, detail: traeStoragePath }
+          ? {
+              installed: true,
+              detail: traeStoragePath,
+              ...(traeEntitlement ? { entitlement: traeEntitlement } : {}),
+            }
           : { installed: false },
         grok_build: grokInstalled
           ? {
@@ -976,6 +1045,9 @@ async function cmdStatus(argv = []) {
         : null,
       traeInstalled
         ? `- Trae SOLO: passive reader (entitlement snapshot from ${traeStoragePath})`
+        : null,
+      traeEntitlement
+        ? `- Trae SOLO plan: ${formatTraeEntitlementLine(traeEntitlement)}`
         : null,
       ...(() => {
         if (!hermesInstalled) return [];

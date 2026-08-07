@@ -27,6 +27,7 @@ const {
   resolveTraePath,
   resolveTraeStoragePath,
   parseTraeIncremental,
+  toUtcHalfHourStart,
 } = require("../src/lib/rollout");
 
 const SERVER_KEY = "iCubeServerData://icube.cloudide";
@@ -165,6 +166,62 @@ test("parseTraeIncremental advances cursor without trae-unknown entry when entit
   assert.ok(cursors.trae.lastMtime > 0, "cursor should still advance");
 });
 
+test("parseTraeIncremental treats a top-level null storage.json as no valid data", async () => {
+  const traeHome = makeTraeHome();
+  const queuePath = path.join(traeHome, "queue.ndjson");
+  const storagePath = path.join(traeHome, "User", "globalStorage", "storage.json");
+  fs.mkdirSync(path.dirname(storagePath), { recursive: true });
+  fs.writeFileSync(storagePath, "null");
+  const cursors = {};
+  const result = await parseTraeIncremental({ storagePath, cursors, queuePath });
+  assert.deepEqual(result, { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 });
+  assert.equal(readQueue(queuePath).length, 0);
+  assert.ok(cursors.trae.lastMtime > 0, "cursor should still advance");
+  assert.ok(cursors.trae.updatedAt, "cursor updatedAt should be set");
+});
+
+test("parseTraeIncremental treats serverData JSON null (\"null\") as no valid snapshot", async () => {
+  const traeHome = makeTraeHome();
+  const queuePath = path.join(traeHome, "queue.ndjson");
+  const storagePath = writeStorage(traeHome, "null");
+  const cursors = {};
+  const result = await parseTraeIncremental({ storagePath, cursors, queuePath });
+  assert.deepEqual(result, { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 });
+  assert.equal(readQueue(queuePath).length, 0);
+  assert.ok(cursors.trae.lastMtime > 0, "cursor should still advance");
+  assert.ok(cursors.trae.updatedAt, "cursor updatedAt should be set");
+});
+
+test("toUtcHalfHourStart buckets to :00 and :30 UTC starts", () => {
+  assert.equal(
+    toUtcHalfHourStart("2026-08-07T01:15:00.000Z"),
+    "2026-08-07T01:00:00.000Z",
+  );
+  assert.equal(
+    toUtcHalfHourStart("2026-08-07T01:45:00.000Z"),
+    "2026-08-07T01:30:00.000Z",
+  );
+});
+
+test("parseTraeIncremental invokes onProgress on the successful path", async () => {
+  const traeHome = makeTraeHome();
+  const queuePath = path.join(traeHome, "queue.ndjson");
+  const storagePath = writeStorage(traeHome, { entitlementInfo: sampleEntitlement() });
+  const cursors = {};
+  const progressCalls = [];
+  const result = await parseTraeIncremental({
+    storagePath,
+    cursors,
+    queuePath,
+    onProgress: (p) => progressCalls.push(p),
+  });
+  assert.equal(result.recordsProcessed, 1);
+  assert.equal(progressCalls.length, 1);
+  assert.equal(progressCalls[0].index, 1);
+  assert.equal(progressCalls[0].total, 1);
+  assert.equal(progressCalls[0].bucketsQueued, 1);
+});
+
 test("parseTraeIncremental emits one entitlement snapshot queue entry", async () => {
   const traeHome = makeTraeHome();
   const queuePath = path.join(traeHome, "queue.ndjson");
@@ -181,7 +238,7 @@ test("parseTraeIncremental emits one entitlement snapshot queue entry", async ()
   assert.equal(row.total_tokens, 0);
   assert.equal(row.billable_total_tokens, 0);
   assert.equal(row.conversation_count, 0);
-  assert.match(row.hour_start, /^\d{4}-\d{2}-\d{2}T\d{2}:00:00\.000Z$/);
+  assert.match(row.hour_start, /^\d{4}-\d{2}-\d{2}T\d{2}:(00|30):00\.000Z$/);
   assert.deepEqual(
     {
       identity: row.trae_entitlement.identity,
