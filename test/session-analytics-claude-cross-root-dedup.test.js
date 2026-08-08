@@ -101,6 +101,29 @@ test("a single root is returned untouched, including same-UUID siblings", () => 
   });
 });
 
+// The single-root sibling case above returns early, so it never reaches the
+// cross-root matching loop. With a second root present, an ambiguous UUID must
+// disable dedup for that UUID entirely rather than let one root's file evict a
+// sibling it may have nothing to do with.
+test("same-UUID siblings in one root disable dedup instead of losing a session", () => {
+  withTmp((tmp) => {
+    const first = seedRoot(tmp, "native", UUID_A, 1_000_000);
+    const sibling = seedRoot(tmp, "native-copy", UUID_A, 2_000_000);
+    const other = seedRoot(tmp, "wsl", UUID_A, 1_500_000);
+
+    const deduped = dedupeClaudeFilesAcrossRoots([[first, sibling], [other]]);
+
+    // Which sibling `other` mirrors is unknowable from the path, so collapsing
+    // by mtime would drop a genuinely distinct transcript — and, when `other`
+    // mirrors the sibling rather than the first file, keep that content twice.
+    assert.ok(
+      deduped.includes(first),
+      "the first sibling must not be evicted by a file from another root",
+    );
+    assert.equal(deduped.length, 3, "an ambiguous UUID must not be deduped at all");
+  });
+});
+
 test("files without a UUID basename are never deduped", () => {
   withTmp((tmp) => {
     const dirA = path.join(tmp, "native", "projects", "-Users-dev-a");

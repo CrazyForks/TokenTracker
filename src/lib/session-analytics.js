@@ -816,21 +816,36 @@ function dedupeClaudeFilesAcrossRoots(groups) {
   const mtimeOf = (filePath) => {
     try { return fs.statSync(filePath).mtimeMs; } catch { return -Infinity; }
   };
+  const sessionIdOf = (filePath) =>
+    path.basename(filePath).match(/^([0-9a-f-]{36})\.jsonl$/i)?.[1] || null;
+
+  // A UUID appearing twice inside ONE root has no resolvable identity: nothing
+  // in the paths says which sibling a copy in another root mirrors. Collapsing
+  // by mtime there would evict a genuinely distinct transcript — and, when the
+  // other root mirrors the sibling rather than the first file, keep that content
+  // twice. Such UUIDs opt out of dedup entirely; an ambiguous duplicate is
+  // cheap, a deleted session is not.
+  const ambiguous = new Set();
+  for (const group of rootGroups) {
+    const seenHere = new Set();
+    for (const filePath of group) {
+      const id = sessionIdOf(filePath);
+      if (!id) continue;
+      if (seenHere.has(id)) ambiguous.add(id);
+      seenHere.add(id);
+    }
+  }
+
   // Preserve root order for everything kept, so native precedence is stable.
-  // Claims are compared only against EARLIER roots: two same-UUID files inside
-  // one tree are siblings, not copies, and must both survive.
   const ordered = [];
   const winnerBySession = new Map();
   for (const group of rootGroups) {
-    const claimedHere = new Map();
     for (const filePath of group) {
-      const id = path.basename(filePath).match(/^([0-9a-f-]{36})\.jsonl$/i)?.[1] || null;
-      if (!id || claimedHere.has(id)) {
-        // No session identity, or a sibling within this same root.
+      const id = sessionIdOf(filePath);
+      if (!id || ambiguous.has(id)) {
         if (!ordered.includes(filePath)) ordered.push(filePath);
         continue;
       }
-      claimedHere.set(id, filePath);
       const previous = winnerBySession.get(id);
       if (previous === undefined) {
         winnerBySession.set(id, filePath);
