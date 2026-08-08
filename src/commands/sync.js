@@ -104,8 +104,6 @@ const {
   parseDroidIncremental,
   droidSessionIdFromPath,
   resolveDroidModel,
-  resolveTraeStoragePath,
-  parseTraeIncremental,
   bucketKey,
   toUtcHalfHourStart,
   totalsKey,
@@ -280,7 +278,6 @@ const AUTO_SYNC_SOURCES = new Set([
   "pi",
   "qoder",
   "roocode",
-  "trae",
   "workbuddy",
   "zcode",
   "zed",
@@ -1412,35 +1409,6 @@ async function cmdSync(argv, context = {}) {
       }
     }
 
-    // ── Trae SOLO (ByteDance AI IDE) — passive entitlement snapshot reader ──
-    // Trae stores plan/limits (not per-session tokens) in
-    // User/globalStorage/storage.json under iCubeServerData://icube.cloudide.
-    // parseTraeIncremental emits one synthetic zero-token hourly bucket per
-    // change so the dashboard can surface the entitlement snapshot.
-    const traeStoragePath = resolveTraeStoragePath(process.env);
-    let traeResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
-    if (sourceAllowed("trae") && traeStoragePath) {
-      if (progress?.enabled) {
-        progress.start(`Parsing Trae SOLO ${renderBar(0)} | buckets 0`);
-      }
-      try {
-        traeResult = await parseTraeIncremental({
-          storagePath: traeStoragePath,
-          cursors,
-          queuePath,
-          onProgress: (p) => {
-            if (!progress?.enabled) return;
-            const pct = p.total > 0 ? p.index / p.total : 1;
-            progress.update(
-              `Parsing Trae SOLO ${renderBar(pct)} | buckets ${formatNumber(p.bucketsQueued)}`,
-            );
-          },
-        });
-      } catch (err) {
-        warnProviderParseFailure("Trae SOLO", err, opts);
-      }
-    }
-
     // ── Zed Agent (all providers; cumulative-delta over SQLite threads) ──
     const zedDbPath = resolveZedDbPath(process.env);
     let zedResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
@@ -2446,8 +2414,7 @@ async function cmdSync(argv, context = {}) {
       roocodeResult.recordsProcessed +
       zedResult.recordsProcessed +
       gooseResult.recordsProcessed +
-      droidResult.recordsProcessed +
-      traeResult.recordsProcessed;
+      droidResult.recordsProcessed;
     const totalBuckets =
       parseResult.bucketsQueued +
       openclawResult.bucketsQueued +
@@ -2478,8 +2445,7 @@ async function cmdSync(argv, context = {}) {
       roocodeResult.bucketsQueued +
       zedResult.bucketsQueued +
       gooseResult.bucketsQueued +
-      droidResult.bucketsQueued +
-      traeResult.bucketsQueued;
+      droidResult.bucketsQueued;
     const skipNoOpCursorCommit =
       opts.auto &&
       !isFullSourceScan &&
