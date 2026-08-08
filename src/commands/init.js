@@ -717,16 +717,17 @@ async function applyIntegrationSetup({
     }
   }
 
-  // Trae SOLO (ByteDance AI IDE): passive entitlement reader — no hook
-  // installation needed. TokenTracker reads User/globalStorage/storage.json
-  // and surfaces the plan/limits snapshot.
+  // Trae SOLO (ByteDance AI IDE): plan snapshot only. Trae keeps its session
+  // transcripts SQLCipher-encrypted and its plaintext summaries hold no token
+  // counts, so there is no usage to read — the detail line must not promise
+  // otherwise ("Passive reader" reads, everywhere else, as "tokens counted").
   {
     const traeStoragePath = resolveTraeStoragePath(process.env);
     if (traeStoragePath) {
       summary.push({
         label: "Trae SOLO",
         status: "detected",
-        detail: "Passive reader (no hook needed)",
+        detail: "Plan info only — Trae exposes no readable token usage",
       });
     }
   }

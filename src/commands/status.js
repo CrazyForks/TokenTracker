@@ -1060,7 +1060,12 @@ async function cmdStatus(argv = []) {
         ? `- Droid (Factory): passive reader (${droidSettingsFiles.length} session${droidSettingsFiles.length !== 1 ? "s" : ""} in ${droidSessionsDir}, cumulative-delta)`
         : null,
       traeInstalled
-        ? `- Trae SOLO: passive reader (entitlement snapshot from ${traeStoragePath})`
+        // Deliberately NOT "passive reader": every other line with that wording
+        // means tokens are being counted. Trae encrypts its session transcripts
+        // (SQLCipher) and its plaintext summaries carry no token counts, so this
+        // provider contributes plan info and nothing else — say so, or users go
+        // looking for Trae usage in the dashboard that will never appear.
+        ? `- Trae SOLO: plan info only, no token usage (${traeStoragePath})`
         : null,
       traeEntitlement
         ? `- Trae SOLO plan: ${formatTraeEntitlementLine(traeEntitlement)}`
