@@ -87,15 +87,27 @@ const { resolveInstallPaths } = require("../lib/install-resolver");
 const { probeGrokHookState, resolveGrokHome } = require("../lib/grok-hook");
 const { probeOmpHookState } = require("../lib/omp-hook");
 
+// `filename` may be a list, in which case the first child that exists wins. A
+// resolver using requireAnyChild accepts a root that holds ANY of several
+// children, so probing only the first one here would report "not detected" for
+// an install sync happily counts (e.g. Codex with archived_sessions/ but no
+// live sessions/).
 function formatResolvedPaths(paths, filename) {
+  const candidates = filename == null ? [] : (Array.isArray(filename) ? filename : [filename]);
+  const resolveFile = (root) => {
+    if (candidates.length === 0) return root;
+    for (const candidate of candidates) {
+      const file = path.join(root, candidate);
+      try { if (fssync.existsSync(file)) return file; } catch (_e) {}
+    }
+    return null;
+  };
   const active = [];
-  if (paths.native) {
-    const file = filename ? path.join(paths.native, filename) : paths.native;
-    try { if (fssync.existsSync(file)) active.push(`native: ${file}`); } catch (_e) {}
-  }
-  if (paths.wsl) {
-    const file = filename ? path.join(paths.wsl, filename) : paths.wsl;
-    try { if (fssync.existsSync(file)) active.push(`WSL: ${file}`); } catch (_e) {}
+  for (const [label, root] of [["native", paths.native], ["WSL", paths.wsl]]) {
+    if (!root) continue;
+    const file = resolveFile(root);
+    if (!file) continue;
+    try { if (fssync.existsSync(file)) active.push(`${label}: ${file}`); } catch (_e) {}
   }
   return active;
 }
@@ -522,12 +534,19 @@ async function cmdStatus(argv = []) {
   }
   const antigravityInstalled = antigravityActive.length > 0;
 
-  // Codex CLI (passive sessions scan)
+  // Codex CLI (passive sessions scan). Mirrors the sync resolution exactly
+  // (union + requireAnyChild, see src/commands/sync.js): status is the tool
+  // users are asked to paste when Codex usage looks wrong, so it must list
+  // every root sync actually walks — and no empty shell sync would skip.
   const codexPaths = resolveInstallPaths({
     nativeValue: process.env.CODEX_HOME || path.join(home, ".codex"),
     wslDir: ".codex",
+    requireAnyChild: ["sessions", "archived_sessions"],
+    union: true,
   });
-  const codexActive = formatResolvedPaths(codexPaths, "sessions");
+  // Both children, matching requireAnyChild above: an install holding only
+  // archived_sessions/ is counted by sync and must not read as "not detected".
+  const codexActive = formatResolvedPaths(codexPaths, ["sessions", "archived_sessions"]);
   const codexInstalledStatus = codexActive.length > 0;
 
   // Kimi (passive sessions scan)
