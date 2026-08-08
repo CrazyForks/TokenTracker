@@ -329,15 +329,28 @@ async function parseRolloutIncremental({
   }) => {
     if (rebuildingBaseline) return true;
     if (prev && (!sameInode || truncated)) return true;
-    if (sameInode && !truncated && startOffset > 0) return false;
-    if (prev?.lastTotal) return true;
+
+    // Same session under another cursor path — the two roots of a `union`
+    // install (src/lib/install-resolver.js) reaching one file, or a
+    // sessions/ -> archived_sessions/ move. This MUST be decided before the
+    // steady-state short-circuit below: the append-only tracker only knows keys
+    // written during the current run, so when the other path has nothing new to
+    // read it contributes none, and a path whose cursor fell behind (a distro
+    // that was briefly unreachable, a TOKENTRACKER_WSL_MODE round-trip) replays
+    // its gap into the persisted buckets. Only the persisted set can catch that.
     const sessionId = codexSessionIdFromPath(filePath);
     if (!sessionId) return true;
     const knownPaths = getCursorSessionPaths().get(sessionId);
-    if (!knownPaths) return false;
-    for (const knownPath of knownPaths) {
-      if (knownPath !== filePath) return true;
+    if (knownPaths) {
+      for (const knownPath of knownPaths) {
+        if (knownPath !== filePath) return true;
+      }
     }
+
+    // Steady state: one path, already read past, not rotated. Everything after
+    // our own offset is genuinely new, so skip the persisted-set construction.
+    if (sameInode && !truncated && startOffset > 0) return false;
+    if (prev?.lastTotal) return true;
     return false;
   };
 
