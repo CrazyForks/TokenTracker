@@ -125,5 +125,11 @@ skills-lock.json
 .windsurf
 .opencode/
 .serena/
+.codex/
 openspec/
 plans/
+# Local scratch: screenshots and throwaway Swift/CLI experiments, including
+# compiled binaries. `script/` is singular on purpose — the tracked build
+# scripts live in `scripts/`.
+.di_shots/
+script/
