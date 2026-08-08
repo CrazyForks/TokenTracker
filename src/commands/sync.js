@@ -14,6 +14,7 @@ const {
   writeJson,
   chmod600IfPossible,
   openLock,
+  inspectLock,
 } = require("../lib/fs");
 const { physicalJsonlRecords } = require("../lib/jsonl-lines");
 const {
@@ -399,6 +400,38 @@ async function acquireSyncLock(
   }
 }
 
+const SYNC_SKIP_MARKER = "sync.skip.json";
+
+// A skipped sync used to exit 0 with no output whatsoever, so lock debris left
+// by a killed run stalled every parse for a day with no visible signal and
+// nothing for `tokentracker status` to report (issue #431). Leave a queryable
+// marker that separates ordinary contention (`lock_busy`) from a lease whose
+// owner is gone (`lock_debris`, the state that needs attention).
+async function recordSyncSkip(trackerDir, lockPath) {
+  const holder = await inspectLock(lockPath);
+  const reason = holder.exists && holder.pid && !holder.alive ? "lock_debris" : "lock_busy";
+  const detail = !holder.exists
+    ? "sync lock could not be acquired"
+    : holder.pid
+      ? `sync lock held by pid ${holder.pid} (${holder.alive ? "running" : "not running"})`
+      : "sync lock has no owner record";
+  await writeJson(path.join(trackerDir, SYNC_SKIP_MARKER), {
+    reason,
+    detail,
+    at: new Date().toISOString(),
+    lockPath,
+  });
+  return `Sync skipped: ${reason} — ${detail}\n`;
+}
+
+async function clearSyncSkip(trackerDir) {
+  try {
+    await fs.unlink(path.join(trackerDir, SYNC_SKIP_MARKER));
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+}
+
 async function cmdSync(argv, context = {}) {
   const opts = parseArgs(argv);
   const diagnostics = context && typeof context === "object" ? context.diagnostics : null;
@@ -419,7 +452,13 @@ async function cmdSync(argv, context = {}) {
 
   const lockPath = path.join(trackerDir, "sync.lock");
   const lock = await acquireSyncLock(lockPath, opts, lockWaitOptions);
-  if (!lock) return;
+  if (!lock) {
+    // Warn on stderr so the notice reaches interactive and background runs
+    // alike without disturbing anything that parses sync's stdout.
+    process.stderr.write(await recordSyncSkip(trackerDir, lockPath));
+    return;
+  }
+  await clearSyncSkip(trackerDir);
 
   let progress = null;
   try {
