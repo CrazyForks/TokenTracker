@@ -795,6 +795,59 @@ function providerRoots(home, providerDir, env, deps = {}) {
   return [...new Set(roots)];
 }
 
+// Collapse the same Claude session discovered under more than one root.
+//
+// Codex gets this from its session-id pass below; Claude only ever had per-file
+// message dedup (`claudeMessageDedupKey` inside `scanClaudeSession`), which
+// cannot see a second copy of the same file under a different path spelling.
+// Every discovered path becomes its own row keyed by the resolved file path, so
+// a WSL `$HOME` pointing at the Windows profile — the same files reachable as
+// both `C:\Users\dev\.claude\...` and `\\wsl$\Ubuntu\home\dev\.claude\...` —
+// duplicated sessions in the browser, the project list and the CSV export.
+//
+// Cross-root only, on purpose: a single root is passed through verbatim, so
+// single-install machines are unaffected, and two same-named files inside one
+// tree stay distinct (unproven identity must not delete a session). A basename
+// without a session UUID never participates either.
+function dedupeClaudeFilesAcrossRoots(groups) {
+  const rootGroups = (groups || []).filter((group) => Array.isArray(group) && group.length > 0);
+  if (rootGroups.length <= 1) return [...new Set(rootGroups[0] || [])];
+
+  const mtimeOf = (filePath) => {
+    try { return fs.statSync(filePath).mtimeMs; } catch { return -Infinity; }
+  };
+  // Preserve root order for everything kept, so native precedence is stable.
+  // Claims are compared only against EARLIER roots: two same-UUID files inside
+  // one tree are siblings, not copies, and must both survive.
+  const ordered = [];
+  const winnerBySession = new Map();
+  for (const group of rootGroups) {
+    const claimedHere = new Map();
+    for (const filePath of group) {
+      const id = path.basename(filePath).match(/^([0-9a-f-]{36})\.jsonl$/i)?.[1] || null;
+      if (!id || claimedHere.has(id)) {
+        // No session identity, or a sibling within this same root.
+        if (!ordered.includes(filePath)) ordered.push(filePath);
+        continue;
+      }
+      claimedHere.set(id, filePath);
+      const previous = winnerBySession.get(id);
+      if (previous === undefined) {
+        winnerBySession.set(id, filePath);
+        ordered.push(filePath);
+        continue;
+      }
+      if (previous === filePath) continue;
+      // Same session in an earlier root: keep the newer file, mirroring Codex.
+      if (mtimeOf(filePath) > mtimeOf(previous)) {
+        winnerBySession.set(id, filePath);
+        ordered[ordered.indexOf(previous)] = filePath;
+      }
+    }
+  }
+  return [...new Set(ordered)];
+}
+
 async function discoverSessionFiles(home, env = process.env, deps = {}) {
   const grokHome = resolveGrokHome(home);
   const claudeRoots = providerRoots(home, ".claude", env, deps);
@@ -805,7 +858,7 @@ async function discoverSessionFiles(home, env = process.env, deps = {}) {
     Promise.all(codexRoots.map((r) => listRolloutFilesDeep(path.join(r, "archived_sessions")))),
     listGrokSessionFiles(path.join(grokHome, "sessions")),
   ]);
-  const allClaude = [...new Set(claudeGroups.flat())];
+  const allClaude = dedupeClaudeFilesAcrossRoots(claudeGroups);
   const codex = [...new Set(codexGroups.flat())];
   const archived = [...new Set(archivedGroups.flat())];
   // Claude Memory stores thousands of background observer transcripts beside
@@ -1302,4 +1355,5 @@ module.exports = {
   resumeCommandFor,
   sessionsToCsv,
   providerRoots,
+  dedupeClaudeFilesAcrossRoots,
 };
