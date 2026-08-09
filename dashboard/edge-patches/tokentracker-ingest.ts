@@ -24,6 +24,25 @@ function isLeaderboardBlockedUser(userId: string): boolean {
     .some((candidate) => candidate.trim() === userId);
 }
 
+async function isUsageBlocked(
+  client: ReturnType<typeof createClient>,
+  userId: string,
+): Promise<boolean> {
+  if (isLeaderboardBlockedUser(userId)) return true;
+  const { data, error } = await client.database
+    .from("tokentracker_leaderboard_anomaly_flags")
+    .select("user_id")
+    .eq("user_id", userId)
+    .eq("status", "auto_excluded")
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.error("[ingest] anomaly guard failed:", error.message);
+    return false;
+  }
+  return Boolean(data);
+}
+
 async function sha256Hex(input: string): Promise<string> {
   const encoder = new TextEncoder();
   const data = encoder.encode(input);
@@ -77,7 +96,7 @@ export default async function (req: Request): Promise<Response> {
 
   // Revoking known tokens is not sufficient when another issuance request is
   // already in flight. The blocklist is the final write-path authorization.
-  if (isLeaderboardBlockedUser(userId)) {
+  if (await isUsageBlocked(client, userId)) {
     return json({ error: "Account blocked" }, 403);
   }
 
