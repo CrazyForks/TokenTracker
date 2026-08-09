@@ -56,3 +56,20 @@ describe("ProviderIcon", () => {
     expect(icon).toHaveAttribute("width", "18");
   });
 });
+
+  it("renders the Qoder CN green-crescent mark from its own asset", () => {
+    const { container } = render(<ProviderIcon provider="qoder-cn" size={16} />);
+    const icon = container.querySelector('img[src="/brand-logos/qoder-cn.svg"]');
+
+    expect(icon).not.toBeNull();
+    expect(icon).toHaveAttribute("width", "16");
+    expect(icon).not.toHaveClass("dark:invert");
+  });
+
+  it("renders the multi-color Pi mark for the DeepSeek and OpenAI-Codex variants", () => {
+    for (const provider of ["pi-deepseek", "pi-openai-codex"]) {
+      const { container } = render(<ProviderIcon provider={provider} size={16} />);
+      const icon = container.querySelector('img[src="/brand-logos/pi.svg"]');
+      expect(icon, `${provider} maps to pi.svg`).not.toBeNull();
+    }
+  });

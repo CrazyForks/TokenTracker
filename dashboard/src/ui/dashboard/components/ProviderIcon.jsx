@@ -326,9 +326,15 @@ const PROVIDER_LOGO_MAP = {
   OPENCODE: "/brand-logos/opencode.svg",
   PI: "/brand-logos/pi.svg",
   "PI-ANTHROPIC": "/brand-logos/pi.svg",
+  "PI-DEEPSEEK": "/brand-logos/pi.svg",
   "PI-GITHUB-COPILOT": "/brand-logos/pi.svg",
   "PI-COPILOT": "/brand-logos/pi.svg",
+  "PI-OPENAI-CODEX": "/brand-logos/pi.svg",
   QODER: "/brand-logos/qoder.svg",
+  // Qoder CN ships its own brand mark — the domestic edition's icon (a green
+  // crescent) differs from the international black double-crescent, so it gets
+  // its own traced asset instead of reusing qoder.svg.
+  "QODER-CN": "/brand-logos/qoder-cn.svg",
 };
 
 // AnythingLLM publishes this compact mark in white. Keep the official asset
