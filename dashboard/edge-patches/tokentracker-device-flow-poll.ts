@@ -26,6 +26,12 @@ function json(data: unknown, status = 200) {
   });
 }
 
+function isLeaderboardBlockedUser(userId: string): boolean {
+  return (Deno.env.get("LEADERBOARD_BLOCKED_USER_IDS") ?? "")
+    .split(",")
+    .some((candidate) => candidate.trim() === userId);
+}
+
 async function sha256Hex(input: string): Promise<string> {
   const data = new TextEncoder().encode(input);
   const hashBuffer = await crypto.subtle.digest("SHA-256", data);
@@ -330,6 +336,11 @@ export default async function (req: Request): Promise<Response> {
   }
 
   if (row.status === "approved" && row.user_id) {
+    // Do not let an already-approved device code bypass an account ban by
+    // polling after its existing devices and tokens were revoked.
+    if (isLeaderboardBlockedUser(row.user_id)) {
+      return json({ error: "Account blocked" }, 403);
+    }
     try {
       const issued = await issueDeviceToken(client, row.user_id, row.client_info, row.machine_id);
       return json({

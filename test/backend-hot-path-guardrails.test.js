@@ -203,6 +203,39 @@ test("leaderboard anti-cheat health poll is hourly and never files public issues
   );
 });
 
+test("leaderboard bans block token issuance and usage ingestion", () => {
+  const tokenIssue = read("dashboard/edge-patches/tokentracker-device-token-issue.ts");
+  const devicePoll = read("dashboard/edge-patches/tokentracker-device-flow-poll.ts");
+  const ingest = read("dashboard/edge-patches/tokentracker-ingest.ts");
+
+  for (const [file, source] of [
+    ["tokentracker-device-token-issue.ts", tokenIssue],
+    ["tokentracker-device-flow-poll.ts", devicePoll],
+    ["tokentracker-ingest.ts", ingest],
+  ]) {
+    assert.match(source, /Deno\.env\.get\("LEADERBOARD_BLOCKED_USER_IDS"\)/u,
+      `${file} must read the production account blocklist`);
+    assert.match(source, /return json\(\{ error: "Account blocked" \}, 403\)/u,
+      `${file} must reject blocked accounts`);
+  }
+
+  assert.ok(
+    tokenIssue.indexOf("if (isLeaderboardBlockedUser(userId))")
+      < tokenIssue.indexOf("// Device identity resolution"),
+    "normal token issuance must reject the account before mutating a device",
+  );
+  assert.ok(
+    devicePoll.indexOf("if (isLeaderboardBlockedUser(row.user_id))")
+      < devicePoll.indexOf("issueDeviceToken(client, row.user_id"),
+    "device-flow polling must reject the account before issuing a token",
+  );
+  assert.ok(
+    ingest.indexOf("if (isLeaderboardBlockedUser(userId))")
+      < ingest.indexOf('.from("tokentracker_hourly")'),
+    "ingest must reject the account before writing usage",
+  );
+});
+
 test("leaderboard reads expose snapshot freshness and disable response caching", () => {
   const edgeSource = read("dashboard/edge-patches/tokentracker-leaderboard.ts");
   const clientSource = read("dashboard/src/lib/api.ts");

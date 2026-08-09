@@ -18,6 +18,12 @@ function json(data: unknown, status = 200) {
   });
 }
 
+function isLeaderboardBlockedUser(userId: string): boolean {
+  return (Deno.env.get("LEADERBOARD_BLOCKED_USER_IDS") ?? "")
+    .split(",")
+    .some((candidate) => candidate.trim() === userId);
+}
+
 async function sha256Hex(input: string): Promise<string> {
   const encoder = new TextEncoder();
   const data = encoder.encode(input);
@@ -68,6 +74,12 @@ export default async function (req: Request): Promise<Response> {
 
   const userId = (tokenRow as { user_id: string }).user_id;
   const deviceId = (tokenRow as { device_id: string }).device_id;
+
+  // Revoking known tokens is not sufficient when another issuance request is
+  // already in flight. The blocklist is the final write-path authorization.
+  if (isLeaderboardBlockedUser(userId)) {
+    return json({ error: "Account blocked" }, 403);
+  }
 
   const buckets = Array.isArray(body.buckets)
     ? body.buckets
