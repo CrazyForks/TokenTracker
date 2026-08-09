@@ -250,8 +250,23 @@ function finalizeRecord(record) {
   return record;
 }
 
+function readableSessionPaths(filePath) {
+  const candidates = (Array.isArray(filePath) ? filePath : [filePath]).filter(Boolean);
+  const readable = candidates.filter((value) => sessionFileStatKey(value));
+  if (!readable.length) {
+    throw new Error("session files vanished before they could be scanned");
+  }
+  return readable;
+}
+
+function isRecoverableSessionReadError(error) {
+  return ["ENOENT", "EACCES", "EPERM", "EISDIR", "EIO", "ESTALE"].includes(error?.code);
+}
+
 async function scanClaudeSession(filePath) {
-  const filePaths = (Array.isArray(filePath) ? filePath : [filePath]).filter(Boolean);
+  // Native and WSL mounts can disappear independently after discovery. Keep
+  // the surviving mirror instead of dropping the whole logical session.
+  const filePaths = readableSessionPaths(filePath);
   const primaryFilePath = filePaths[0] || String(filePath || "");
   const tokens = emptyTotals();
   // One logical cross-root group is cached and scanned as a unit, so widening
@@ -289,68 +304,76 @@ async function scanClaudeSession(filePath) {
   // already present in an earlier root. Hashes stay in-memory only, preserving
   // the metadata-only persistence contract.
   const priorRecordHashes = new Set();
+  let scannedFiles = 0;
   for (const currentFilePath of filePaths) {
     const currentRecordHashes = new Set();
-    const input = fs.createReadStream(currentFilePath, { encoding: "utf8" });
-    const lines = readline.createInterface({ input, crlfDelay: Infinity });
-    for await (const line of lines) {
-      if (filePaths.length > 1) {
-        const recordHash = crypto.createHash("sha256").update(line).digest("base64url");
-        if (priorRecordHashes.has(recordHash)) continue;
-        currentRecordHashes.add(recordHash);
-      }
-      let obj;
-      try { obj = JSON.parse(line); } catch { continue; }
-      updateBounds(bounds, obj.timestamp || obj.message?.timestamp);
-      if (typeof obj.sessionId === "string" && obj.sessionId) {
-        rawSessionId = obj.sessionId;
-        observedSessionId = obj.sessionId;
-      }
-      if (typeof obj.cwd === "string" && obj.cwd) cwd = obj.cwd;
-      // Claude writes its own generated one-line summary as an "ai-title" record.
-      // It is agent-authored metadata (not the raw prompt body); keep the latest.
-      if (obj.type === "ai-title" && typeof obj.aiTitle === "string") {
-        const cleaned = cleanSessionTitle(obj.aiTitle);
-        if (cleaned) aiTitle = cleaned;
-        continue;
-      }
-      if (obj.type === "user") {
-        const prompt = extractClaudePrompt(obj);
-        if (!prompt) continue;
-        const fingerprint = promptFingerprint(prompt);
-        if (lastPromptFingerprint && fingerprint === lastPromptFingerprint) retryTurns += 1;
-        lastPromptFingerprint = fingerprint;
-        closeTurn();
-        turns += 1;
-        continue;
-      }
-      if (obj.type !== "assistant" || !obj.message) continue;
-      const dedupKey = claudeMessageDedupKey(obj);
-      if (dedupKey && seenMessages.has(dedupKey)) continue;
-      if (dedupKey) seenMessages.add(dedupKey);
-      // Claude writes internal summary/observer messages with model
-      // "<synthetic>". They are not a billable model and can appear after the
-      // real assistant messages in the same session. Keep the latest real
-      // model instead of letting that marker overwrite it.
-      const candidateModel = normalizeSessionModel(obj.message.model);
-      if (candidateModel) model = candidateModel;
-      addTotals(tokens, tokenTotals(obj.message.usage));
-      const content = Array.isArray(obj.message.content) ? obj.message.content : [];
-      for (const block of content) {
-        if (!block || block.type !== "tool_use") continue;
-        const name = String(block.name || "").toLowerCase();
-        if (EDIT_TOOLS.has(name)) currentHadEdit = true;
-        if (name === "agent" || name === "task") {
-          subagentCalls += 1;
-          const subtype = typeof block.input?.subagent_type === "string"
-            ? block.input.subagent_type.trim().slice(0, 64)
-            : "unspecified";
-          subagentTypes.set(subtype || "unspecified", (subagentTypes.get(subtype || "unspecified") || 0) + 1);
+    try {
+      const input = fs.createReadStream(currentFilePath, { encoding: "utf8" });
+      const lines = readline.createInterface({ input, crlfDelay: Infinity });
+      for await (const line of lines) {
+        if (filePaths.length > 1) {
+          const recordHash = crypto.createHash("sha256").update(line).digest("base64url");
+          if (priorRecordHashes.has(recordHash)) continue;
+          currentRecordHashes.add(recordHash);
+        }
+        let obj;
+        try { obj = JSON.parse(line); } catch { continue; }
+        updateBounds(bounds, obj.timestamp || obj.message?.timestamp);
+        if (typeof obj.sessionId === "string" && obj.sessionId) {
+          rawSessionId = obj.sessionId;
+          observedSessionId = obj.sessionId;
+        }
+        if (typeof obj.cwd === "string" && obj.cwd) cwd = obj.cwd;
+        // Claude writes its own generated one-line summary as an "ai-title" record.
+        // It is agent-authored metadata (not the raw prompt body); keep the latest.
+        if (obj.type === "ai-title" && typeof obj.aiTitle === "string") {
+          const cleaned = cleanSessionTitle(obj.aiTitle);
+          if (cleaned) aiTitle = cleaned;
+          continue;
+        }
+        if (obj.type === "user") {
+          const prompt = extractClaudePrompt(obj);
+          if (!prompt) continue;
+          const fingerprint = promptFingerprint(prompt);
+          if (lastPromptFingerprint && fingerprint === lastPromptFingerprint) retryTurns += 1;
+          lastPromptFingerprint = fingerprint;
+          closeTurn();
+          turns += 1;
+          continue;
+        }
+        if (obj.type !== "assistant" || !obj.message) continue;
+        const dedupKey = claudeMessageDedupKey(obj);
+        if (dedupKey && seenMessages.has(dedupKey)) continue;
+        if (dedupKey) seenMessages.add(dedupKey);
+        // Claude writes internal summary/observer messages with model
+        // "<synthetic>". They are not a billable model and can appear after the
+        // real assistant messages in the same session. Keep the latest real
+        // model instead of letting that marker overwrite it.
+        const candidateModel = normalizeSessionModel(obj.message.model);
+        if (candidateModel) model = candidateModel;
+        addTotals(tokens, tokenTotals(obj.message.usage));
+        const content = Array.isArray(obj.message.content) ? obj.message.content : [];
+        for (const block of content) {
+          if (!block || block.type !== "tool_use") continue;
+          const name = String(block.name || "").toLowerCase();
+          if (EDIT_TOOLS.has(name)) currentHadEdit = true;
+          if (name === "agent" || name === "task") {
+            subagentCalls += 1;
+            const subtype = typeof block.input?.subagent_type === "string"
+              ? block.input.subagent_type.trim().slice(0, 64)
+              : "unspecified";
+            subagentTypes.set(subtype || "unspecified", (subagentTypes.get(subtype || "unspecified") || 0) + 1);
+          }
         }
       }
+      scannedFiles += 1;
+    } catch (error) {
+      if (!isRecoverableSessionReadError(error)) throw error;
+    } finally {
+      for (const recordHash of currentRecordHashes) priorRecordHashes.add(recordHash);
     }
-    for (const recordHash of currentRecordHashes) priorRecordHashes.add(recordHash);
   }
+  if (!scannedFiles) throw new Error("all grouped Claude session files failed during read");
   closeTurn();
   return finalizeRecord({
     version: SIDECAR_VERSION,
@@ -377,7 +400,7 @@ async function scanClaudeSession(filePath) {
 }
 
 async function scanCodexDeliverySignals(filePath) {
-  const filePaths = (Array.isArray(filePath) ? filePath : [filePath]).filter(Boolean);
+  const filePaths = readableSessionPaths(filePath);
   const bounds = emptyBounds();
   let turns = 0;
   let editTurns = 0;
@@ -404,46 +427,54 @@ async function scanCodexDeliverySignals(filePath) {
   }
 
   const priorRecordHashes = new Set();
+  let scannedFiles = 0;
   for (const currentFilePath of filePaths) {
     const currentRecordHashes = new Set();
-    const input = fs.createReadStream(currentFilePath, { encoding: "utf8" });
-    const lines = readline.createInterface({ input, crlfDelay: Infinity });
-    for await (const line of lines) {
-      if (filePaths.length > 1) {
-        const recordHash = crypto.createHash("sha256").update(line).digest("base64url");
-        if (priorRecordHashes.has(recordHash)) continue;
-        currentRecordHashes.add(recordHash);
+    try {
+      const input = fs.createReadStream(currentFilePath, { encoding: "utf8" });
+      const lines = readline.createInterface({ input, crlfDelay: Infinity });
+      for await (const line of lines) {
+        if (filePaths.length > 1) {
+          const recordHash = crypto.createHash("sha256").update(line).digest("base64url");
+          if (priorRecordHashes.has(recordHash)) continue;
+          currentRecordHashes.add(recordHash);
+        }
+        let obj;
+        try { obj = JSON.parse(line); } catch { continue; }
+        updateBounds(bounds, obj.timestamp);
+        if (obj.type === "turn_context") {
+          hasTurnContext = true;
+          beginTurn(String(obj.payload?.turn_id || obj.timestamp || turns + 1));
+          continue;
+        }
+        const prompt = extractCodexPrompt(obj);
+        if (prompt) {
+          const fingerprint = promptFingerprint(prompt);
+          if (lastPromptFingerprint && fingerprint === lastPromptFingerprint) retryTurns += 1;
+          lastPromptFingerprint = fingerprint;
+          if (!hasTurnContext) beginTurn(String(obj.timestamp || turns + 1));
+          continue;
+        }
+        if (obj.type !== "response_item") continue;
+        const toolNames = extractCodexSignalTools(obj.payload);
+        if (!toolNames.length) continue;
+        if (!currentTurnOpen) beginTurn(String(obj.timestamp || turns + 1));
+        if (toolNames.some((name) => EDIT_TOOLS.has(name))) currentHadEdit = true;
+        for (const name of toolNames) {
+          if (!CODEX_SUBAGENT_TOOLS.has(name)) continue;
+          subagentCalls += 1;
+          const displayName = name === "multi_agent_v1__spawn_agent" ? "spawn_agent" : name;
+          subagentTypes.set(displayName, (subagentTypes.get(displayName) || 0) + 1);
+        }
       }
-      let obj;
-      try { obj = JSON.parse(line); } catch { continue; }
-      updateBounds(bounds, obj.timestamp);
-      if (obj.type === "turn_context") {
-        hasTurnContext = true;
-        beginTurn(String(obj.payload?.turn_id || obj.timestamp || turns + 1));
-        continue;
-      }
-      const prompt = extractCodexPrompt(obj);
-      if (prompt) {
-        const fingerprint = promptFingerprint(prompt);
-        if (lastPromptFingerprint && fingerprint === lastPromptFingerprint) retryTurns += 1;
-        lastPromptFingerprint = fingerprint;
-        if (!hasTurnContext) beginTurn(String(obj.timestamp || turns + 1));
-        continue;
-      }
-      if (obj.type !== "response_item") continue;
-      const toolNames = extractCodexSignalTools(obj.payload);
-      if (!toolNames.length) continue;
-      if (!currentTurnOpen) beginTurn(String(obj.timestamp || turns + 1));
-      if (toolNames.some((name) => EDIT_TOOLS.has(name))) currentHadEdit = true;
-      for (const name of toolNames) {
-        if (!CODEX_SUBAGENT_TOOLS.has(name)) continue;
-        subagentCalls += 1;
-        const displayName = name === "multi_agent_v1__spawn_agent" ? "spawn_agent" : name;
-        subagentTypes.set(displayName, (subagentTypes.get(displayName) || 0) + 1);
-      }
+      scannedFiles += 1;
+    } catch (error) {
+      if (!isRecoverableSessionReadError(error)) throw error;
+    } finally {
+      for (const recordHash of currentRecordHashes) priorRecordHashes.add(recordHash);
     }
-    for (const recordHash of currentRecordHashes) priorRecordHashes.add(recordHash);
   }
+  if (!scannedFiles) throw new Error("all grouped Codex signal files failed during read");
   closeTurn();
   return {
     bounds,
@@ -456,7 +487,7 @@ async function scanCodexDeliverySignals(filePath) {
 }
 
 async function scanCodexSession(filePath) {
-  const filePaths = (Array.isArray(filePath) ? filePath : [filePath]).filter(Boolean);
+  const filePaths = readableSessionPaths(filePath);
   const primaryFilePath = filePaths[0] || String(filePath || "");
   const [parsed, signals] = await Promise.all([
     parseCodexRolloutFile(filePaths, { seenTokenEvents: new Set() }),
@@ -1034,8 +1065,8 @@ function loadCodexTitleIndex(filePath) {
 // touching updates.jsonl on some partial flushes).
 function analyticsEntryStatKey(source, filePath) {
   const filePaths = (Array.isArray(filePath) ? filePath : [filePath]).filter(Boolean);
-  const sessionStats = filePaths.map((value) => sessionFileStatKey(value));
-  if (sessionStats.some((value) => !value)) return null;
+  const sessionStats = filePaths.map((value) => sessionFileStatKey(value) || "missing");
+  if (sessionStats.every((value) => value === "missing")) return null;
   const sessionStat = sessionStats.join("|");
   if (source === "codex") {
     const titleStats = filePaths.map((value) => (
@@ -1446,4 +1477,5 @@ module.exports = {
   sessionsToCsv,
   providerRoots,
   dedupeClaudeFilesAcrossRoots,
+  analyticsEntryStatKey,
 };

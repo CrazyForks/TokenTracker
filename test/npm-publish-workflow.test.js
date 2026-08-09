@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const fs = require("node:fs");
 const path = require("node:path");
+const { assertReleaseVersion } = require("../scripts/version-files.cjs");
 
 const WORKFLOW_PATH = path.join(
   __dirname,
@@ -85,6 +86,43 @@ test("workflow checks version before publishing", () => {
     content.includes("outputs.eligible == 'true'"),
     "publish steps must require an exact version-changing commit"
   );
+  assert.ok(content.includes("set -euo pipefail"), "provenance checks must fail closed");
+  assert.ok(
+    !content.includes("JSON.parse(s).version||'')}catch{}})\" || true"),
+    "parent version lookup must not swallow checkout or JSON errors",
+  );
+  assert.ok(
+    content.includes('r?.error?.code') && content.includes('= "E404"'),
+    "only a confirmed npm E404 may be treated as unpublished",
+  );
+  assert.ok(
+    content.includes("npm registry lookup failed without a confirmed E404"),
+    "other registry failures must stop publication",
+  );
+  assert.ok(
+    content.includes("assertReleaseVersion(process.argv[1]") &&
+      content.includes("assertReleaseVersion(process.argv[2]"),
+    "current and parent package versions must be validated before npm lookup",
+  );
+});
+
+test("workflow skip notices are reason-specific and avoid expression injection", () => {
+  const content = loadWorkflow();
+  assert.ok(content.includes("Skip unchanged-version commit"));
+  assert.ok(content.includes("Skip already-published version"));
+  assert.ok(content.includes("PACKAGE_VERSION: ${{ steps.version-check.outputs.version }}"));
+  assert.ok(
+    !content.includes('run: echo "v${{ steps.version-check.outputs.version }}'),
+    "step outputs must not be interpolated directly into shell source",
+  );
+});
+
+test("publish version validation rejects malformed current and parent versions", () => {
+  assert.equal(assertReleaseVersion("0.88.3", "current"), "0.88.3");
+  for (const invalid of ["", "v0.88.3", "0.88", "0.88.3-beta.1", "01.2.3"]) {
+    assert.throws(() => assertReleaseVersion(invalid, "current"), /stable x\.y\.z/);
+    assert.throws(() => assertReleaseVersion(invalid, "parent"), /stable x\.y\.z/);
+  }
 });
 
 test("workflow builds dashboard before publish", () => {
