@@ -36,6 +36,7 @@ jobs:
           fi
 
           scan=$(curl --fail-with-body -sS --max-time 120 \
+            --retry 2 --retry-delay 3 --retry-max-time 90 --retry-all-errors \
             -X POST "$API" \
             -H "Content-Type: application/json" \
             -H "x-refresh-secret: $REFRESH_SECRET" \
@@ -62,6 +63,7 @@ jobs:
           if (( excluded > 0 )); then
             for period in month total; do
               refreshed=$(curl --fail-with-body -sS --max-time 120 \
+                --retry 2 --retry-delay 3 --retry-max-time 90 --retry-all-errors \
                 -X POST "$API" \
                 -H "Content-Type: application/json" \
                 -H "x-refresh-secret: $REFRESH_SECRET" \
@@ -72,7 +74,9 @@ jobs:
             done
           fi
 
-          health=$(curl --fail-with-body -sS --max-time 30 "$API?anomalies=1")
+          health=$(curl --fail-with-body -sS --max-time 30 \
+            --retry 2 --retry-delay 3 --retry-max-time 60 --retry-all-errors \
+            "$API?anomalies=1")
           jq -e --argjson excluded "$excluded" --argjson review "$review" '
             .ok == true and
             .auto_excluded == $excluded and

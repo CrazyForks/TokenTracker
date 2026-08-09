@@ -199,6 +199,8 @@ test("leaderboard anti-cheat workflow actively scans, refreshes, and never leaks
   assert.match(workflow, /secrets\.LEADERBOARD_REFRESH_SECRET/u);
   assert.match(workflow, /"scan_anomalies":true/u);
   assert.match(workflow, /"force_refresh":true/u);
+  assert.match(workflow, /--retry 2 --retry-delay 3 --retry-max-time 90 --retry-all-errors/u,
+    "the remote scan must absorb one transient edge/database timeout");
   assert.match(workflow, /for period in month total/u);
   assert.match(workflow, /\?anomalies=1/u, "the workflow must independently read back queue state");
   assert.doesNotMatch(workflow, /user_id/u, "workflow logs must never expose flagged identities");
