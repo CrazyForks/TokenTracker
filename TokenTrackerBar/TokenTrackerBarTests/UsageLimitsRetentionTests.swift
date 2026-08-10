@@ -153,6 +153,21 @@ final class UsageLimitsRetentionTests: XCTestCase {
         XCTAssertNil(response.codex.resetCredits)
     }
 
+    func testCursorWindowDecodesBillingCycleDurationForPaceMarker() throws {
+        let response = try decodeResponse(overrides: [
+            "cursor": [
+                "configured": true,
+                "primary_window": [
+                    "used_percent": 42.4,
+                    "reset_at": "2026-09-04T03:32:21.000Z",
+                    "limit_window_seconds": 2_678_400,
+                ],
+            ],
+        ])
+
+        XCTAssertEqual(response.cursor.primaryWindow?.limitWindowSeconds, 2_678_400)
+    }
+
     func testCodexCreditWindowDecodesSpendControlFields() throws {
         let response = try decodeResponse(overrides: [
             "codex": [

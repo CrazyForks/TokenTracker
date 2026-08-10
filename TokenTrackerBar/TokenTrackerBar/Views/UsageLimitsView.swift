@@ -289,9 +289,30 @@ struct UsageLimitsView: View {
 
     private func cursorSpecs(_ c: CursorLimits) -> [LimitWindowSpec] {
         var s: [LimitWindowSpec] = []
-        if let w = c.primaryWindow { s.append(makeSpec(Strings.cursorPlanLabel, w.usedPercent, iso: w.resetAt)) }
-        if let w = c.secondaryWindow { s.append(makeSpec(Strings.cursorAutoLabel, w.usedPercent, iso: w.resetAt)) }
-        if let w = c.tertiaryWindow { s.append(makeSpec("API", w.usedPercent, iso: w.resetAt)) }
+        if let w = c.primaryWindow {
+            s.append(makeSpec(
+                Strings.cursorPlanLabel,
+                w.usedPercent,
+                windowSeconds: w.limitWindowSeconds,
+                iso: w.resetAt
+            ))
+        }
+        if let w = c.secondaryWindow {
+            s.append(makeSpec(
+                Strings.cursorAutoLabel,
+                w.usedPercent,
+                windowSeconds: w.limitWindowSeconds,
+                iso: w.resetAt
+            ))
+        }
+        if let w = c.tertiaryWindow {
+            s.append(makeSpec(
+                "API",
+                w.usedPercent,
+                windowSeconds: w.limitWindowSeconds,
+                iso: w.resetAt
+            ))
+        }
         return s
     }
 
@@ -836,12 +857,14 @@ private struct LimitsExplainContent: View {
                 }
             }
 
-            Divider().opacity(0.5)
+            if hasPaceMarker {
+                Divider().opacity(0.5)
 
-            Text(Strings.limitsExplainBody(remaining: remainingMode))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                Text(Strings.limitsExplainBody(remaining: remainingMode))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if let updatedLabel {
                 VStack(alignment: .leading, spacing: 2) {
@@ -877,6 +900,14 @@ private struct LimitsExplainContent: View {
     private var retryLabel: String? {
         guard isStale, let retryAt, retryAt.timeIntervalSinceNow > 0 else { return nil }
         return Strings.limitsRetryingAt(retryAt)
+    }
+
+    private var hasPaceMarker: Bool {
+        specs.contains { spec in
+            spec.pct >= 5
+                && (spec.windowSeconds ?? 0) > 0
+                && spec.resetDate != nil
+        }
     }
 
     /// Live pace numbers + current-rate projection for one window, via the shared

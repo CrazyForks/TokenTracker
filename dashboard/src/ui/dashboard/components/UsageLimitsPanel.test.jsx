@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { copy, setCopyLocale } from "../../../lib/copy";
 import { DE_LOCALE, EN_LOCALE, JA_LOCALE, KO_LOCALE, ZH_CN_LOCALE, ZH_TW_LOCALE } from "../../../lib/locale";
@@ -194,6 +194,52 @@ describe("UsageLimitsPanel", () => {
     rerender(<UsageLimitsPanel opencodeGo={{ configured: false }} order={["opencodeGo"]} />);
     expect(screen.getByText("OpenCode Go")).toBeInTheDocument();
     expect(screen.getByText("Not connected")).toBeInTheDocument();
+  });
+
+  it("does not describe a pace marker when the provider cannot render one (issue 445)", () => {
+    render(
+      <UsageLimitsPanel
+        opencodeGo={{
+          configured: true,
+          error: null,
+          primary_window: { used_percent: 12, reset_at: "2026-08-12T20:00:00.000Z" },
+          secondary_window: { used_percent: 30, reset_at: "2026-08-16T00:00:00.000Z" },
+          tertiary_window: { used_percent: 60, reset_at: "2026-09-01T00:00:00.000Z" },
+        }}
+        order={["opencodeGo"]}
+      />,
+    );
+
+    const group = screen.getByText("OpenCode Go").closest("[role='button']");
+    expect(group).not.toBeNull();
+    fireEvent.click(group);
+
+    expect(within(group).queryByText(copy("limits.explain.body"))).not.toBeInTheDocument();
+  });
+
+  it("renders Cursor pace markers from the exact billing-cycle duration (issue 445)", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-20T03:32:21.000Z"));
+    render(
+      <UsageLimitsPanel
+        cursor={{
+          configured: true,
+          error: null,
+          primary_window: {
+            used_percent: 42.4,
+            reset_at: "2026-09-04T03:32:21.000Z",
+            limit_window_seconds: 31 * 24 * 60 * 60,
+          },
+        }}
+        order={["cursor"]}
+      />,
+    );
+
+    const group = screen.getByText("Cursor").closest("[role='button']");
+    expect(group).not.toBeNull();
+    expect(group.querySelectorAll("div.absolute.top-0.h-full")).toHaveLength(2);
+    fireEvent.click(group);
+    expect(within(group).getByText(copy("limits.explain.body"))).toBeInTheDocument();
   });
 
   it("surfaces a configured OpenCode Go error instead of rendering bars", () => {

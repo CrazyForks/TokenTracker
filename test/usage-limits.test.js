@@ -2466,6 +2466,26 @@ describe("normalizeKimiUsageResponse", () => {
 });
 
 describe("normalizeCursorUsageSummary", () => {
+  it("preserves the exact billing-cycle duration for pace markers (#445)", () => {
+    const result = normalizeCursorUsageSummary({
+      billingCycleStart: "2026-08-04T03:32:21.000Z",
+      billingCycleEnd: "2026-09-04T03:32:21.000Z",
+      membershipType: "pro",
+      individualUsage: {
+        plan: {
+          totalPercentUsed: 42.4,
+          autoPercentUsed: 31.2,
+          apiPercentUsed: 78.9,
+        },
+      },
+    });
+
+    const expectedSeconds = 31 * 24 * 60 * 60;
+    assert.equal(result.primary_window.limit_window_seconds, expectedSeconds);
+    assert.equal(result.secondary_window.limit_window_seconds, expectedSeconds);
+    assert.equal(result.tertiary_window.limit_window_seconds, expectedSeconds);
+  });
+
   it("maps total, auto, and api windows from usage-summary", () => {
     const result = normalizeCursorUsageSummary({
       billingCycleEnd: "2026-04-30T00:00:00.000Z",

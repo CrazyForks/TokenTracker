@@ -398,6 +398,14 @@ test("matcher: Claude normalization handles relay/gateway ids (#212)", () => {
 
 test("matcher: Cursor normalization preserves Grok Fast and canonicalizes Claude aliases", () => {
   assert.equal(
+    matcher.normalizeCursorModel("composer-2-fast"),
+    "composer-2-fast",
+  );
+  assert.equal(
+    matcher.normalizeCursorModel("claude-opus-5-fast"),
+    "claude-opus-5-fast",
+  );
+  assert.equal(
     matcher.normalizeCursorModel("cursor-grok-4.5-high-fast"),
     "cursor-grok-4.5-fast",
   );
@@ -701,6 +709,34 @@ test("index: getModelPricing resolves Cursor Grok and version-first Claude alias
     rates(pricing.getModelPricing("claude-4.5-haiku-thinking", { source: "cursor" })),
     { input: 1, output: 5, cache_read: 0.1, cache_write: 1.25 },
   );
+});
+
+test("index: Cursor Fast SKUs keep their distinct curated pricing (#446)", () => {
+  const rates = (model) => {
+    const { input, output, cache_read, cache_write } = model;
+    return { input, output, cache_read, cache_write };
+  };
+  assert.deepEqual(
+    rates(pricing.getModelPricing("composer-2-fast", { source: "cursor" })),
+    { input: 1.5, output: 7.5, cache_read: 0.15, cache_write: undefined },
+  );
+  assert.deepEqual(
+    rates(pricing.getModelPricing("claude-opus-5-fast", { source: "cursor" })),
+    { input: 10, output: 50, cache_read: 1, cache_write: 12.5 },
+  );
+
+  assert.equal(pricing.computeRowCost({
+    source: "cursor",
+    model: "composer-2-fast",
+    input_tokens: 1_000_000,
+    output_tokens: 1_000_000,
+  }), 9);
+  assert.equal(pricing.computeRowCost({
+    source: "cursor",
+    model: "claude-opus-5-fast",
+    input_tokens: 1_000_000,
+    output_tokens: 1_000_000,
+  }), 60);
 });
 
 test("index: getModelPricing finds LiteLLM mainstream models with correct unit conversion", async () => {

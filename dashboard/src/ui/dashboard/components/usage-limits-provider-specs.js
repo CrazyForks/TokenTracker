@@ -40,9 +40,24 @@ export const PROVIDER_LIMIT_SPECS = {
   cursor: {
     windows(data) {
       return [
-        { key: "plan", labelKey: "limits.label.cursor_plan", window: data.primary_window },
-        { key: "auto", labelKey: "limits.label.cursor_auto", window: data.secondary_window },
-        { key: "api", labelKey: "limits.label.cursor_api", window: data.tertiary_window },
+        {
+          key: "plan",
+          labelKey: "limits.label.cursor_plan",
+          window: data.primary_window,
+          windowSecondsField: "limit_window_seconds",
+        },
+        {
+          key: "auto",
+          labelKey: "limits.label.cursor_auto",
+          window: data.secondary_window,
+          windowSecondsField: "limit_window_seconds",
+        },
+        {
+          key: "api",
+          labelKey: "limits.label.cursor_api",
+          window: data.tertiary_window,
+          windowSecondsField: "limit_window_seconds",
+        },
       ];
     },
   },

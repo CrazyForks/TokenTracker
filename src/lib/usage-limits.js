@@ -83,13 +83,17 @@ function toFiniteNumberOrNull(value) {
   return Number.isFinite(n) ? n : null;
 }
 
-function buildWindow({ usedPercent, resetAt }) {
+function buildWindow({ usedPercent, resetAt, windowSeconds = null }) {
   const pct = clampPercent(usedPercent);
   if (pct === null) return null;
-  return {
+  const window = {
     used_percent: pct,
     reset_at: typeof resetAt === "string" && resetAt ? resetAt : null,
   };
+  if (Number.isFinite(windowSeconds) && windowSeconds > 0) {
+    window.limit_window_seconds = windowSeconds;
+  }
+  return window;
 }
 
 function decodeJwtPayload(token) {
@@ -578,7 +582,15 @@ function normalizeCursorUsageSummary(body) {
   const plan = body?.individualUsage?.plan || null;
   const indOnDemand = body?.individualUsage?.onDemand || null;
   const teamOnDemand = body?.teamUsage?.onDemand || null;
+  const billingCycleStart = typeof body?.billingCycleStart === "string" ? body.billingCycleStart : null;
   const billingCycleEnd = typeof body?.billingCycleEnd === "string" ? body.billingCycleEnd : null;
+  const billingCycleStartMs = Date.parse(billingCycleStart || "");
+  const billingCycleEndMs = Date.parse(billingCycleEnd || "");
+  const billingCycleSeconds = Number.isFinite(billingCycleStartMs)
+    && Number.isFinite(billingCycleEndMs)
+    && billingCycleEndMs > billingCycleStartMs
+    ? Math.round((billingCycleEndMs - billingCycleStartMs) / 1000)
+    : null;
   const autoPercent = clampPercent(plan?.autoPercentUsed);
   const apiPercent = clampPercent(plan?.apiPercentUsed);
 
@@ -631,9 +643,9 @@ function normalizeCursorUsageSummary(body) {
 
   return {
     membership_type: typeof body?.membershipType === "string" ? body.membershipType : null,
-    primary_window: buildWindow({ usedPercent: planPercent, resetAt: billingCycleEnd }),
-    secondary_window: buildWindow({ usedPercent: autoPercent, resetAt: billingCycleEnd }),
-    tertiary_window: buildWindow({ usedPercent: apiPercent, resetAt: billingCycleEnd }),
+    primary_window: buildWindow({ usedPercent: planPercent, resetAt: billingCycleEnd, windowSeconds: billingCycleSeconds }),
+    secondary_window: buildWindow({ usedPercent: autoPercent, resetAt: billingCycleEnd, windowSeconds: billingCycleSeconds }),
+    tertiary_window: buildWindow({ usedPercent: apiPercent, resetAt: billingCycleEnd, windowSeconds: billingCycleSeconds }),
   };
 }
 

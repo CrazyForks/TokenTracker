@@ -207,9 +207,14 @@ function explainLineFor(spec, pace, mode) {
   return copy(remaining ? "limits.explain.on_track_remaining" : "limits.explain.on_track", { label, pct });
 }
 
+function rowHasPaceMarker({ pace }) {
+  return pace.pacePercent != null;
+}
+
 function LimitDetail({ rows, mode }) {
   if (rows.length === 0) return null;
   const remaining = mode === LIMIT_DISPLAY_MODES.REMAINING;
+  const hasPaceMarker = rows.some(rowHasPaceMarker);
   // No own background or extra horizontal padding: it sits on the expanded
   // group's tint and lines up flush-left with the bars above.
   return (
@@ -228,9 +233,11 @@ function LimitDetail({ rows, mode }) {
           </div>
         );
       })}
-      <div className="mt-1 pt-1.5 border-t border-oai-gray-200/70 dark:border-oai-gray-700/50 text-[10.5px] leading-snug text-oai-gray-400 dark:text-oai-gray-500">
-        {copy(remaining ? "limits.explain.body_remaining" : "limits.explain.body")}
-      </div>
+      {hasPaceMarker ? (
+        <div className="mt-1 pt-1.5 border-t border-oai-gray-200/70 dark:border-oai-gray-700/50 text-[10.5px] leading-snug text-oai-gray-400 dark:text-oai-gray-500">
+          {copy(remaining ? "limits.explain.body_remaining" : "limits.explain.body")}
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -138,7 +138,11 @@ function normalizeCursorModel(model) {
     return isFast ? "cursor-grok-4.5-fast" : "cursor-grok-4.5";
   }
 
-  const decorations = new Set(["thinking", "xhigh", "high", "medium", "low", "fast"]);
+  // `fast` can be a separately priced SKU (for example composer-2-fast and
+  // claude-opus-5-fast). Preserve it for the exact lookups below; when it is
+  // merely a decoration, lookupPricing's later suffix-strip still falls back
+  // to the base LiteLLM model.
+  const decorations = new Set(["thinking", "xhigh", "high", "medium", "low"]);
   m = parts.filter((part) => !decorations.has(part)).join("-");
   if (m.startsWith("claude-")) return normalizeClaudeModel(m);
   return m;
