@@ -33,8 +33,9 @@ export const LIMIT_PROVIDER_ICON_KEYS = {
   // (Go is a paid subscription tracked via dashboard scrape).
   opencodeGo: "OPENCODE",
   qoder: "QODER",
-  // Same Qoder brand mark — the CN edition is the same product family.
-  qoderCn: "QODER",
+  // The CN edition ships its own green-crescent brand mark, distinct from the
+  // international black double-crescent — resolved to the QODER-CN icon asset.
+  qoderCn: "QODER-CN",
 };
 
 export function limitProviderIconKey(id) {
