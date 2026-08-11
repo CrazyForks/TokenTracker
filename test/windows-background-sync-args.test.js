@@ -9,7 +9,7 @@ function read(relPath) {
   return fs.readFileSync(path.join(repoRoot, relPath), "utf8");
 }
 
-test("Windows background sync passes bounded args while manual sync stays full", () => {
+test("Windows background sync stays native-only while manual sync preserves WSL mode", () => {
   const serverManager = read("TokenTrackerWin/ServerManager.cs");
   const trayContext = read("TokenTrackerWin/TrayApplicationContext.cs");
 
@@ -42,5 +42,20 @@ test("Windows background sync passes bounded args while manual sync stays full",
     serverManager,
     /new\[\]\s*\{\s*"sync",\s*"--auto"\s*\}/,
     "Windows background sync must not retain the bare sync --auto pattern",
+  );
+  assert.match(
+    serverManager,
+    /StartTrackerProcess\(\s*runtime\.Value\.NodePath,\s*runtime\.Value\.EntryPath,\s*auto,\s*args\)/,
+    "Only the auto/background sync path should request native-only WSL isolation",
+  );
+  assert.match(
+    serverManager,
+    /if \(forceNativeOnlyWslMode\)[\s\S]*psi\.Environment\["TOKENTRACKER_WSL_MODE"\]\s*=\s*"native-only";/,
+    "The Windows child launcher should override WSL mode for isolated background syncs",
+  );
+  assert.match(
+    serverManager,
+    /StartTrackerProcess\(\s*nodePath,\s*entryPath,\s*false,\s*"serve"/,
+    "The long-lived server must not receive the background-only WSL override",
   );
 });

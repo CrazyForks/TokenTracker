@@ -111,7 +111,8 @@ internal sealed class ServerManager : IDisposable
             var args = auto
                 ? new[] { "sync", "--auto", "--background" }
                 : new[] { "sync" };
-            var proc = StartTrackerProcess(runtime.Value.NodePath, runtime.Value.EntryPath, args);
+            var proc = StartTrackerProcess(
+                runtime.Value.NodePath, runtime.Value.EntryPath, auto, args);
             if (proc is null) return false;
 
             _syncProcess = proc;
@@ -270,7 +271,7 @@ internal sealed class ServerManager : IDisposable
         {
             Log("LaunchServer start");
             _serverProcess = StartTrackerProcess(
-                nodePath, entryPath,
+                nodePath, entryPath, false,
                 "serve", "--port", Port.ToString(), "--no-sync", "--no-open");
 
             if (_serverProcess is not null)
@@ -294,7 +295,10 @@ internal sealed class ServerManager : IDisposable
     }
 
     private static Process? StartTrackerProcess(
-        string nodePath, string entryPath, params string[] args)
+        string nodePath,
+        string entryPath,
+        bool forceNativeOnlyWslMode,
+        params string[] args)
     {
         var psi = new ProcessStartInfo
         {
@@ -309,6 +313,8 @@ internal sealed class ServerManager : IDisposable
         foreach (var a in args) psi.ArgumentList.Add(a);
         psi.Environment["NODE_ENV"] = "production";
         psi.Environment["TOKENTRACKER_APP_SHELL"] = "windows";
+        if (forceNativeOnlyWslMode)
+            psi.Environment["TOKENTRACKER_WSL_MODE"] = "native-only";
 
         var proxySource = ChildProcessProxy.Configure(psi.Environment, HttpClient.DefaultProxy);
         if (proxySource != ChildProcessProxySource.None)
