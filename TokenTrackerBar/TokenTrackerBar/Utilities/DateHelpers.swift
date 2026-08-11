@@ -40,6 +40,15 @@ enum DateHelpers {
 		return localDayFormatter.string(from: date)
 	}
 
+	/// Returns an inclusive local-day range ending on the provided date.
+	static func dayRange(daysBack: Int, endingAt date: Date) -> (from: String, to: String) {
+		let fromDate = localCalendar.date(byAdding: .day, value: -daysBack, to: date) ?? date
+		return (
+			from: localDayFormatter.string(from: fromDate),
+			to: localDayFormatter.string(from: date)
+		)
+	}
+
 	/// Parses a "YYYY-MM-DD" string into a Date in the current local time zone.
 	static func parseDay(_ s: String) -> Date? {
 		let result = localDayFormatter.date(from: s)
@@ -72,8 +81,11 @@ enum DateHelpers {
     }
 
     /// Returns (from, to) date strings for a given period.
-    static func rangeForPeriod(_ period: Period) -> (from: String, to: String) {
-        let now = Date()
+    static func rangeForPeriod(
+        _ period: Period,
+        referenceDate: Date = Date()
+    ) -> (from: String, to: String) {
+        let now = referenceDate
         let today = localDayFormatter.string(from: now)
 
         switch period {
@@ -104,7 +116,7 @@ enum DateHelpers {
             // Last 24 months
             let start = localCalendar.date(byAdding: .month, value: -24, to: now) ?? now
             guard let monthStart = localCalendar.date(from: localCalendar.dateComponents([.year, .month], from: start)) else {
-                return (from: monthsAgoString(24), to: today)
+                return (from: localDayFormatter.string(from: start), to: today)
             }
             return (from: localDayFormatter.string(from: monthStart), to: today)
         }

@@ -98,12 +98,14 @@ public struct WidgetSnapshot: Codable, Equatable {
 
     // MARK: - Derived
 
-    /// Tokens used yesterday, derived from `dailyTrend`. The trend is sorted
-    /// oldest-first; the last entry represents today, so yesterday is the
-    /// second-to-last entry. Returns 0 when not enough data is available.
+    /// Tokens used on the calendar day before this snapshot was generated.
+    /// `dailyTrend` contains only active days, so array position cannot identify yesterday.
     public var yesterdayTokens: Int {
-        guard dailyTrend.count >= 2 else { return 0 }
-        return dailyTrend[dailyTrend.count - 2].totalTokens
+        let calendar = Calendar.current
+        guard let yesterday = calendar.date(byAdding: .day, value: -1, to: generatedAt) else {
+            return 0
+        }
+        return dailyTrend.first { calendar.isDate($0.day, inSameDayAs: yesterday) }?.totalTokens ?? 0
     }
 
     /// Delta (percent) between today and yesterday. Returns nil when there

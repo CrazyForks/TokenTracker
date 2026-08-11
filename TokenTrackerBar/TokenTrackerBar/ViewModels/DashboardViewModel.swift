@@ -144,10 +144,14 @@ class DashboardViewModel: ObservableObject {
             return
         }
 
-        let range = DateHelpers.rangeForPeriod(period)
-        let rollingFrom = DateHelpers.daysAgoString(30)
-        let rollingTo = DateHelpers.todayString()
-        let totalRange = DateHelpers.rangeForPeriod(.total)
+        // Keep every date-scoped query and the resulting widget snapshot on one
+        // calendar-day reference even when the refresh crosses local midnight.
+        let capturedAt = Date()
+        let range = DateHelpers.rangeForPeriod(period, referenceDate: capturedAt)
+        let rollingRange = DateHelpers.dayRange(daysBack: 30, endingAt: capturedAt)
+        let rollingFrom = rollingRange.from
+        let rollingTo = rollingRange.to
+        let totalRange = DateHelpers.rangeForPeriod(.total, referenceDate: capturedAt)
 
         var errorCount = 0
         var firstError: String?
@@ -157,10 +161,9 @@ class DashboardViewModel: ObservableObject {
             // Today summary (always today for summary cards)
             group.addTask { @MainActor in
                 do {
-                    let today = DateHelpers.todayString()
                     let result = try await APIClient.shared.fetchSummaryWithSource(
-                        from: today,
-                        to: today
+                        from: rollingTo,
+                        to: rollingTo
                     )
                     self.todaySummary = result.summary
                     self.summaryPublicationState.record(
@@ -306,7 +309,7 @@ class DashboardViewModel: ObservableObject {
 
         // Push the latest data to the widget snapshot file so the desktop
         // widgets pick it up on their next timeline reload.
-        await WidgetSnapshotWriter.update(from: self)
+        await WidgetSnapshotWriter.update(from: self, capturedAt: capturedAt)
         await finishDataLoad(allowPendingRefresh: errorCount == 0)
     }
 

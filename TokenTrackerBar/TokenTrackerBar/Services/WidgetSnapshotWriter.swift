@@ -17,10 +17,10 @@ enum WidgetSnapshotWriter {
 
     /// Immutable snapshot of the fields we read off `DashboardViewModel`.
     /// Captured synchronously on the main actor BEFORE we suspend on any
-    /// async work, so a concurrent `loadAll()` running while we're awaiting
-    /// the cost fetches can't smear two refreshes together in one widget
-    /// snapshot.
+    /// async work. `capturedAt` is supplied by `loadAll()` so the queried data
+    /// and the resulting widget snapshot share one calendar-day reference.
     private struct VMInputs {
+        let capturedAt: Date
         let serverOnline: Bool
         let todaySummary: UsageSummaryResponse?
         let summary: UsageSummaryResponse?
@@ -51,9 +51,9 @@ enum WidgetSnapshotWriter {
         }
     }
 
-    static func update(from vm: DashboardViewModel) async {
+    static func update(from vm: DashboardViewModel, capturedAt: Date) async {
         // Monotonic ticket (main-actor serialized): if a newer update starts
-        // while we're suspended on the cost fetches below, this call is stale
+        // while we're suspended on the range fetches below, this call is stale
         // and must not write — otherwise its older snapshot could land after
         // (and clobber) the newer one.
         updateGeneration += 1
@@ -62,9 +62,10 @@ enum WidgetSnapshotWriter {
         // STEP 1 — synchronously freeze every VM field we will need. After
         // this point we never touch `vm` again. This is the fix for the
         // race where a second loadAll() could mutate the view model while
-        // we're awaiting the cost fetches below, producing a snapshot that
+        // we're awaiting the range fetches below, producing a snapshot that
         // mixed two different refreshes.
         let inputs = VMInputs(
+            capturedAt: capturedAt,
             serverOnline: vm.serverOnline,
             todaySummary: vm.todaySummary,
             summary: vm.summary,
@@ -77,18 +78,25 @@ enum WidgetSnapshotWriter {
             usageLimits: vm.usageLimits
         )
 
-        // STEP 2 — the dashboard's `rollingSummary` does NOT include cost
-        // (the /tokentracker-usage-summary endpoint omits it from
-        // `rolling.*`). Fire two extra parallel summary calls scoped to
-        // 7-day and 30-day ranges so the widget can show real cost numbers.
-        async let last7dCost = fetchRangeCost(daysBack: 6)
-        async let last30dCost = fetchRangeCost(daysBack: 29)
-        let (cost7d, cost30d) = await (last7dCost, last30dCost)
+        // STEP 2 — `rolling.*` omits cost and is anchored to the server's live
+        // clock. Fetch explicit captured ranges so every displayed field in
+        // each period comes from one response and one calendar window.
+        let last7dRange = DateHelpers.dayRange(daysBack: 6, endingAt: inputs.capturedAt)
+        let last30dRange = DateHelpers.dayRange(daysBack: 29, endingAt: inputs.capturedAt)
+        async let last7dSummary = fetchRangeSummary(last7dRange)
+        async let last30dSummary = fetchRangeSummary(last30dRange)
+        let (summary7d, summary30d) = await (last7dSummary, last30dSummary)
 
-        // Superseded while awaiting the cost fetches — drop this stale write.
+        // Superseded while awaiting the range fetches — drop this stale write.
         guard ticket == updateGeneration else { return }
 
-        let snapshot = buildSnapshot(from: inputs, cost7d: cost7d, cost30d: cost30d)
+        let snapshot = buildSnapshot(
+            from: inputs,
+            last7dSummary: summary7d,
+            last30dSummary: summary30d,
+            last7dRange: last7dRange,
+            last30dRange: last30dRange
+        )
         // Write off the main actor on a serial queue (no main-thread file IO,
         // no torn concurrent writes); the generation guard above is what
         // keeps stale snapshots from overwriting newer ones.
@@ -111,18 +119,18 @@ enum WidgetSnapshotWriter {
     /// Bumped at the start of every `update`; stale calls bail before writing.
     private static var updateGeneration = 0
 
-    /// Fetches a `UsageSummaryResponse` for `[N days ago, today]` and pulls
-    /// out the top-level `total_cost_usd`. Returns 0 on any failure so the
-    /// widget keeps rendering rather than getting stuck on an error path.
-    private static func fetchRangeCost(daysBack: Int) async -> Double {
-        let from = DateHelpers.daysAgoString(daysBack)
-        let to = DateHelpers.todayString()
+    /// Fetches all totals for an explicit captured range. Returns nil on any
+    /// failure so the widget can fall back to matching dashboard rolling fields.
+    private static func fetchRangeSummary(
+        _ range: (from: String, to: String)
+    ) async -> UsageSummaryResponse? {
         do {
-            let resp = try await APIClient.shared.fetchSummary(from: from, to: to)
-            return parseCost(resp.totals.totalCostUsd)
+            return try await APIClient.shared.fetchSummary(from: range.from, to: range.to)
         } catch {
-            logger.warning("widget cost fetch \(daysBack)d failed: \(error.localizedDescription)")
-            return 0
+            logger.warning(
+                "widget range fetch \(range.from)-\(range.to) failed: \(error.localizedDescription)"
+            )
+            return nil
         }
     }
 
@@ -130,13 +138,21 @@ enum WidgetSnapshotWriter {
 
     private static func buildSnapshot(
         from inputs: VMInputs,
-        cost7d: Double,
-        cost30d: Double
+        last7dSummary: UsageSummaryResponse?,
+        last30dSummary: UsageSummaryResponse?,
+        last7dRange: (from: String, to: String),
+        last30dRange: (from: String, to: String)
     ) -> WidgetSnapshot {
-        var last7d = rollingTotals(from: inputs.rollingSummary?.rolling.last7d)
-        last7d.costUsd = cost7d
-        var last30d = rollingTotals(from: inputs.rollingSummary?.rolling.last30d)
-        last30d.costUsd = cost30d
+        let last7d = rangeTotals(
+            from: last7dSummary,
+            fallback: inputs.rollingSummary?.rolling.last7d,
+            expectedRange: last7dRange
+        )
+        let last30d = rangeTotals(
+            from: last30dSummary,
+            fallback: inputs.rollingSummary?.rolling.last30d,
+            expectedRange: last30dRange
+        )
 
         // All-time total — pair the tokens/cost with the heatmap's all-time
         // active-days so widgets can show a consistent "lifetime" row.
@@ -144,7 +160,7 @@ enum WidgetSnapshotWriter {
         total.activeDays = inputs.heatmap?.activeDays ?? total.activeDays
 
         return WidgetSnapshot(
-            generatedAt: Date(),
+            generatedAt: inputs.capturedAt,
             serverOnline: inputs.serverOnline,
             today: periodTotals(from: inputs.todaySummary),
             last7d: last7d,
@@ -185,6 +201,28 @@ enum WidgetSnapshotWriter {
             conversations: window.totals.conversationCount,
             activeDays: window.activeDays
         )
+    }
+
+    private static func rangeTotals(
+        from summary: UsageSummaryResponse?,
+        fallback: RollingPeriod?,
+        expectedRange: (from: String, to: String)
+    ) -> PeriodTotals {
+        if let summary,
+           summary.from == expectedRange.from,
+           summary.to == expectedRange.to {
+            var totals = periodTotals(from: summary)
+            totals.activeDays = summary.days
+            return totals
+        }
+        // A server-clock fallback from another day would recreate the same
+        // cross-midnight tear, so fail closed unless its range matches exactly.
+        guard let fallback,
+              fallback.from == expectedRange.from,
+              fallback.to == expectedRange.to else {
+            return .empty
+        }
+        return rollingTotals(from: fallback)
     }
 
     private static func trendPoints(from daily: [DailyEntry]) -> [DailyPoint] {
