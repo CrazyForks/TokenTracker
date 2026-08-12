@@ -87,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// to a window-close so the menu bar item stays alive.
     static func requestQuit() {
         userInitiatedQuit = true
+        DashboardPresentationCoordinator.shared.prepareForTermination()
         NSApp.terminate(nil)
     }
 
@@ -99,14 +100,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               event.type == .keyDown,
               event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
               event.charactersIgnoringModifiers?.lowercased() == "q"
-        else { return .terminateNow }
-        // Switch to accessory BEFORE closing the window so the Dock icon drops
-        // immediately; otherwise AppKit delays the update until focus changes.
-        NSApp.setActivationPolicy(.accessory)
-        DashboardWindowController.shared.closeWindow()
-        // Hide after the close animation completes (next runloop).
-        DispatchQueue.main.async { NSApp.hide(nil) }
-        return .terminateCancel
+        else {
+            DashboardPresentationCoordinator.shared.prepareForTermination()
+            return .terminateNow
+        }
+        if DashboardPresentationCoordinator.shared.closeDashboard() {
+            return .terminateCancel
+        }
+        DashboardPresentationCoordinator.shared.prepareForTermination()
+        return .terminateNow
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -114,7 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Finder/Dock reopen must explicitly restore the dashboard window.
         // Do not rely on `flag`: the desktop pet or Dynamic Island may count as
         // visible even while the dashboard itself is closed.
-        DashboardWindowController.shared.showWindow()
+        DashboardPresentationCoordinator.shared.showDashboard()
         return false
     }
 
@@ -147,7 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // an SMAppService login launch should remain a quiet menu bar startup.
         if NSAppleEventManager.shared().currentAppleEvent?
             .attributeDescriptor(forKeyword: keyAELaunchedAsLogInItem) == nil {
-            DashboardWindowController.shared.showWindow()
+            DashboardPresentationCoordinator.shared.showDashboard()
         }
 
         Task { @MainActor in
@@ -164,6 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        DashboardPresentationCoordinator.shared.prepareForTermination()
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         serverManager.stopServer()
     }
@@ -240,7 +243,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // The web app's local-only pages (Limits / Skills on
                 // tokentracker.cc) deep-link here via tokentracker://open to
                 // surface the local dashboard window.
-                DashboardWindowController.shared.showWindow()
+                DashboardPresentationCoordinator.shared.showDashboard()
             }
         }
     }
