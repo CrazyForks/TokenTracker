@@ -154,7 +154,7 @@ internal sealed class UsagePoller : IDisposable
             var root = doc.RootElement;
             if (!root.TryGetProperty("totals", out var totals)) return null;
 
-            long tokens = GetLong(totals, "total_tokens");
+            long tokens = ResolveDisplayTokens(totals);
             int convos = (int)GetLong(totals, "conversation_count");
             decimal cost = 0m;
             if (totals.TryGetProperty("total_cost_usd", out var c)
@@ -169,12 +169,12 @@ internal sealed class UsagePoller : IDisposable
                 if (rolling.TryGetProperty("last_7d", out var l7))
                 {
                     l7Active = (int)GetLong(l7, "active_days");
-                    if (l7.TryGetProperty("totals", out var l7t)) l7Tokens = GetLong(l7t, "billable_total_tokens");
+                    if (l7.TryGetProperty("totals", out var l7t)) l7Tokens = ResolveDisplayTokens(l7t);
                 }
                 if (rolling.TryGetProperty("last_30d", out var l30))
                 {
                     l30Avg = GetLong(l30, "avg_per_active_day");
-                    if (l30.TryGetProperty("totals", out var l30t)) l30Tokens = GetLong(l30t, "billable_total_tokens");
+                    if (l30.TryGetProperty("totals", out var l30t)) l30Tokens = ResolveDisplayTokens(l30t);
                 }
             }
 
@@ -250,7 +250,7 @@ internal sealed class UsagePoller : IDisposable
                     continue;
                 foreach (var m in modelsEl.EnumerateArray())
                 {
-                    long mt = m.TryGetProperty("totals", out var mtotals) ? GetLong(mtotals, "billable_total_tokens") : 0;
+                    long mt = m.TryGetProperty("totals", out var mtotals) ? ResolveDisplayTokens(mtotals) : 0;
                     if (mt <= 0) continue;
                     var name = m.TryGetProperty("model", out var mn) ? mn.GetString() ?? "" : "";
                     if (string.IsNullOrEmpty(name)) name = "—";
@@ -291,15 +291,43 @@ internal sealed class UsagePoller : IDisposable
         catch { return NoModels; }
     }
 
+    /// <summary>
+    /// Match the dashboard's resolveDisplayTokens semantics: prefer a positive
+    /// billable total, otherwise fall back to a positive raw total. Keeping this
+    /// policy here prevents the Windows tray/pet from disagreeing with the same
+    /// usage-summary response rendered in the Dashboard.
+    /// </summary>
+    internal static long ResolveDisplayTokens(JsonElement totals)
+    {
+        var hasBillable = TryGetLong(totals, "billable_total_tokens", out var billable);
+        var hasTotal = TryGetLong(totals, "total_tokens", out var total);
+        if (hasBillable && billable > 0) return billable;
+        if (hasTotal && total > 0) return total;
+        if (hasBillable) return billable;
+        if (hasTotal) return total;
+        return 0;
+    }
+
+    private static bool TryGetLong(JsonElement obj, string name, out long value)
+    {
+        value = 0;
+        if (!obj.TryGetProperty(name, out var el)) return false;
+        switch (el.ValueKind)
+        {
+            case JsonValueKind.Number:
+                value = el.TryGetInt64(out var numeric) ? numeric : (long)el.GetDouble();
+                return true;
+            case JsonValueKind.String:
+                return long.TryParse(
+                    el.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out value);
+            default:
+                return false;
+        }
+    }
+
     private static long GetLong(JsonElement obj, string name)
     {
-        if (!obj.TryGetProperty(name, out var el)) return 0;
-        return el.ValueKind switch
-        {
-            JsonValueKind.Number => el.TryGetInt64(out var v) ? v : (long)el.GetDouble(),
-            JsonValueKind.String => long.TryParse(el.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var s) ? s : 0,
-            _ => 0,
-        };
+        return TryGetLong(obj, name, out var value) ? value : 0;
     }
 
     /// <summary>The usage endpoints expect an IANA tz; Windows uses its own ids, so convert.</summary>
