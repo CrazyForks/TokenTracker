@@ -525,6 +525,8 @@ async function anomalyQueueSummaryData(
   max_peak_tokens: number;
   latest_detected_at: string | null;
   last_scan_completed_at: string | null;
+  last_queue_changed_at: string | null;
+  last_response_completed_at: string | null;
 }> {
   const { data, error } = await client.database
     .from("tokentracker_leaderboard_anomaly_flags")
@@ -538,7 +540,7 @@ async function anomalyQueueSummaryData(
   }>;
   const { data: runStateData, error: runStateError } = await client.database
     .from("tokentracker_anticheat_run_state")
-    .select("last_completed_at")
+    .select("last_completed_at,last_queue_changed_at,last_response_completed_at")
     .eq("id", true)
     .limit(1);
   if (runStateError) throw new Error(runStateError.message);
@@ -559,6 +561,14 @@ async function anomalyQueueSummaryData(
     last_scan_completed_at:
       typeof runState.last_completed_at === "string"
         ? runState.last_completed_at
+        : null,
+    last_queue_changed_at:
+      typeof runState.last_queue_changed_at === "string"
+        ? runState.last_queue_changed_at
+        : null,
+    last_response_completed_at:
+      typeof runState.last_response_completed_at === "string"
+        ? runState.last_response_completed_at
         : null,
   };
 }
@@ -613,6 +623,36 @@ export default async function (req: Request): Promise<Response> {
 
   // Parse requested periods
   const body = await req.json().catch(() => ({})) as Record<string, unknown>;
+  if (Object.hasOwn(body, "anti_cheat_response_completed_at")) {
+    if (authorization !== "privileged")
+      return json({ error: "privileged anti-cheat operation required" }, 403);
+    const completedAt = body.anti_cheat_response_completed_at;
+    if (
+      typeof completedAt !== "string" ||
+      !completedAt ||
+      !Number.isFinite(Date.parse(completedAt))
+    ) {
+      return json({ error: "invalid anti-cheat queue timestamp" }, 400);
+    }
+    const { data, error } = await client.database.rpc(
+      "mark_anticheat_response_completed",
+      { p_queue_changed_at: completedAt },
+    );
+    if (error) return json({ error: error.message }, 500);
+    const row = Array.isArray(data) && data.length > 0
+      ? data[0] as Record<string, unknown>
+      : {};
+    if (row.applied !== true) {
+      return json({ error: "anti-cheat queue changed during snapshot refresh" }, 409);
+    }
+    return json({
+      ok: true,
+      last_response_completed_at:
+        typeof row.response_completed_at === "string"
+          ? row.response_completed_at
+          : completedAt,
+    });
+  }
   const scanAnomalies = body.scan_anomalies === true;
   const forceRefresh = body.force_refresh === true;
   if ((scanAnomalies || forceRefresh) && authorization !== "privileged")

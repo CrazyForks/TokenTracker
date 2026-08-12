@@ -204,11 +204,10 @@ test("leaderboard anti-cheat workflow verifies database-native scans, refreshes,
   );
   assert.match(workflow, /last_scan_completed_at/u);
   assert.match(workflow, /scan_age_seconds/u);
-  assert.match(workflow, /"force_refresh":true/u);
+  assert.match(workflow, /force_refresh\\":true/u);
   assert.match(workflow, /--retry 2 --retry-delay 3 --retry-max-time 90 --retry-all-errors/u,
     "the remote refresh must absorb one transient edge/database failure");
-  assert.match(workflow, /"period":"week"/u);
-  assert.match(workflow, /for period in month total/u);
+  assert.match(workflow, /for period in week month total/u);
   assert.match(workflow, /\?anomalies=1/u, "the workflow must independently read back queue state");
   assert.doesNotMatch(workflow, /user_id/u, "workflow logs must never expose flagged identities");
   assert.match(
@@ -236,6 +235,25 @@ test("anti-cheat health reports database-native scan freshness before protected 
   assert.match(source, /timeout: 25_000/u,
     "the bounded detector must have enough client timeout headroom to finish under load");
   assert.match(source, /return json\(\{ ok: true, results, \.\.\.\(anomalyScan \? \{ scan: anomalyScan \} : \{\}\) \}\)/u);
+});
+
+test("anti-cheat responder rebuilds snapshots only when the moderation queue changed", () => {
+  const workflow = read(".github/workflows/leaderboard-anticheat.yml");
+  const source = read("dashboard/edge-patches/tokentracker-leaderboard-refresh.ts");
+  const migration = read("migrations/20260812122500_track-anticheat-response-state.sql");
+
+  assert.match(workflow, /last_queue_changed_at/u);
+  assert.match(workflow, /last_response_completed_at/u);
+  assert.match(workflow, /needs_response/u,
+    "unchanged queues must not force the same expensive snapshot rebuild every hour");
+  assert.match(workflow, /anti_cheat_response_completed_at/u,
+    "a successful multi-period rebuild must atomically acknowledge the queue version it applied");
+  assert.match(source, /mark_anticheat_response_completed/u);
+  assert.match(migration, /last_queue_changed_at/u);
+  assert.match(migration, /last_response_completed_at/u);
+  assert.match(migration, /AFTER INSERT OR DELETE OR UPDATE OF status/u);
+  assert.match(migration, /FOR EACH ROW/u,
+    "a zero-row detector pass must not pretend the moderation queue changed");
 });
 
 test("leaderboard bans block token issuance and usage ingestion", () => {
