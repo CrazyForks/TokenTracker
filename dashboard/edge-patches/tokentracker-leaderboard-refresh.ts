@@ -524,6 +524,7 @@ async function anomalyQueueSummaryData(
   review: number;
   max_peak_tokens: number;
   latest_detected_at: string | null;
+  last_scan_completed_at: string | null;
 }> {
   const { data, error } = await client.database
     .from("tokentracker_leaderboard_anomaly_flags")
@@ -535,6 +536,15 @@ async function anomalyQueueSummaryData(
     peak_tokens: number;
     detected_at: string;
   }>;
+  const { data: runStateData, error: runStateError } = await client.database
+    .from("tokentracker_anticheat_run_state")
+    .select("last_completed_at")
+    .eq("id", true)
+    .limit(1);
+  if (runStateError) throw new Error(runStateError.message);
+  const runState = Array.isArray(runStateData) && runStateData.length > 0
+    ? runStateData[0] as Record<string, unknown>
+    : {};
   const pick = (s: string) => rows.filter((r) => r.status === s);
   return {
     ok: true,
@@ -546,6 +556,10 @@ async function anomalyQueueSummaryData(
     ),
     latest_detected_at:
       rows.map((r) => r.detected_at).sort().at(-1) ?? null,
+    last_scan_completed_at:
+      typeof runState.last_completed_at === "string"
+        ? runState.last_completed_at
+        : null,
   };
 }
 
