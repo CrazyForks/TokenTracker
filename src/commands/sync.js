@@ -5,7 +5,7 @@ const fssync = require("node:fs");
 const cp = require("node:child_process");
 const readline = require("node:readline");
 
-const { resolveInstallPaths, ensureFlatCursor } = require("../lib/install-resolver");
+const { resolveInstallPaths, resolveZcodeNativeDbPath, ensureFlatCursor } = require("../lib/install-resolver");
 const { multiInstallParse, mergeBothFileSources } = require("../lib/multi-install-parser");
 const wsl = require("../lib/wsl-probe");
 const {
@@ -580,7 +580,6 @@ async function cmdSync(argv, context = {}) {
     const xdgDataHome = process.env.XDG_DATA_HOME || path.join(home, ".local", "share");
     const kiloHome = process.env.KILO_HOME || path.join(xdgDataHome, "kilo");
     const mimoHome = process.env.MIMO_HOME || path.join(xdgDataHome, "mimocode");
-    const zcodeHome = process.env.ZCODE_HOME || path.join(home, ".zcode");
 
     // OpenClaw session plugin integration: lifecycle hooks request an
     // OpenClaw-only auto sync so unrelated providers do not get walked.
@@ -1373,9 +1372,7 @@ async function cmdSync(argv, context = {}) {
     // ── ZCode (Z.ai's coding agent — OpenCode-fork SQLite) ──
     let zcodeResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
     if (sourceAllowed("zcode")) {
-      const zcodeNativeValue = process.platform === "win32" && typeof process.env.APPDATA === "string"
-        ? path.join(process.env.APPDATA.trim(), ".zcode", "cli", "db", "db.sqlite")
-        : path.join(zcodeHome, "cli", "db", "db.sqlite");
+      const zcodeNativeValue = resolveZcodeNativeDbPath({ home });
       const wslZcodeDir = process.platform === "win32" && wsl.shouldProbeWsl(process.env)
         ? wsl.discoverWslHome(".zcode")
         : null;

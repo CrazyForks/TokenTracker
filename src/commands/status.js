@@ -87,7 +87,7 @@ const {
 } = require("../lib/rollout");
 const wsl = require("../lib/wsl-probe");
 const { getWslMode, isInvalidWslMode, shouldProbeWsl, discoverWslHome } = wsl;
-const { resolveInstallPaths } = require("../lib/install-resolver");
+const { resolveInstallPaths, resolveZcodeNativeDbPath } = require("../lib/install-resolver");
 const { probeGrokHookState, resolveGrokHome } = require("../lib/grok-hook");
 const { probeOmpHookState } = require("../lib/omp-hook");
 
@@ -463,10 +463,7 @@ async function cmdStatus(argv = []) {
   const mimoDbPath = mimoActive.join(" | ");
 
   // ZCode (Z.ai's coding agent — OpenCode-fork SQLite) — passive scan of db.sqlite.
-  const zcodeHome = process.env.ZCODE_HOME || path.join(home, ".zcode");
-  const zcodeNativeValue = process.platform === "win32" && typeof process.env.APPDATA === "string"
-    ? path.join(process.env.APPDATA.trim(), ".zcode", "cli", "db", "db.sqlite")
-    : path.join(zcodeHome, "cli", "db", "db.sqlite");
+  const zcodeNativeValue = resolveZcodeNativeDbPath({ home });
   const wslZcodeDir = process.platform === "win32" && wsl.shouldProbeWsl(process.env)
     ? wsl.discoverWslHome(".zcode")
     : null;
