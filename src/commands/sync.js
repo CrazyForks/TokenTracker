@@ -80,6 +80,8 @@ const {
   piAgentDirCollidesWithOmp,
   resolveCraftSessionFiles,
   parseCraftIncremental,
+  resolveReasonixTelemetryFiles,
+  parseReasonixIncremental,
   resolveGrokBuildSessions,
   parseGrokBuildIncremental,
   listAntigravityTranscripts,
@@ -280,6 +282,7 @@ const AUTO_SYNC_SOURCES = new Set([
   "pi",
   "qoder",
   "qoder-cn",
+  "reasonix",
   "roocode",
   "workbuddy",
   "zcode",
@@ -289,6 +292,7 @@ const BACKGROUND_AUTO_SYNC_SOURCES = new Set([
   // Keep unscoped native 5-minute syncs bounded to dated local session trees.
   "codex",
   "every-code",
+  "reasonix",
 ]);
 
 function warnProviderParseFailure(label, err, opts) {
@@ -2075,6 +2079,25 @@ async function cmdSync(argv, context = {}) {
       }
     }
 
+    // Reasonix — content-free cumulative telemetry sidecars only.
+    let reasonixResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+    const reasonixFiles = sourceAllowed("reasonix")
+      ? mergeBothFileSources({ resolveFiles: resolveReasonixTelemetryFiles, env: process.env })
+      : [];
+    if (reasonixFiles.length > 0) {
+      try {
+        reasonixResult = await parseReasonixIncremental({
+          telemetryFiles: reasonixFiles,
+          cursors,
+          queuePath,
+          env: process.env,
+          onProgress: makeProviderProgress("Reasonix"),
+        });
+      } catch (err) {
+        warnProviderParseFailure("Reasonix", err, opts);
+      }
+    }
+
     // ── Grok Build (xAI) ──
     let grokResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
     // Full passive scan of all Grok sessions (historical + any not covered by hook)
@@ -2513,6 +2536,7 @@ async function cmdSync(argv, context = {}) {
       ompResult.recordsProcessed +
       piResult.recordsProcessed +
       craftResult.recordsProcessed +
+      reasonixResult.recordsProcessed +
       grokResult.recordsProcessed +
       copilotResult.recordsProcessed +
       anythingllmResult.recordsProcessed +
@@ -2545,6 +2569,7 @@ async function cmdSync(argv, context = {}) {
       ompResult.bucketsQueued +
       piResult.bucketsQueued +
       craftResult.bucketsQueued +
+      reasonixResult.bucketsQueued +
       grokResult.bucketsQueued +
       copilotResult.bucketsQueued +
       anythingllmResult.bucketsQueued +

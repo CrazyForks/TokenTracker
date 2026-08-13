@@ -12708,6 +12708,140 @@ function resolveCraftDefaultModel() {
   return "craft-unknown";
 }
 
+// Reasonix persists content-free cumulative usage beside each session JSONL.
+// Reading only these telemetry sidecars keeps prompts and tool output private.
+function resolveReasonixHome(env = process.env) {
+  if (env.TOKENTRACKER_REASONIX_HOME) {
+    return expandHomePath(env.TOKENTRACKER_REASONIX_HOME, env);
+  }
+  if (env.REASONIX_STATE_HOME) {
+    return expandHomePath(env.REASONIX_STATE_HOME, env);
+  }
+  const home = env.HOME || require("node:os").homedir();
+  return path.join(home, ".reasonix");
+}
+
+function collectReasonixTelemetryFiles(dir, files) {
+  if (!fssync.existsSync(dir)) return;
+  let entries;
+  try { entries = fssync.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) collectReasonixTelemetryFiles(full, files);
+    else if (entry.isFile() && entry.name.endsWith(".jsonl.telemetry.json")) files.push(full);
+  }
+}
+
+function resolveReasonixTelemetryFiles(env = process.env) {
+  const reasonixHome = resolveReasonixHome(env);
+  const files = [];
+  collectReasonixTelemetryFiles(path.join(reasonixHome, "projects"), files);
+  collectReasonixTelemetryFiles(path.join(reasonixHome, "sessions"), files);
+  return files.sort((a, b) => a.localeCompare(b));
+}
+
+function readReasonixSnapshot(filePath) {
+  const telemetry = JSON.parse(fssync.readFileSync(filePath, "utf8"));
+  const usage = telemetry?.usage;
+  if (!usage || typeof usage !== "object") return null;
+  const metaPath = filePath.slice(0, -".telemetry.json".length) + ".meta";
+  let meta = {};
+  try { meta = JSON.parse(fssync.readFileSync(metaPath, "utf8")); } catch {}
+  const stat = fssync.statSync(filePath);
+  return { usage, meta, stat };
+}
+
+function normalizeReasonixTotals(usage) {
+  const prompt = toNonNegativeInt(usage.promptTokens);
+  const reasoning = toNonNegativeInt(usage.reasoningTokens);
+  const completion = toNonNegativeInt(usage.completionTokens);
+  const cacheMiss = Math.min(prompt, toNonNegativeInt(usage.cacheMissTokens));
+  const cacheHit = Math.min(prompt, toNonNegativeInt(usage.cacheHitTokens));
+  const hasCacheMiss = usage.cacheMissTokens != null;
+  const uncachedPrompt = hasCacheMiss ? cacheMiss : Math.max(0, prompt - cacheHit);
+  const cacheWrite = Math.min(uncachedPrompt, toNonNegativeInt(usage.cacheWriteTokens));
+  return {
+    input: uncachedPrompt - cacheWrite,
+    cacheRead: hasCacheMiss ? prompt - cacheMiss : cacheHit,
+    cacheWrite,
+    output: Math.max(0, completion - reasoning),
+    reasoning,
+    requests: toNonNegativeInt(usage.requestCount),
+  };
+}
+
+function diffReasonixTotals(current, previous = {}) {
+  const delta = {};
+  for (const key of ["input", "cacheRead", "cacheWrite", "output", "reasoning", "requests"]) {
+    delta[key] = Math.max(0, current[key] - toNonNegativeInt(previous[key]));
+  }
+  return delta;
+}
+
+function reasonixTimestamp(snapshot) {
+  for (const value of [snapshot.meta.updated_at, snapshot.meta.created_at]) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return snapshot.stat.mtimeMs;
+}
+
+function normalizeReasonixModel(value) {
+  const normalized = normalizeModelInput(value);
+  if (!normalized) return "reasonix-unknown";
+  const segments = normalized.split("/").filter(Boolean);
+  return segments.at(-1) || "reasonix-unknown";
+}
+
+function addReasonixDelta(hourlyState, touchedBuckets, snapshot, delta) {
+  const bucketStart = toUtcHalfHourStart(new Date(reasonixTimestamp(snapshot)).toISOString());
+  if (!bucketStart) return false;
+  const model = normalizeReasonixModel(snapshot.meta.model);
+  const total = delta.input + delta.cacheRead + delta.cacheWrite + delta.output + delta.reasoning;
+  const bucket = getHourlyBucket(hourlyState, "reasonix", model, bucketStart);
+  addTotals(bucket.totals, {
+    input_tokens: delta.input,
+    cached_input_tokens: delta.cacheRead,
+    cache_creation_input_tokens: delta.cacheWrite,
+    output_tokens: delta.output,
+    reasoning_output_tokens: delta.reasoning,
+    total_tokens: total,
+    conversation_count: delta.requests,
+  });
+  touchedBuckets.add(bucketKey("reasonix", model, bucketStart));
+  return true;
+}
+
+async function parseReasonixIncremental({ telemetryFiles, cursors, queuePath, onProgress, env } = {}) {
+  await ensureDir(path.dirname(queuePath));
+  const state = cursors.reasonix && typeof cursors.reasonix === "object" ? cursors.reasonix : {};
+  const sessionTotals = { ...(state.sessionTotals || {}) };
+  const files = Array.isArray(telemetryFiles) ? telemetryFiles : resolveReasonixTelemetryFiles(env);
+  const hourlyState = normalizeHourlyState(cursors?.hourly);
+  const touchedBuckets = new Set();
+  let recordsProcessed = 0;
+  let eventsAggregated = 0;
+  for (const [index, filePath] of files.entries()) {
+    let snapshot;
+    try { snapshot = readReasonixSnapshot(filePath); } catch { continue; }
+    if (!snapshot) continue;
+    recordsProcessed++;
+    const current = normalizeReasonixTotals(snapshot.usage);
+    const delta = diffReasonixTotals(current, sessionTotals[filePath]);
+    const tokenDelta = delta.input + delta.cacheRead + delta.cacheWrite + delta.output + delta.reasoning;
+    if ((tokenDelta > 0 || delta.requests > 0) &&
+        addReasonixDelta(hourlyState, touchedBuckets, snapshot, delta)) eventsAggregated++;
+    sessionTotals[filePath] = current;
+    onProgress?.({ index: index + 1, total: files.length, recordsProcessed, eventsAggregated, bucketsQueued: touchedBuckets.size });
+  }
+  const bucketsQueued = await enqueueTouchedBuckets({ queuePath, hourlyState, touchedBuckets });
+  const updatedAt = new Date().toISOString();
+  hourlyState.updatedAt = updatedAt;
+  cursors.hourly = hourlyState;
+  cursors.reasonix = { ...state, sessionTotals, updatedAt };
+  return { recordsProcessed, eventsAggregated, bucketsQueued };
+}
+
 async function parseCraftIncremental({
   sessionFiles,
   cursors,
@@ -16380,6 +16514,10 @@ module.exports = {
   resolveCraftSessionFiles,
   resolveCraftDefaultModel,
   parseCraftIncremental,
+  resolveReasonixHome,
+  resolveReasonixTelemetryFiles,
+  normalizeReasonixModel,
+  parseReasonixIncremental,
   // Exposed for regression tests covering cache-token accounting.
   normalizeGeminiTokens,
   normalizeOpencodeTokens,

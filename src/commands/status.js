@@ -62,6 +62,8 @@ const {
   piAgentDirCollidesWithOmp,
   resolveCraftSessionFiles,
   resolveCraftConfigDir,
+  resolveReasonixHome,
+  resolveReasonixTelemetryFiles,
   resolveKilocodeTaskFiles,
   resolveRoocodeTaskFiles,
   resolveZedDbPath,
@@ -427,6 +429,11 @@ async function cmdStatus(argv = []) {
   const craftConfigDir = resolveCraftConfigDir(process.env);
   const craftInstalled = Boolean(craftConfigDir && fssync.existsSync(craftConfigDir));
   const craftFiles = craftInstalled ? resolveCraftSessionFiles(process.env) : [];
+
+  // Reasonix — passive scan of content-free cumulative telemetry sidecars.
+  const reasonixHome = resolveReasonixHome(process.env);
+  const reasonixInstalled = Boolean(reasonixHome && fssync.existsSync(reasonixHome));
+  const reasonixFiles = reasonixInstalled ? resolveReasonixTelemetryFiles(process.env) : [];
 
   // Kilo CLI (kilo.ai @kilocode/plugin) — passive scan of kilo.db.
   const xdgDataHome = process.env.XDG_DATA_HOME || path.join(home, ".local", "share");
@@ -866,6 +873,9 @@ async function cmdStatus(argv = []) {
         craft: craftInstalled
           ? { installed: true, files: craftFiles.length }
           : { installed: false },
+        reasonix: reasonixInstalled
+          ? { installed: true, files: reasonixFiles.length }
+          : { installed: false },
         anythingllm: anythingllmInstalled
           ? { installed: true, detail: anythingllmDbPath }
           : { installed: false },
@@ -1000,6 +1010,9 @@ async function cmdStatus(argv = []) {
         : null,
       craftInstalled
         ? `- Craft Agents: passive reader (${craftFiles.length} session jsonl file${craftFiles.length !== 1 ? "s" : ""} found)`
+        : null,
+      reasonixInstalled
+        ? `- Reasonix: passive reader (${reasonixFiles.length} telemetry file${reasonixFiles.length !== 1 ? "s" : ""} found)`
         : null,
       anythingllmInstalled
         ? `- AnythingLLM Desktop: passive reader (${anythingllmDbPath})`

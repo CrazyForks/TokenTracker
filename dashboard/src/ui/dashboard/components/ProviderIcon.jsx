@@ -331,6 +331,7 @@ const PROVIDER_LOGO_MAP = {
   "PI-COPILOT": "/brand-logos/pi.svg",
   "PI-OPENAI-CODEX": "/brand-logos/pi.svg",
   QODER: "/brand-logos/qoder.svg",
+  REASONIX: "/brand-logos/reasonix.png",
   // Qoder CN ships its own brand mark — the domestic edition's icon (a green
   // crescent) differs from the international black double-crescent, so it gets
   // its own traced asset instead of reusing qoder.svg.

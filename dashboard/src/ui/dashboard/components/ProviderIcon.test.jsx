@@ -55,6 +55,15 @@ describe("ProviderIcon", () => {
     expect(icon).not.toBeNull();
     expect(icon).toHaveAttribute("width", "18");
   });
+
+  it("renders the Reasonix brand icon", () => {
+    const { container } = render(<ProviderIcon provider="reasonix" size={20} />);
+    const icon = container.querySelector('img[src="/brand-logos/reasonix.png"]');
+
+    expect(icon).not.toBeNull();
+    expect(icon).toHaveAttribute("width", "20");
+    expect(icon).toHaveAttribute("height", "20");
+  });
 });
 
   it("renders the Qoder CN green-crescent mark from its own asset", () => {
