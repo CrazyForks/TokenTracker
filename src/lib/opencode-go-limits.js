@@ -5,23 +5,27 @@ const { readSqliteJsonRowsAsync } = require("./sqlite-reader");
 
 // OpenCode Go usage limits.
 //
-// Two data sources are available:
+// Three data sources are available, in priority order:
 //
-//   1. Web scrape of the workspace dashboard
-//      (https://opencode.ai/workspace/<id>/go) for the server's authoritative
-//      rolling (5h) / weekly / monthly usagePercent and subscription state.
-//      The cookie is sent as `Cookie: auth=<OPENCODE_GO_AUTH_COOKIE>` per
-//      slkiser/opencode-quota#41.
+//   1. The official OpenCode Go usage API
+//      (GET https://opencode.ai/zen/go/v1/usage) with
+//      `Authorization: Bearer <OPENCODE_GO_API_KEY>`. It returns the server's
+//      authoritative rolling (5h), weekly, and monthly usage windows.
 //
-//   2. Local opencode.db cost aggregation, explicitly enabled with
+//   2. Web scrape of the workspace dashboard
+//      (https://opencode.ai/workspace/<id>/go) for existing users configured
+//      with OPENCODE_GO_AUTH_COOKIE. This is retained as a compatibility path.
+//
+//   3. Local opencode.db cost aggregation, explicitly enabled with
 //      TOKENTRACKER_OPENCODE_GO_LOCAL_ESTIMATE=1. The `opencode` CLI records
 //      every Go turn's USD `cost` in SQLite, so cost ÷ Go's dollar caps is a
 //      useful local estimate. It cannot prove that the account still has an
 //      active Go subscription, because the database contains historical turns
 //      but no current entitlement state.
 //
-// The returned shape is shared by both sources. `source` is `'web'` for
-// authoritative dashboard data or `'local-estimate'` for the opt-in estimate.
+// The returned shape is shared by all sources. `source` is `'api'` for the
+// official endpoint, `'web'` for the compatibility scrape, or `'local-estimate'`
+// for the opt-in estimate.
 
 const SCRAPED_NUMBER_PATTERN = "([0-9]+(?:\\.[0-9]+)?)";
 
@@ -38,11 +42,12 @@ function windowFieldRegex(windowKey, field) {
   return new RegExp(`${windowKey}[^}]*?${field}"?\\s*[:=]+\\s*${SCRAPED_NUMBER_PATTERN}`);
 }
 
+const GO_USAGE_API_URL = "https://opencode.ai/zen/go/v1/usage";
 const DASHBOARD_URL_PREFIX = "https://opencode.ai/workspace/";
 const DASHBOARD_URL_SUFFIX = "/go";
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Gecko/20100101 Firefox/148.0";
-const DEFAULT_SCRAPE_TIMEOUT_MS = 10_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const LOCAL_ESTIMATE_ENV = "TOKENTRACKER_OPENCODE_GO_LOCAL_ESTIMATE";
 
 function isTruthyEnvValue(value) {
@@ -76,6 +81,13 @@ function readConfig(env = process.env) {
       : "";
   if (!authCookie) return null;
   return { workspaceId, authCookie };
+}
+
+function readApiKey(env = process.env) {
+  if (!env || typeof env !== "object") return "";
+  return typeof env.OPENCODE_GO_API_KEY === "string"
+    ? env.OPENCODE_GO_API_KEY.trim()
+    : "";
 }
 
 function clampPercent(value) {
@@ -486,6 +498,84 @@ function localGoResult(local) {
   };
 }
 
+// --- Official usage API (exact server-side usage, API-key-gated) -------------
+
+async function fetchOpencodeGoApiLimits({ apiKey, fetchImpl, nowMs, timeoutMs }) {
+  let response;
+  try {
+    response = await withTimeout(fetchImpl, timeoutMs)(GO_USAGE_API_URL, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+        "User-Agent": USER_AGENT,
+      },
+    });
+  } catch (err) {
+    return { configured: true, error: sanitizeMessage(err?.message || err) };
+  }
+
+  if (response.status === 401) {
+    return {
+      configured: true,
+      error: "OpenCode Go API key is missing, invalid, expired, or not entitled to an OpenCode Go subscription.",
+      auth_error: true,
+    };
+  }
+  if (response.status === 403) {
+    return {
+      configured: true,
+      error: "OpenCode Go subscription required for this API key.",
+      auth_error: true,
+    };
+  }
+  if (!response.ok) {
+    return { configured: true, error: `OpenCode Go usage API error ${response.status}` };
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(await response.text());
+  } catch (err) {
+    return {
+      configured: true,
+      error: `Could not parse OpenCode Go usage API response: ${sanitizeMessage(err?.message || err)}`,
+    };
+  }
+
+  const rolling = buildWindow({
+    usagePercent: payload?.rollingUsage?.usagePercent,
+    resetInSec: payload?.rollingUsage?.resetInSec,
+    nowMs,
+  });
+  const weekly = buildWindow({
+    usagePercent: payload?.weeklyUsage?.usagePercent,
+    resetInSec: payload?.weeklyUsage?.resetInSec,
+    nowMs,
+  });
+  const monthly = buildWindow({
+    usagePercent: payload?.monthlyUsage?.usagePercent,
+    resetInSec: payload?.monthlyUsage?.resetInSec,
+    nowMs,
+  });
+
+  if (!rolling && !weekly && !monthly) {
+    return {
+      configured: true,
+      error: "OpenCode Go usage API response did not include any known usage windows.",
+    };
+  }
+
+  return {
+    configured: true,
+    error: null,
+    subscription_status: "active",
+    primary_window: rolling,
+    secondary_window: weekly,
+    tertiary_window: monthly,
+  };
+}
+
 // --- Web scrape (exact server-side usage, cookie-gated) ---------------------
 
 async function scrapeOpencodeGoWeb({ cfg, fetchImpl, nowMs, timeoutMs }) {
@@ -571,14 +661,31 @@ async function fetchOpencodeGoLimits({
   env = process.env,
   fetchImpl = fetch,
   nowMs = Date.now(),
-  timeoutMs = DEFAULT_SCRAPE_TIMEOUT_MS,
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
   sqliteOptions = {},
 } = {}) {
+  const apiKey = readApiKey(env);
   const cfg = readConfig(env);
   const allowLocalEstimate = localEstimateEnabled(env);
 
-  // A configured cookie gives us the only authoritative subscription state.
-  // Never replace an explicit inactive page with historical local usage.
+  // Prefer the documented API whenever an API key is explicitly configured.
+  // An authentication failure is actionable and must not be hidden by silently
+  // falling back to a possibly stale cookie. For a transient API failure, an
+  // existing cookie remains a compatibility fallback.
+  if (apiKey) {
+    const api = await fetchOpencodeGoApiLimits({ apiKey, fetchImpl, nowMs, timeoutMs });
+    if (!api?.error && (api.primary_window || api.secondary_window || api.tertiary_window)) {
+      return { ...api, source: "api" };
+    }
+    if (api?.auth_error) {
+      const { auth_error, ...result } = api;
+      return result;
+    }
+    if (!cfg) return api || { configured: true, error: "OpenCode Go unavailable" };
+  }
+
+  // Keep the cookie-backed dashboard path for existing configurations and as a
+  // fallback when the official API is temporarily unavailable.
   if (cfg) {
     const web = await scrapeOpencodeGoWeb({ cfg, fetchImpl, nowMs, timeoutMs });
     if (web?.subscription_status === "inactive") return web;
@@ -602,7 +709,9 @@ async function fetchOpencodeGoLimits({
 
 module.exports = {
   fetchOpencodeGoLimits,
+  fetchOpencodeGoApiLimits,
   readConfig,
+  readApiKey,
   localEstimateEnabled,
   detectSubscriptionStatus,
   extractWindows,

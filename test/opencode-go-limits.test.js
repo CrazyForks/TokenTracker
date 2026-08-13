@@ -9,6 +9,8 @@ const {
   buildWindow,
   extractWindows,
   fetchOpencodeGoLimits,
+  fetchOpencodeGoApiLimits,
+  readApiKey,
   resolveWorkspaceId,
   parseWorkspaceIds,
   looksSignedOut,
@@ -58,6 +60,15 @@ function dataSlotHtml() {
   `;
 }
 
+function apiUsagePayload() {
+  return {
+    useBalance: false,
+    rollingUsage: { status: "ok", usagePercent: 42, resetInSec: 12345 },
+    weeklyUsage: { status: "ok", usagePercent: 18, resetInSec: 678901 },
+    monthlyUsage: { status: "ok", usagePercent: 7, resetInSec: 2592000 },
+  };
+}
+
 describe("readConfig", () => {
   it("returns null when env has no auth cookie", () => {
     assert.equal(readConfig({ OPENCODE_GO_WORKSPACE_ID: "wrk_1" }), null);
@@ -82,6 +93,15 @@ describe("readConfig", () => {
       readConfig({ OPENCODE_GO_WORKSPACE_ID: "wrk_1", OPENCODE_GO_AUTH_COOKIE: 123 }),
       null,
     );
+  });
+});
+
+describe("readApiKey", () => {
+  it("returns a trimmed API key and ignores non-string values", () => {
+    assert.equal(readApiKey({ OPENCODE_GO_API_KEY: "  sk-go-key  " }), "sk-go-key");
+    assert.equal(readApiKey({ OPENCODE_GO_API_KEY: 123 }), "");
+    assert.equal(readApiKey({}), "");
+    assert.equal(readApiKey(null), "");
   });
 });
 
@@ -203,6 +223,7 @@ describe("extractWindows", () => {
 
 describe("fetchOpencodeGoLimits", () => {
   const cfg = { OPENCODE_GO_WORKSPACE_ID: "wrk_01", OPENCODE_GO_AUTH_COOKIE: "cookie" };
+  const apiCfg = { OPENCODE_GO_API_KEY: "sk-go-key" };
 
   function jsonResponse(status, body) {
     return {
@@ -217,6 +238,107 @@ describe("fetchOpencodeGoLimits", () => {
   it("returns { configured: false } when env is missing", async () => {
     const out = await fetchOpencodeGoLimits({ env: {}, fetchImpl: async () => jsonResponse(200, "") });
     assert.deepEqual(out, { configured: false });
+  });
+
+  it("maps the official API response to the three dashboard windows", async () => {
+    let capturedUrl = null;
+    let capturedInit = null;
+    const out = await fetchOpencodeGoApiLimits({
+      apiKey: "sk-go-key",
+      fetchImpl: async (url, init) => {
+        capturedUrl = url;
+        capturedInit = init;
+        return jsonResponse(200, apiUsagePayload());
+      },
+      nowMs: 1_700_000_000_000,
+      timeoutMs: 1_000,
+    });
+
+    assert.equal(capturedUrl, "https://opencode.ai/zen/go/v1/usage");
+    assert.equal(capturedInit.method, "GET");
+    assert.equal(capturedInit.headers.Authorization, "Bearer sk-go-key");
+    assert.equal(capturedInit.headers.Accept, "application/json");
+    assert.equal(out.error, null);
+    assert.equal(out.subscription_status, "active");
+    assert.equal(out.primary_window?.used_percent, 42);
+    assert.equal(out.secondary_window?.used_percent, 18);
+    assert.equal(out.tertiary_window?.used_percent, 7);
+    assert.equal(out.primary_window?.reset_at, new Date(1_700_000_000_000 + 12345_000).toISOString());
+  });
+
+  it("prefers the official API when both an API key and legacy cookie are configured", async () => {
+    let requests = 0;
+    const out = await fetchOpencodeGoLimits({
+      env: { ...apiCfg, ...cfg },
+      fetchImpl: async (url) => {
+        requests += 1;
+        assert.equal(url, "https://opencode.ai/zen/go/v1/usage");
+        return jsonResponse(200, apiUsagePayload());
+      },
+      nowMs: 1_700_000_000_000,
+    });
+
+    assert.equal(requests, 1);
+    assert.equal(out.source, "api");
+    assert.equal(out.primary_window?.used_percent, 42);
+  });
+
+  it("returns actionable authentication errors from the official API", async () => {
+    const unauthorized = await fetchOpencodeGoLimits({
+      env: apiCfg,
+      fetchImpl: async () => jsonResponse(401, { type: "error" }),
+    });
+    assert.match(unauthorized.error, /not entitled to an OpenCode Go subscription/);
+
+    const forbidden = await fetchOpencodeGoLimits({
+      env: apiCfg,
+      fetchImpl: async () => jsonResponse(403, { type: "error" }),
+    });
+    assert.match(forbidden.error, /subscription required/);
+  });
+
+  it("does not hide an API authentication error behind a legacy cookie", async () => {
+    let requests = 0;
+    const out = await fetchOpencodeGoLimits({
+      env: { ...apiCfg, ...cfg },
+      fetchImpl: async (url) => {
+        requests += 1;
+        assert.equal(url, "https://opencode.ai/zen/go/v1/usage");
+        return jsonResponse(401, { type: "error" });
+      },
+    });
+
+    assert.equal(requests, 1);
+    assert.match(out.error, /not entitled to an OpenCode Go subscription/);
+  });
+
+  it("falls back to the legacy dashboard scrape when the official API is temporarily unavailable", async () => {
+    const urls = [];
+    const out = await fetchOpencodeGoLimits({
+      env: { ...apiCfg, ...cfg },
+      fetchImpl: async (url) => {
+        urls.push(url);
+        if (url === "https://opencode.ai/zen/go/v1/usage") return jsonResponse(503, "down");
+        if (url === "https://opencode.ai/workspace/wrk_01/go") return jsonResponse(200, ssrHtml());
+        return jsonResponse(404, "not found");
+      },
+      nowMs: 1_700_000_000_000,
+    });
+
+    assert.deepEqual(urls, [
+      "https://opencode.ai/zen/go/v1/usage",
+      "https://opencode.ai/workspace/wrk_01/go",
+    ]);
+    assert.equal(out.source, "web");
+    assert.equal(out.primary_window?.used_percent, 42);
+  });
+
+  it("surfaces an API payload without usage windows", async () => {
+    const out = await fetchOpencodeGoLimits({
+      env: apiCfg,
+      fetchImpl: async () => jsonResponse(200, { useBalance: false }),
+    });
+    assert.match(out.error, /did not include any known usage windows/);
   });
 
   it("returns the three windows on a 200 SSR-hydration response", async () => {
