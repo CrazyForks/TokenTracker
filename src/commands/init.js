@@ -134,6 +134,7 @@ const SUPPORTED_PROVIDERS = [
   "Qoder",
   "AnythingLLM Desktop",
   "Claude Science",
+  "DeepSeek Harness",
 ];
 
 async function cmdInit(argv) {
