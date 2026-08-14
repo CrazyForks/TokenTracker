@@ -64,6 +64,19 @@ describe("ProviderIcon", () => {
     expect(icon).toHaveAttribute("width", "20");
     expect(icon).toHaveAttribute("height", "20");
   });
+
+  it("renders the official theme-aware DeepSeek Harness fish instead of the legacy blue asset", () => {
+    for (const provider of ["dsh", "deepseek"]) {
+      const { container } = render(<ProviderIcon provider={provider} size={20} />);
+      const icon = container.querySelector('svg[data-brand="deepseek-harness"]');
+
+      expect(icon).not.toBeNull();
+      expect(icon).toHaveAttribute("width", "20");
+      expect(icon).toHaveAttribute("viewBox", "0 0 23.16 17.04");
+      expect(container.querySelector('img[src="/brand-logos/deepseek.svg"]')).toBeNull();
+      expect(icon?.querySelector('path[fill="currentColor"]')).not.toBeNull();
+    }
+  });
 });
 
   it("renders the Qoder CN green-crescent mark from its own asset", () => {

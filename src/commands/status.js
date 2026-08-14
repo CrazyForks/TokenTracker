@@ -74,6 +74,8 @@ const {
   resolveGooseDbPath,
   listDroidSettingsFiles,
   resolveDroidSessionsDir,
+  resolveDshHome,
+  resolveDshSessionFiles,
   resolveTraeStoragePath,
   readTraeEntitlementFromStorage,
   resolveGrokBuildSessions,
@@ -617,6 +619,10 @@ async function cmdStatus(argv = []) {
   const droidSessionsDir = resolveDroidSessionsDir(process.env);
   const droidSettingsFiles = listDroidSettingsFiles(process.env);
   const droidInstalled = droidSettingsFiles.length > 0;
+  const dshHome = resolveDshHome(process.env);
+  const dshSessionsDir = path.join(dshHome, "sessions");
+  const dshSessionFiles = await resolveDshSessionFiles(process.env);
+  const dshInstalled = dshSessionFiles.length > 0;
 
   // Trae SOLO (ByteDance AI IDE) — passive entitlement snapshot reader.
   const traeStoragePath = resolveTraeStoragePath(process.env);
@@ -907,6 +913,9 @@ async function cmdStatus(argv = []) {
         droid: droidInstalled
           ? { installed: true, files: droidSettingsFiles.length, detail: droidSessionsDir }
           : { installed: false },
+        dsh: dshInstalled
+          ? { installed: true, files: dshSessionFiles.length, detail: dshSessionsDir }
+          : { installed: false },
         trae: traeInstalled
           ? {
               installed: true,
@@ -1068,6 +1077,9 @@ async function cmdStatus(argv = []) {
         : null,
       droidInstalled
         ? `- Droid (Factory): passive reader (${droidSettingsFiles.length} session${droidSettingsFiles.length !== 1 ? "s" : ""} in ${droidSessionsDir}, cumulative-delta)`
+        : null,
+      dshInstalled
+        ? `- DeepSeek Harness: passive reader (${dshSessionFiles.length} session${dshSessionFiles.length !== 1 ? "s" : ""} in ${dshSessionsDir})`
         : null,
       traeInstalled
         // Deliberately NOT "passive reader": every other line with that wording

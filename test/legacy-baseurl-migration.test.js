@@ -24,6 +24,8 @@ async function withTempHome(fn) {
     CODEX_HOME: process.env.CODEX_HOME,
     CODE_HOME: process.env.CODE_HOME,
     XDG_DATA_HOME: process.env.XDG_DATA_HOME,
+    DSH_HOME: process.env.DSH_HOME,
+    TOKENTRACKER_DSH_HOME: process.env.TOKENTRACKER_DSH_HOME,
     TOKENTRACKER_DEVICE_TOKEN: process.env.TOKENTRACKER_DEVICE_TOKEN,
     TOKENTRACKER_INSFORGE_BASE_URL: process.env.TOKENTRACKER_INSFORGE_BASE_URL,
     TOKENTRACKER_SKIP_FIRST_SYNC: process.env.TOKENTRACKER_SKIP_FIRST_SYNC,
@@ -36,6 +38,8 @@ async function withTempHome(fn) {
     process.env.XDG_DATA_HOME = path.join(home, ".local", "share");
     delete process.env.TOKENTRACKER_DEVICE_TOKEN;
     delete process.env.TOKENTRACKER_INSFORGE_BASE_URL;
+    delete process.env.DSH_HOME;
+    delete process.env.TOKENTRACKER_DSH_HOME;
     return await fn(home);
   } finally {
     global.fetch = savedFetch;
