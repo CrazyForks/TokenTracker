@@ -587,6 +587,8 @@ settings.menubar.syncNow,ui,SettingsPage,SettingsPage,mb_sync_now,"Sync now",,ac
 settings.menubar.syncNowHint,ui,SettingsPage,SettingsPage,mb_sync_now_hint,"Trigger an immediate parse and upload of local AI tool logs.",,active
 settings.menubar.syncing,ui,SettingsPage,SettingsPage,mb_syncing,"Syncing…",,active
 settings.menubar.updates,ui,SettingsPage,SettingsPage,mb_updates,"Updates",,active
+settings.menubar.autoUpdate,ui,SettingsPage,MenuBarSection,mb_auto_update,"Automatic updates",,active
+settings.menubar.autoUpdateHint,ui,SettingsPage,MenuBarSection,mb_auto_update_hint,"Download and install new versions in the background. Manual checks stay available when this is off.",,active
 settings.menubar.checkUpdates,ui,SettingsPage,SettingsPage,mb_check_updates,"Check for updates",,active
 settings.footer.statusPage,ui,SettingsPage,NativeAppFooter,status_page,"System status",,active
 menubar.slot.primary,ui,WidgetsPage,MenuBarDisplayCard,slot_primary,"Primary slot",,active

@@ -389,6 +389,8 @@
   "settings.menubar.syncNowHint": "触发本地AI工具日志立即解析并上传。",
   "settings.menubar.syncing": "正在同步...",
   "settings.menubar.updates": "更新",
+  "settings.menubar.autoUpdate": "自动更新",
+  "settings.menubar.autoUpdateHint": "在后台自动下载并安装新版本。关闭后仍可随时手动检查更新。",
   "settings.menubar.checkUpdates": "检查更新",
   "settings.footer.statusPage": "系统状态",
   "menubar.slot.primary": "第一个位置",
