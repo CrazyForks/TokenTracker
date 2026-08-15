@@ -492,7 +492,12 @@ test("local sync only treats boolean true as background or lightweight", async (
       assert.equal(handled, true);
       assert.equal(res.statusCode, 200);
       assert.equal(calls.length, 1);
-      assert.deepEqual(calls[0].args.slice(-3), [path.join(process.cwd(), "bin/tracker.js"), "sync", "--auto"]);
+      assert.deepEqual(calls[0].args.slice(-4), [
+        path.join(process.cwd(), "bin/tracker.js"),
+        "sync",
+        "--auto",
+        "--wait-for-lock",
+      ]);
     } finally {
       restore();
     }
@@ -533,7 +538,11 @@ test("local sync only treats boolean true as drain", async () => {
       assert.equal(handled, true);
       assert.equal(res.statusCode, 200);
       assert.equal(calls.length, 1);
-      assert.deepEqual(calls[0].args.slice(-2), [path.join(process.cwd(), "bin/tracker.js"), "sync"]);
+      assert.deepEqual(calls[0].args.slice(-3), [
+        path.join(process.cwd(), "bin/tracker.js"),
+        "sync",
+        "--wait-for-lock",
+      ]);
     } finally {
       restore();
     }
@@ -587,7 +596,11 @@ test("local sync non-drain request mints a device token from relayed login when 
     assert.equal(handled, true);
     assert.equal(res.statusCode, 200);
     assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0].args.slice(-2), [path.join(process.cwd(), "bin/tracker.js"), "sync"]);
+    assert.deepEqual(calls[0].args.slice(-3), [
+      path.join(process.cwd(), "bin/tracker.js"),
+      "sync",
+      "--wait-for-lock",
+    ]);
     assert.equal(calls[0].options.env.TOKENTRACKER_DEVICE_TOKEN, "issued-device-token");
     assert.ok(fetchCalls.some((c) => c.url.endsWith("/api/auth/refresh?client_type=mobile")));
     assert.ok(fetchCalls.some((c) => c.url.endsWith("/functions/tokentracker-device-token-issue")));
@@ -1022,7 +1035,11 @@ test("local sync non-drain request keeps explicit device token without relayed m
     assert.equal(handled, true);
     assert.equal(res.statusCode, 200);
     assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0].args.slice(-2), [path.join(process.cwd(), "bin/tracker.js"), "sync"]);
+    assert.deepEqual(calls[0].args.slice(-3), [
+      path.join(process.cwd(), "bin/tracker.js"),
+      "sync",
+      "--wait-for-lock",
+    ]);
     assert.equal(calls[0].options.env.TOKENTRACKER_DEVICE_TOKEN, "explicit-device-token");
   } finally {
     restore();

@@ -880,6 +880,7 @@ function runSyncCommand(extraEnv = {}, opts = {}) {
     if (opts.publishAccount === true) args.push("--publish-account");
     if (opts.allLocalSources === true) args.push("--all-local-sources");
     if (opts.drain === true) args.push("--drain");
+    if (opts.waitForLock === true) args.push("--wait-for-lock");
     const child = spawn(process.execPath, args, {
       env: { ...process.env, ...extraEnv },
       stdio: ["ignore", "pipe", "pipe"],
@@ -1971,6 +1972,8 @@ function createLocalApiHandler({ queuePath }) {
           background,
           publishAccount,
           allLocalSources,
+          waitForLock:
+            !drain && !background && Boolean(extraEnv.TOKENTRACKER_DEVICE_TOKEN),
         });
         try {
           const { resetUsageLimitsCache } = require("./usage-limits");

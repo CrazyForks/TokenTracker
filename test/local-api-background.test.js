@@ -210,7 +210,12 @@ test("local-api background and lightweight require boolean true", async () => {
   for (const body of cases) {
     const call = await runLocalSync({ auto: true, ...body });
     const args = call.args;
-    assert.deepEqual(args.slice(-3), [path.join(process.cwd(), "bin/tracker.js"), "sync", "--auto"]);
+    assert.deepEqual(args.slice(-4), [
+      path.join(process.cwd(), "bin/tracker.js"),
+      "sync",
+      "--auto",
+      "--wait-for-lock",
+    ]);
   }
 });
 
@@ -356,7 +361,11 @@ test("local-api manual and drain sync still issue relayed cloud device tokens", 
   const savedBaseUrl = process.env.TOKENTRACKER_INSFORGE_BASE_URL;
   const savedFetch = global.fetch;
   const cases = [
-    { prefix: "tokentracker-local-api-manual-cloud-", body: {}, expectedArgs: ["sync"] },
+    {
+      prefix: "tokentracker-local-api-manual-cloud-",
+      body: {},
+      expectedArgs: ["sync", "--wait-for-lock"],
+    },
     { prefix: "tokentracker-local-api-drain-cloud-", body: { drain: true }, expectedArgs: ["sync", "--drain"] },
   ];
 

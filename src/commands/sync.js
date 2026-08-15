@@ -363,7 +363,7 @@ async function acquireSyncLock(
     priorityPollMs = PRIORITY_LOCK_POLL_MS,
   } = {},
 ) {
-  const waitsForPriority = Boolean(opts.drain || opts.publishAccount);
+  const waitsForPriority = Boolean(opts.waitForLock || opts.drain || opts.publishAccount);
   let lock = await openLock(lockPath, {
     quietIfLocked: opts.auto || waitsForPriority,
   });
@@ -2835,6 +2835,7 @@ function parseArgs(argv) {
     fromOpenclaw: false,
     source: null,
     drain: false,
+    waitForLock: false,
     background: false,
     publishAccount: false,
     allLocalSources: false,
@@ -2852,6 +2853,7 @@ function parseArgs(argv) {
     }
     else if (a.startsWith("--source=")) out.source = normalizeSyncSource(a.slice("--source=".length));
     else if (a === "--drain") out.drain = true;
+    else if (a === "--wait-for-lock") out.waitForLock = true;
     else if (a === "--background" || a === "--lightweight") out.background = true;
     else if (a === "--publish-account") out.publishAccount = true;
     else if (a === "--all-local-sources") out.allLocalSources = true;
