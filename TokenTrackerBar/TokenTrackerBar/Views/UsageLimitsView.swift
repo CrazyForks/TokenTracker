@@ -111,6 +111,10 @@ struct UsageLimitsView: View {
                 if let qoder = limits.qoder, qoder.configured, qoder.error == nil {
                     groups.append(AnyView(toolSection(id: id, title: planTitle("Qoder", qoder.planLabel), assetName: "QoderLogo", toolName: "Qoder", specs: qoderSpecs(qoder), updatedAtISO: qoder.cachedAt, isStale: qoder.stale ?? false)))
                 }
+            case "qoderCn":
+                if let qoderCn = limits.qoderCn, qoderCn.configured, qoderCn.error == nil {
+                    groups.append(AnyView(toolSection(id: id, title: planTitle("Qoder CN", qoderCn.planLabel), assetName: "QoderCnLogo", toolName: "Qoder CN", specs: qoderSpecs(qoderCn), updatedAtISO: qoderCn.cachedAt, isStale: qoderCn.stale ?? false)))
+                }
             default:
                 break
             }
@@ -373,10 +377,10 @@ struct UsageLimitsView: View {
     private func qoderSpecs(_ q: QoderLimits) -> [LimitWindowSpec] {
         var specs: [LimitWindowSpec] = []
         if let window = q.primaryWindow {
-            specs.append(makeSpec("Plan", window.usedPercent, iso: window.resetAt))
+            specs.append(makeSpec(Strings.qoderPlanLabel, window.usedPercent, iso: window.resetAt))
         }
         if let window = q.secondaryWindow {
-            specs.append(makeSpec("Bonus", window.usedPercent, iso: window.resetAt))
+            specs.append(makeSpec(Strings.qoderBonusLabel, window.usedPercent, iso: window.resetAt))
         }
         return specs
     }
@@ -591,7 +595,7 @@ struct UsageLimitsView: View {
     @ViewBuilder
     private func brandIcon(_ name: String) -> some View {
         switch name {
-        case "CursorLogo", "KimiLogo", "KiroLogo", "GrokLogo", "CopilotLogo", "ZcodeLogo", "OpenCodeLogo", "QoderLogo":
+        case "CursorLogo", "KimiLogo", "KiroLogo", "GrokLogo", "CopilotLogo", "ZcodeLogo", "OpenCodeLogo", "QoderLogo", "QoderCnLogo":
             let filename: String = {
                 switch name {
                 case "CursorLogo": return "cursor.svg"
@@ -601,6 +605,7 @@ struct UsageLimitsView: View {
                 case "ZcodeLogo": return "zcode.svg"
                 case "OpenCodeLogo": return "opencode.svg"
                 case "QoderLogo": return "qoder.svg"
+                case "QoderCnLogo": return "qoder-cn.svg"
                 default: return "copilot.svg"
                 }
             }()

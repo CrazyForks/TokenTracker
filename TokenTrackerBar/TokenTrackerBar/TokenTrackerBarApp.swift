@@ -122,6 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         removeLegacyAppBundleIfNeeded()
+        NativeLocalization.synchronizeSharedPreference()
 
         statusBarController = StatusBarController(
             viewModel: viewModel,

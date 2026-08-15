@@ -14,10 +14,11 @@ struct UsageLimitsResponse: Codable, Equatable {
     let zcode: ZcodeLimits?
     let opencodeGo: OpencodeGoLimits?
     let qoder: QoderLimits?
+    let qoderCn: QoderLimits?
 
     enum CodingKeys: String, CodingKey {
         case fetchedAt = "fetched_at"
-        case claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot, zcode, qoder
+        case claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot, zcode, qoder, qoderCn
         case opencodeGo = "opencodeGo"
     }
 }
@@ -534,6 +535,7 @@ extension UsageLimitsResponse {
             (zcode?.configured ?? false, zcode?.error),
             (opencodeGo?.configured ?? false, opencodeGo?.error),
             (qoder?.configured ?? false, qoder?.error),
+            (qoderCn?.configured ?? false, qoderCn?.error),
         ]
         return providers.contains { $0.0 && $0.1 == nil }
     }

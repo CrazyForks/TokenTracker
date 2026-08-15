@@ -241,8 +241,14 @@ extension UsageLimitsResponse {
         }
         if let qoder {
             addGeneric("qoder", qoder.configured, qoder.error, [
-                ("primary", "Credits", qoder.primaryWindow),
-                ("secondary", "Ultimate Free Calls", qoder.secondaryWindow),
+                ("primary", Strings.qoderPlanLabel, qoder.primaryWindow),
+                ("secondary", Strings.qoderBonusLabel, qoder.secondaryWindow),
+            ])
+        }
+        if let qoderCn {
+            addGeneric("qoderCn", qoderCn.configured, qoderCn.error, [
+                ("primary", Strings.qoderPlanLabel, qoderCn.primaryWindow),
+                ("secondary", Strings.qoderBonusLabel, qoderCn.secondaryWindow),
             ])
         }
 
