@@ -227,6 +227,39 @@ test("readDshSessionText reassembles concatenated-frame zstd", async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test("zstd sessions decode without the @mongodb-js/zstd native binding (issue #465)", async (t) => {
+  // The desktop bundles install dependencies with --ignore-scripts, so the
+  // MongoDB binding's zstd.node never exists there and require() throws. The
+  // decoder must therefore succeed on the built-in zlib path alone.
+  if (typeof zlib.zstdDecompressSync !== "function") {
+    t.skip("built-in zlib zstd unavailable on this Node; fallback path is the only path");
+    return;
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-nozstd-"));
+  const lines = [headerLine(), assistantLine(1, { inputTokens: 1, outputTokens: 1 })];
+  const full = lines.join("\n") + "\n";
+  const f1 = await zstdCompress(Buffer.from(full.slice(0, 80)));
+  const f2 = await zstdCompress(Buffer.from(full.slice(80)));
+  const p = path.join(dir, "session.jsonl.zstd");
+  fs.writeFileSync(p, Buffer.concat([f1, f2]));
+
+  const Module = require("node:module");
+  const originalLoad = Module._load;
+  Module._load = function (request, ...rest) {
+    if (request === "@mongodb-js/zstd") {
+      throw new Error("Cannot find module '@mongodb-js/zstd' (native binding missing)");
+    }
+    return originalLoad.call(this, request, ...rest);
+  };
+  try {
+    const text = await readDshSessionText(p);
+    assert.equal(text, full, "zstd sessions must decode via built-in zlib when the native binding is absent");
+  } finally {
+    Module._load = originalLoad;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("resolveDshSessionFiles only accepts exact project/session transcript leaves", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-files-"));
   const root = path.join(dir, ".dsh", "sessions");

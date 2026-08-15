@@ -16392,10 +16392,11 @@ function readTraeEntitlementFromStorage(storagePath) {
 // reasoning travel separately — so the mapping to our queue columns is direct
 // (no cache subtraction, unlike Codex).
 //
-// Zstd artifacts are a concatenated-frame container: Node's
-// `zlib.zstdDecompressSync` decodes only the first frame (silently dropping
-// every event line), so we identify the frame boundaries and feed each frame
-// through `@mongodb-js/zstd`, enforcing a cumulative plaintext bound as we go.
+// Zstd artifacts are a concatenated-frame container: a single decompress call
+// decodes only the first frame (silently dropping every event line), so we
+// identify the frame boundaries and decode each frame independently —
+// built-in zlib zstd first, `@mongodb-js/zstd` as the Node 20 fallback —
+// enforcing a cumulative plaintext bound as we go.
 // Dedup is a per-file `lastSeq` watermark — seq
 // is monotonic within a session log, so an append-only grow re-reads the file
 // and skips everything at or below the watermark; a torn-tail repair or full
@@ -16594,9 +16595,23 @@ function inspectDshZstdFrames(data, maxOutputBytes = DSH_SESSION_TEXT_MAX_BYTES)
   };
 }
 
-// Decode one independent Harness append frame at a time. The MongoDB binding
-// understands every Node version we ship; per-frame decoding also lets us
-// enforce the aggregate plaintext limit when the frame omits its content size.
+// Decode one already-isolated frame. Prefer Node's built-in zstd (22.15+):
+// the desktop bundles install dependencies with --ignore-scripts, so
+// @mongodb-js/zstd ships without its native binding there and the require()
+// would throw — silently skipping every compressed session (issue #465). The
+// MongoDB binding stays as the fallback for Node 20 CLI installs, where npm
+// runs install scripts normally.
+async function decodeDshZstdFrame(frameBytes) {
+  const zlib = require("node:zlib");
+  if (typeof zlib.zstdDecompressSync === "function") {
+    return zlib.zstdDecompressSync(frameBytes);
+  }
+  return Buffer.from(await require("@mongodb-js/zstd").decompress(frameBytes));
+}
+
+// Decode one independent Harness append frame at a time; per-frame decoding
+// lets us enforce the aggregate plaintext limit when the frame omits its
+// content size.
 async function decodeDshZstd(
   data,
   { maxOutputBytes = DSH_SESSION_TEXT_MAX_BYTES, inspected = null } = {},
@@ -16606,9 +16621,7 @@ async function decodeDshZstd(
   const parts = [];
   let total = 0;
   for (const frame of frameInfo.frameRanges) {
-    const decoded = Buffer.from(
-      await require("@mongodb-js/zstd").decompress(input.subarray(frame.start, frame.end)),
-    );
+    const decoded = await decodeDshZstdFrame(input.subarray(frame.start, frame.end));
     total += decoded.length;
     if (total > maxOutputBytes) {
       throw new Error(`DeepSeek Harness decompressed session log exceeds ${maxOutputBytes} bytes`);
