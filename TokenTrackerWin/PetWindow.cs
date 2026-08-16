@@ -836,18 +836,22 @@ internal sealed class PetWindow : Window
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "TokenTracker", "native-settings.json");
 
-    /// <summary>True if the pet was visible when the app last exited (restored on launch).</summary>
-    public static bool WasVisible
+    /// <summary>
+    /// The persisted pet visibility, or null when the user has never toggled it.
+    /// Null lets first launches fall back to the default (show on a manual run);
+    /// an explicit false must survive restarts (issue #475).
+    /// </summary>
+    public static bool? StoredVisible
     {
         get
         {
             try
             {
-                if (!File.Exists(SettingsPath)) return false;
+                if (!File.Exists(SettingsPath)) return null;
                 var s = JsonNode.Parse(File.ReadAllText(SettingsPath))?.AsObject();
-                return s?["PetVisible"]?.GetValue<bool>() ?? false;
+                return s?["PetVisible"]?.GetValue<bool>();
             }
-            catch { return false; }
+            catch { return null; }
         }
     }
 
