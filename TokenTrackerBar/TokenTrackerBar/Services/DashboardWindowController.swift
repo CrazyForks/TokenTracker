@@ -26,6 +26,12 @@ final class DashboardWindowController: NSObject, NSWindowDelegate, WKNavigationD
     private var webView: WKWebView?
     private var loadingOverlay: NSView?
     private var loadingHostingController: NSHostingController<AnyView>?
+    /// Preserve the WebView's sessionStorage only while a native OAuth round trip
+    /// needs its PKCE verifier. Normal dashboard closes release the browser runtime.
+    private var oauthInFlight = false
+    private var releaseDashboardAfterOAuth = false
+    private var oauthTimeoutTask: Task<Void, Never>?
+    private let oauthRetentionTimeoutNanoseconds: UInt64 = 10 * 60 * 1_000_000_000
     /// Retry count for load failures.
     private var retryCount = 0
     private let maxRetries = 5
@@ -343,9 +349,70 @@ final class DashboardWindowController: NSObject, NSWindowDelegate, WKNavigationD
     func windowWillClose(_ notification: Notification) {
         guard let closingWindow = notification.object as? NSWindow,
               closingWindow === window else { return }
-        // Keep webView and window alive so cookies/login state persist. The
-        // coordinator schedules only the app-level post-close transition.
         DashboardPresentationCoordinator.shared.dashboardWindowWillClose()
+        if oauthInFlight {
+            // The PKCE verifier lives in this WebView's sessionStorage. Keep the
+            // closed window temporarily so a browser callback can finish in the
+            // same context; success or timeout will release it if still hidden.
+            releaseDashboardAfterOAuth = true
+            return
+        }
+        releaseDashboardResources(closingWindow: closingWindow)
+    }
+
+    private func releaseDashboardResources(closingWindow: NSWindow) {
+        guard closingWindow === window else { return }
+
+        oauthTimeoutTask?.cancel()
+        oauthTimeoutTask = nil
+        releaseDashboardAfterOAuth = false
+
+        if let webView {
+            webView.stopLoading()
+            webView.navigationDelegate = nil
+            webView.uiDelegate = nil
+            webView.configuration.userContentController.removeScriptMessageHandler(forName: "nativeOAuth")
+            webView.configuration.userContentController.removeScriptMessageHandler(forName: "nativeBridge")
+            webView.removeFromSuperview()
+        }
+        NativeBridge.shared.webView = nil
+        closingWindow.delegate = nil
+        closingWindow.contentView = nil
+        loadingOverlay = nil
+        loadingHostingController = nil
+        self.webView = nil
+        self.window = nil
+    }
+
+    private func beginNativeOAuth() {
+        oauthInFlight = true
+        releaseDashboardAfterOAuth = false
+        oauthTimeoutTask?.cancel()
+        oauthTimeoutTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await Task.sleep(nanoseconds: oauthRetentionTimeoutNanoseconds)
+            } catch {
+                return
+            }
+            expireNativeOAuth()
+        }
+    }
+
+    private func completeNativeOAuth() {
+        guard oauthInFlight else { return }
+        oauthInFlight = false
+        oauthTimeoutTask?.cancel()
+        oauthTimeoutTask = nil
+        if releaseDashboardAfterOAuth,
+           let window,
+           !window.isVisible {
+            releaseDashboardResources(closingWindow: window)
+        }
+    }
+
+    private func expireNativeOAuth() {
+        completeNativeOAuth()
     }
 
     // MARK: - WKScriptMessageHandler
@@ -363,6 +430,12 @@ final class DashboardWindowController: NSObject, NSWindowDelegate, WKNavigationD
 
     private func handleScriptMessage(name: String, body: Any) {
         if name == "nativeBridge" {
+            if let message = body as? [String: Any],
+               let messageType = message["type"] as? String,
+               messageType == "authCompleted" {
+                completeNativeOAuth()
+                return
+            }
             NativeBridge.shared.handle(message: body)
             return
         }
@@ -370,6 +443,7 @@ final class DashboardWindowController: NSObject, NSWindowDelegate, WKNavigationD
               let urlString = body as? String,
               let url = URL(string: urlString) else { return }
         // Open OAuth in system browser where user has saved Google/GitHub sessions
+        beginNativeOAuth()
         NSWorkspace.shared.open(url)
     }
 
@@ -475,6 +549,10 @@ final class DashboardWindowController: NSObject, NSWindowDelegate, WKNavigationD
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         retryCount = 0
+        let completedNativeOAuth = webView.url?.path == "/dashboard" || webView.url?.path == "/"
+        if oauthInFlight && completedNativeOAuth {
+            completeNativeOAuth()
+        }
         // Disable text selection and leave top spacing for the transparent titlebar.
         let css = """
             * { -webkit-user-select: none !important; } \

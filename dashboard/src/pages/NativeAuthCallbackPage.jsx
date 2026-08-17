@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useInsforgeAuth } from "../contexts/InsforgeAuthContext.jsx";
 import { useLocale } from "../hooks/useLocale.js";
 import { copy } from "../lib/copy";
+import { postNativeMessage } from "../lib/native-bridge.js";
 
 /**
  * Unified OAuth callback page at /auth/callback.
@@ -91,6 +92,9 @@ export function NativeAuthCallbackPage() {
     if (loading) return;
 
     if (signedIn) {
+      if (_isWebViewNative) {
+        postNativeMessage({ type: "authCompleted" });
+      }
       navigate("/dashboard", { replace: true });
       return;
     }

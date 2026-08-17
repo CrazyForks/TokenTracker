@@ -30,8 +30,10 @@ namespace TokenTrackerWin;
 /// native caption bar — see "Window controls" below). <see cref="WindowChrome"/>
 /// keeps the window resizable + Aero-snappable despite having no visible caption.
 ///
-/// Closing hides the window (keeps cookies/login + avoids re-initialising
-/// WebView2); the app exits via the tray "Quit" → <see cref="Shutdown"/>.
+/// Closing releases WebView2 so the hidden dashboard does not keep Chromium's
+/// renderer and graphics surfaces resident. Persistent WebView2 storage keeps the
+/// login across recreation; an active OAuth PKCE round trip is retained temporarily.
+/// The app exits via the tray "Quit" → <see cref="Shutdown"/>.
 /// </summary>
 internal sealed class DashboardWindow : Window
 {
@@ -47,6 +49,8 @@ internal sealed class DashboardWindow : Window
     private readonly ServerManager _server;
     private bool _coreReady;
     private bool _exiting;
+    private bool _oauthInFlight;
+    private CancellationTokenSource? _oauthTimeout;
     private nint _hwnd;
     private string _pendingPathAndQuery = "/?app=1";
 
@@ -62,6 +66,7 @@ internal sealed class DashboardWindow : Window
     public event Action? PetSettingsRequested;
     public event Action<string, string?>? PetSettingChanged;
     public event Action<string, string>? NotificationRequested;
+    public event Action<DashboardWindow>? ReleasedForIdle;
 
     public DashboardWindow(ServerManager server)
     {
@@ -132,7 +137,7 @@ internal sealed class DashboardWindow : Window
                 ? Visibility.Collapsed
                 : Visibility.Visible;
         };
-        KeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Escape) Hide(); };
+        KeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Escape) CloseOrHideForOAuth(); };
         _server.StatusChanged += OnServerStatusChanged;
     }
 
@@ -271,6 +276,12 @@ internal sealed class DashboardWindow : Window
         core.NavigationCompleted += async (_, _) =>
         {
             try { Log($"nav completed uri={_webView.CoreWebView2.Source}"); } catch { }
+            if (_oauthInFlight
+                && Uri.TryCreate(_webView.CoreWebView2.Source, UriKind.Absolute, out var completedUri)
+                && completedUri.AbsolutePath is "/" or "/dashboard")
+            {
+                CompleteNativeOAuth();
+            }
             await ApplyNativeChromeAsync();
         };
 
@@ -305,7 +316,12 @@ internal sealed class DashboardWindow : Window
                         && doc.RootElement.TryGetProperty("url", out var u) && u.GetString() is { } url)
                     {
                         Log($"oauth open url={url}");
+                        BeginNativeOAuth();
                         OpenInBrowser(url);
+                    }
+                    else if (t.GetString() == "authCompleted")
+                    {
+                        CompleteNativeOAuth();
                     }
                     else if (t.GetString() == "nativeSetting"
                              && doc.RootElement.TryGetProperty("key", out var k)
@@ -366,7 +382,7 @@ internal sealed class DashboardWindow : Window
                 case "theme": ThemeChanged?.Invoke(); break;
                 case "win:min": WindowState = WindowState.Minimized; break;
                 case "win:max": ToggleMaximize(); break;
-                case "win:close": Hide(); break;
+                case "win:close": CloseOrHideForOAuth(); break;
                 case "win:drag":
                     // Hand the drag off to the OS so Aero-snap / move works natively.
                     ReleaseCapture();
@@ -635,6 +651,53 @@ internal sealed class DashboardWindow : Window
 
     // ── Public API ─────────────────────────────────────────────────────
 
+    private void BeginNativeOAuth()
+    {
+        _oauthInFlight = true;
+        _oauthTimeout?.Cancel();
+        _oauthTimeout?.Dispose();
+        _oauthTimeout = new CancellationTokenSource();
+        _ = WaitForNativeOAuthTimeoutAsync(_oauthTimeout.Token);
+    }
+
+    private async Task WaitForNativeOAuthTimeoutAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromMinutes(10), cancellationToken);
+            await Dispatcher.InvokeAsync(ExpireNativeOAuth);
+        }
+        catch (OperationCanceledException)
+        {
+            // A completed/restarted flow or app shutdown owns the next transition.
+        }
+    }
+
+    private void CompleteNativeOAuth()
+    {
+        if (!_oauthInFlight) return;
+        _oauthInFlight = false;
+        _oauthTimeout?.Cancel();
+        _oauthTimeout?.Dispose();
+        _oauthTimeout = null;
+        if (!IsVisible) CloseOrHideForOAuth();
+    }
+
+    private void ExpireNativeOAuth()
+    {
+        CompleteNativeOAuth();
+    }
+
+    private void CloseOrHideForOAuth()
+    {
+        if (_oauthInFlight)
+        {
+            Hide();
+            return;
+        }
+        Close();
+    }
+
     /// <summary>Show the dashboard, bringing an already-open window to the front.</summary>
     public void ShowDashboard()
     {
@@ -649,7 +712,7 @@ internal sealed class DashboardWindow : Window
     /// <summary>Toggle visibility — used by the tray left-click (popover-like).</summary>
     public void ToggleDashboard()
     {
-        if (IsVisible && WindowState != WindowState.Minimized) Hide();
+        if (IsVisible && WindowState != WindowState.Minimized) CloseOrHideForOAuth();
         else ShowDashboard();
     }
 
@@ -792,9 +855,9 @@ internal sealed class DashboardWindow : Window
 
     protected override void OnClosing(CancelEventArgs e)
     {
-        // Hide instead of close unless the app is actually exiting, so reopening is
-        // instant and the WebView2 session (login state) persists.
-        if (!_exiting)
+        // Preserve sessionStorage only while OAuth needs its PKCE verifier. In every
+        // normal close path, allow WPF to close so OnClosed can dispose WebView2.
+        if (!_exiting && _oauthInFlight)
         {
             e.Cancel = true;
             Hide();
@@ -802,6 +865,18 @@ internal sealed class DashboardWindow : Window
         }
         _server.StatusChanged -= OnServerStatusChanged;
         base.OnClosing(e);
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _oauthTimeout?.Cancel();
+        _oauthTimeout?.Dispose();
+        _oauthTimeout = null;
+        _coreReady = false;
+        Content = null;
+        _webView.Dispose();
+        base.OnClosed(e);
+        if (!_exiting) ReleasedForIdle?.Invoke(this);
     }
 
     // ── P/Invoke + constants ───────────────────────────────────────────

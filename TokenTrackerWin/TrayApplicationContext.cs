@@ -595,7 +595,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void EnsureDashboard()
     {
         if (_dashboard is not null) return;
-        _dashboard = new DashboardWindow(_server);
+        var dashboard = new DashboardWindow(_server);
+        _dashboard = dashboard;
+        dashboard.ReleasedForIdle += OnDashboardReleasedForIdle;
         // Re-render the cost when the dashboard reports a currency change (and once
         // it has loaded, so we pick up the user's chosen currency right away), and cache
         // it natively so a future cold-launched pet shows the same unit before the
@@ -608,6 +610,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _dashboard.PetSettingChanged += (key, value) => PostToUi(() => ApplyDashboardPetSetting(key, value));
         _dashboard.NotificationRequested += (title, body) => PostToUi(() =>
             _trayIcon.ShowBalloonTip(7000, title, body, ToolTipIcon.Warning));
+    }
+
+    private void OnDashboardReleasedForIdle(DashboardWindow dashboard)
+    {
+        if (!ReferenceEquals(_dashboard, dashboard)) return;
+        dashboard.ReleasedForIdle -= OnDashboardReleasedForIdle;
+        _dashboard = null;
     }
 
     private void ApplyDashboardPetSetting(string key, string? value)
