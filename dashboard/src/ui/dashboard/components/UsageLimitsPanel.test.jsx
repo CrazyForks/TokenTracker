@@ -278,6 +278,37 @@ describe("UsageLimitsPanel", () => {
     expect(screen.queryByText("12%")).not.toBeInTheDocument();
   });
 
+  it("renders Ark Coding Plan 5h / Weekly / Monthly windows", () => {
+    const { rerender } = render(
+      <UsageLimitsPanel
+        codingPlan={{
+          configured: true,
+          error: null,
+          plan_label: "Lite",
+          primary_window: { used_percent: 33, reset_at: "2026-08-11T09:42:00.000Z" },
+          secondary_window: { used_percent: 16, reset_at: "2026-08-16T16:00:00.000Z" },
+          tertiary_window: { used_percent: 9, reset_at: "2026-09-09T15:59:59.000Z" },
+        }}
+        order={["codingPlan"]}
+      />,
+    );
+
+    // Brand + tier, without repeating "Coding Plan" (title: "Ark Coding Plan Lite").
+    expect(screen.getByText("Ark Coding Plan Lite")).toBeInTheDocument();
+    expect(screen.getByText("5h")).toBeInTheDocument();
+    expect(screen.getByText("Weekly")).toBeInTheDocument();
+    expect(screen.getByText("Monthly")).toBeInTheDocument();
+    expect(screen.getByText("33%")).toBeInTheDocument();
+    expect(screen.getByText("16%")).toBeInTheDocument();
+    expect(screen.getByText("9%")).toBeInTheDocument();
+
+    // Not-configured fallback shows the Ark CLI setup guide.
+    rerender(<UsageLimitsPanel codingPlan={{ configured: false }} order={["codingPlan"]} />);
+    expect(screen.getByText("Ark Coding Plan")).toBeInTheDocument();
+    expect(screen.getByText("Not connected")).toBeInTheDocument();
+    expect(screen.getByText(copy("limits.codingPlan.setupHint.title"))).toBeInTheDocument();
+  });
+
   it("renders Qoder credits with exact amounts in the hover detail", () => {
     render(
       <UsageLimitsPanel

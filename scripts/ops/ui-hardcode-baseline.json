@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-27T14:57:17.435Z",
+  "generatedAt": "2026-08-11T09:06:06.707Z",
   "root": "dashboard/src",
   "rules": {
     "colors": "hex/rgb(a) literals",
@@ -7,7 +7,7 @@
   },
   "totals": {
     "colors": 377,
-    "rawText": 160
+    "rawText": 161
   },
   "files": {
     "dashboard/src/components/InsforgeUserHeaderControls.jsx": {
@@ -413,8 +413,9 @@
     },
     "dashboard/src/ui/dashboard/components/UsageLimitsPanel.test.jsx": {
       "colors": 0,
-      "rawText": 3,
+      "rawText": 4,
       "rawTextTokens": [
+        ", ); // Brand + tier, without repeating \"Coding Plan\" (title: \"Ark Coding Plan Lite\"). expect(screen.getByText(\"Ark Coding Plan Lite\")).toBeInTheDocument(); expect(screen.getByText(\"5h\")).toBeInTheDocument(); expect(screen.getByText(\"Weekly\")).toBeInTheDocument(); expect(screen.getByText(\"Monthly\")).toBeInTheDocument(); expect(screen.getByText(\"33%\")).toBeInTheDocument(); expect(screen.getByText(\"16%\")).toBeInTheDocument(); expect(screen.getByText(\"9%\")).toBeInTheDocument(); // Not-configured fallback shows the Ark CLI setup guide. rerender(",
         ", ); // Brand name only — no plan_label suffix to avoid \"OpenCode Go Go\". expect(screen.getByText(\"OpenCode Go\")).toBeInTheDocument(); expect(screen.getByText(\"5h\")).toBeInTheDocument(); expect(screen.getByText(\"Weekly\")).toBeInTheDocument(); expect(screen.getByText(\"Monthly\")).toBeInTheDocument(); expect(screen.getByText(\"12%\")).toBeInTheDocument(); expect(screen.getByText(\"30%\")).toBeInTheDocument(); expect(screen.getByText(\"60%\")).toBeInTheDocument(); // Not-configured fallback. rerender(",
         ", ); expect(screen.getByText(\"Codex\")).toBeInTheDocument(); const row = screen.getByText(\"Credits\").closest(\"div\"); expect(within(row).getByText(\"",
         ", ); expect(screen.getByText(\"Cursor\")).toBeInTheDocument(); rerender("

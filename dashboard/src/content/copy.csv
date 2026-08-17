@@ -1503,3 +1503,17 @@ landing.v3.how.scene.files_changed,landing,LandingPage,HowItWorksSection,scene_f
 landing.v3.how.scene.session_title,landing,LandingPage,HowItWorksSection,scene_session_title,"session log · last turn",,active
 landing.v3.how.scene.appended,landing,LandingPage,HowItWorksSection,scene_appended,"appended locally",,active
 landing.v3.how.scene.total_tokens,landing,LandingPage,HowItWorksSection,scene_total_tokens,"total tokens",,active
+limits.provider.ark_coding_plan,ui,LimitsPage,UsageLimitsPanel,provider_ark_coding_plan,"Ark Coding Plan",,active
+limits.label.ark_coding_plan_5h,ui,LimitsPage,UsageLimitsPanel,ark_coding_plan_5h,"5h",,active
+limits.label.ark_coding_plan_weekly,ui,LimitsPage,UsageLimitsPanel,ark_coding_plan_weekly,"Weekly",,active
+limits.label.ark_coding_plan_monthly,ui,LimitsPage,UsageLimitsPanel,ark_coding_plan_monthly,"Monthly",,active
+limits.codingPlan.setupHint.title,ui,LimitsPage,UsageLimitsPanel,coding_plan_hint_title,"Connect Ark Coding Plan",,active
+limits.codingPlan.setupHint.subtitle,ui,LimitsPage,UsageLimitsPanel,coding_plan_hint_subtitle,"Quota is read from the official Ark CLI (arkcli) on this machine.",,active
+limits.codingPlan.setupHint.step1,ui,LimitsPage,UsageLimitsPanel,coding_plan_hint_step1,"Install the Ark CLI from npm.",,active
+limits.codingPlan.setupHint.cta,ui,LimitsPage,UsageLimitsPanel,coding_plan_hint_cta,"View install guide",,active
+limits.codingPlan.setupHint.step2,ui,LimitsPage,UsageLimitsPanel,coding_plan_hint_step2,"Sign in with your Volcengine account (browser SSO recommended).",,active
+limits.codingPlan.setupHint.step2_remote,ui,LimitsPage,UsageLimitsPanel,coding_plan_hint_step2_remote,"Headless / remote terminals: arkcli auth login --no-browser",,active
+limits.codingPlan.setupHint.step3,ui,LimitsPage,UsageLimitsPanel,coding_plan_hint_step3,"Run these, then refresh this page:",,active
+limits.codingPlan.setupHint.note_app,ui,LimitsPage,UsageLimitsPanel,coding_plan_hint_note_app,"Refresh after signing in — no app restart needed.",,active
+limits.codingPlan.setupHint.copy,ui,LimitsPage,UsageLimitsPanel,coding_plan_hint_copy,"Copy",,active
+limits.codingPlan.setupHint.copied,ui,LimitsPage,UsageLimitsPanel,coding_plan_hint_copied,"Copied",,active
