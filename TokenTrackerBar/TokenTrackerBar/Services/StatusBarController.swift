@@ -822,6 +822,14 @@ final class StatusBarController: NSObject {
             // the anchor window so the popover also shows over full-screen Spaces.
             window.collectionBehavior.insert([.canJoinAllSpaces, .fullScreenAuxiliary])
             window.makeKey()
+
+            // Tahoe's automatic NSPopover Liquid Glass is subdued while the owning app is
+            // inactive. Make the popover key first, then force activation, so AppKit associates
+            // it with this window and the current Space instead of restoring a stale Dashboard
+            // window. Older systems use the classic material and stay non-activating.
+            if #available(macOS 26, *) {
+                NSApp.activate(ignoringOtherApps: true)
+            }
         }
 
         popoverDismissMonitor = NSEvent.addGlobalMonitorForEvents(
