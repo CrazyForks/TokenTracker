@@ -16418,6 +16418,38 @@ function resolveDshHome(env = process.env) {
   return path.join(os.homedir(), ".dsh");
 }
 
+// Windows users commonly run Harness inside WSL while TokenTracker itself runs
+// natively. Respect the repository-wide WSL mode contract and keep explicit
+// DSH home overrides authoritative: an override is a complete user choice, not
+// one half of an automatic native/WSL discovery pair.
+function resolveDshHomes(env = process.env, deps = {}) {
+  const overridden = Boolean(
+    (typeof env?.TOKENTRACKER_DSH_HOME === "string" && env.TOKENTRACKER_DSH_HOME.trim()) ||
+    (typeof env?.DSH_HOME === "string" && env.DSH_HOME.trim()),
+  );
+  const nativeHome = deps.nativeHome || resolveDshHome(env);
+  const platform = deps.platform || process.platform;
+  if (overridden || platform !== "win32") return [nativeHome];
+
+  const existsSync = deps.existsSync || fssync.existsSync;
+  let nativeValue = null;
+  try {
+    if (existsSync(nativeHome)) nativeValue = nativeHome;
+  } catch (_error) {}
+
+  const discoverWslHome = deps.discoverWslHome || wsl.discoverWslHome;
+  const wslValue = wsl.shouldProbeWsl(env)
+    ? discoverWslHome(".dsh", { ...deps, env })
+    : null;
+  const resolved = wsl.resolveAllWin32Paths({
+    nativeValue,
+    wslValue,
+    env,
+    platform,
+  });
+  return [...new Set([resolved.native, resolved.wsl].filter(Boolean))];
+}
+
 function isDshSessionLogName(name) {
   return name === "session.jsonl" || name === "session.jsonl.zstd";
 }
@@ -16425,47 +16457,55 @@ function isDshSessionLogName(name) {
 // Walk the harness sessions root for per-session log artifacts. The tree is
 // `<sessions-root>/<project-key>/<session-id>/session.jsonl[.zstd]`; only the
 // exact leaf names are collected so unrelated harness files are ignored.
-async function resolveDshSessionFiles(env = process.env) {
-  const sessionsRoot = path.join(resolveDshHome(env), "sessions");
+async function resolveDshSessionFiles(env = process.env, deps = {}) {
   const out = [];
-  const projects = await safeReadDir(sessionsRoot);
-  for (const project of projects) {
-    if (!project.isDirectory()) continue;
-    const projectDir = path.join(sessionsRoot, project.name);
-    const sessions = await safeReadDir(projectDir);
-    for (const session of sessions) {
-      if (!session.isDirectory()) continue;
-      const sessionDir = path.join(projectDir, session.name);
-      const artifacts = await safeReadDir(sessionDir);
-      const transcripts = artifacts.filter(
-        (artifact) => artifact.isFile() && isDshSessionLogName(artifact.name),
-      );
-      if (transcripts.length === 1) {
-        out.push(path.join(sessionDir, transcripts[0].name));
-      } else if (transcripts.length > 1) {
-        // Harness itself rejects mixed encodings in one root. For a passive
-        // reader, choose the actively-written artifact instead of counting the
-        // same session twice; a tie prefers the default zstd encoding.
-        const ranked = await Promise.all(transcripts.map(async (artifact) => {
-          const full = path.join(sessionDir, artifact.name);
-          const handle = await fs.open(full, "r").catch(() => null);
-          if (!handle) return { full, name: artifact.name, mtimeMs: 0 };
-          try {
-            const stat = await handle.stat().catch(() => null);
-            return {
-              full,
-              name: artifact.name,
-              mtimeMs: stat?.isFile() ? Number(stat.mtimeMs || 0) : 0,
-            };
-          } finally {
-            await handle.close().catch(() => {});
-          }
-        }));
-        ranked.sort((left, right) =>
-          right.mtimeMs - left.mtimeMs ||
-          Number(right.name.endsWith(".zstd")) - Number(left.name.endsWith(".zstd")),
+  const seen = new Set();
+  for (const dshHome of resolveDshHomes(env, deps)) {
+    const sessionsRoot = path.join(dshHome, "sessions");
+    const projects = await safeReadDir(sessionsRoot);
+    for (const project of projects) {
+      if (!project.isDirectory()) continue;
+      const projectDir = path.join(sessionsRoot, project.name);
+      const sessions = await safeReadDir(projectDir);
+      for (const session of sessions) {
+        if (!session.isDirectory()) continue;
+        const sessionDir = path.join(projectDir, session.name);
+        const artifacts = await safeReadDir(sessionDir);
+        const transcripts = artifacts.filter(
+          (artifact) => artifact.isFile() && isDshSessionLogName(artifact.name),
         );
-        if (ranked[0]) out.push(ranked[0].full);
+        let selected = null;
+        if (transcripts.length === 1) {
+          selected = path.join(sessionDir, transcripts[0].name);
+        } else if (transcripts.length > 1) {
+          // Harness itself rejects mixed encodings in one root. For a passive
+          // reader, choose the actively-written artifact instead of counting the
+          // same session twice; a tie prefers the default zstd encoding.
+          const ranked = await Promise.all(transcripts.map(async (artifact) => {
+            const full = path.join(sessionDir, artifact.name);
+            const handle = await fs.open(full, "r").catch(() => null);
+            if (!handle) return { full, name: artifact.name, mtimeMs: 0 };
+            try {
+              const stat = await handle.stat().catch(() => null);
+              return {
+                full,
+                name: artifact.name,
+                mtimeMs: stat?.isFile() ? Number(stat.mtimeMs || 0) : 0,
+              };
+            } finally {
+              await handle.close().catch(() => {});
+            }
+          }));
+          ranked.sort((left, right) =>
+            right.mtimeMs - left.mtimeMs ||
+            Number(right.name.endsWith(".zstd")) - Number(left.name.endsWith(".zstd")),
+          );
+          selected = ranked[0]?.full || null;
+        }
+        if (selected && !seen.has(selected)) {
+          seen.add(selected);
+          out.push(selected);
+        }
       }
     }
   }
@@ -17188,6 +17228,7 @@ module.exports = {
   readTraeEntitlementFromStorage,
   // DeepSeek Harness (dsh) — passive session-log reader
   resolveDshHome,
+  resolveDshHomes,
   resolveDshSessionFiles,
   readDshSessionText,
   decodeDshZstd,

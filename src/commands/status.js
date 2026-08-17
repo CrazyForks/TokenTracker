@@ -74,7 +74,7 @@ const {
   resolveGooseDbPath,
   listDroidSettingsFiles,
   resolveDroidSessionsDir,
-  resolveDshHome,
+  resolveDshHomes,
   resolveDshSessionFiles,
   resolveTraeStoragePath,
   readTraeEntitlementFromStorage,
@@ -619,8 +619,8 @@ async function cmdStatus(argv = []) {
   const droidSessionsDir = resolveDroidSessionsDir(process.env);
   const droidSettingsFiles = listDroidSettingsFiles(process.env);
   const droidInstalled = droidSettingsFiles.length > 0;
-  const dshHome = resolveDshHome(process.env);
-  const dshSessionsDir = path.join(dshHome, "sessions");
+  const dshHomes = resolveDshHomes(process.env);
+  const dshSessionsDir = dshHomes.map((homeDir) => path.join(homeDir, "sessions")).join(", ");
   const dshSessionFiles = await resolveDshSessionFiles(process.env);
   const dshInstalled = dshSessionFiles.length > 0;
 
