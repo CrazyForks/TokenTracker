@@ -45,6 +45,42 @@ test("menu-bar popover keeps cached dashboard content visible during background 
   );
 });
 
+test("menu-bar popover does not activate the app", () => {
+  const source = readStatusBarController();
+  const toggleStart = source.indexOf("private func togglePopover()");
+  const toggleEnd = source.indexOf("private func makePopoverAnchorWindow()");
+  const togglePopover = source.slice(toggleStart, toggleEnd);
+  const didCloseStart = source.indexOf("private func handlePopoverDidClose()");
+  const didCloseEnd = source.indexOf("// MARK: - Click Handling");
+  const handlePopoverDidClose = source.slice(didCloseStart, didCloseEnd);
+
+  assert.doesNotMatch(
+    togglePopover,
+    /NSApp\.activate/,
+    "Opening the menu-bar popover must not activate the app and reorder an existing Dashboard window.",
+  );
+  assert.match(
+    togglePopover,
+    /window\.makeKey\(\)/,
+    "The popover window should remain key for keyboard and VoiceOver interaction.",
+  );
+  assert.match(
+    togglePopover,
+    /NSEvent\.addGlobalMonitorForEvents\(\s*matching:\s*\[[^\]]*\.leftMouseDown[^\]]*\.rightMouseDown[^\]]*\]/,
+    "An inactive app needs a global mouse monitor so clicks in other apps still close the transient popover.",
+  );
+  assert.match(
+    togglePopover,
+    /popoverDismissMonitor\s*=\s*NSEvent\.addGlobalMonitorForEvents[\s\S]*?closePopoverIfShown\(\)/,
+    "The stored global monitor must close the popover.",
+  );
+  assert.match(
+    handlePopoverDidClose,
+    /NSEvent\.removeMonitor\(popoverDismissMonitor\)[\s\S]*self\.popoverDismissMonitor\s*=\s*nil/,
+    "Popover cleanup must remove and clear the global mouse monitor.",
+  );
+});
+
 test("menu-bar popover is anchored to an app-owned positioning window", () => {
   const source = readStatusBarController();
   const didCloseStart = source.indexOf("forName: NSPopover.didCloseNotification");

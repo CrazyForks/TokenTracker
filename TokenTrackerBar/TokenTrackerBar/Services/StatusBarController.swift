@@ -27,6 +27,7 @@ final class StatusBarController: NSObject {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let popover = NSPopover()
     private var popoverAnchorWindow: NSWindow?
+    private var popoverDismissMonitor: Any?
     private let viewModel: DashboardViewModel
     private let serverManager: ServerManager
     private let launchAtLoginManager: LaunchAtLoginManager
@@ -776,6 +777,10 @@ final class StatusBarController: NSObject {
     }
 
     private func handlePopoverDidClose() {
+        if let popoverDismissMonitor {
+            NSEvent.removeMonitor(popoverDismissMonitor)
+            self.popoverDismissMonitor = nil
+        }
         viewModel.setPopoverVisible(false)
         popoverAnchorWindow?.orderOut(nil)
         updateStatsDisplay()
@@ -816,8 +821,13 @@ final class StatusBarController: NSObject {
             // while the Dashboard window is frontmost). .fullScreenAuxiliary matches
             // the anchor window so the popover also shows over full-screen Spaces.
             window.collectionBehavior.insert([.canJoinAllSpaces, .fullScreenAuxiliary])
-            NSApp.activate(ignoringOtherApps: true)
             window.makeKey()
+        }
+
+        popoverDismissMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] _ in
+            Task { @MainActor in self?.closePopoverIfShown() }
         }
 
         // Opportunistically sync stale local data before refreshing the popover.
