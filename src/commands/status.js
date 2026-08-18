@@ -60,6 +60,8 @@ const {
   resolvePiSessionFiles,
   resolvePiAgentDir,
   piAgentDirCollidesWithOmp,
+  resolvePrimeAgentSessionFiles,
+  resolvePrimeAgentDir,
   resolveCraftSessionFiles,
   resolveCraftConfigDir,
   resolveReasonixHome,
@@ -426,6 +428,11 @@ async function cmdStatus(argv = []) {
   const piAgentDir = resolvePiAgentDir(process.env);
   const piInstalled = !piCollides && Boolean(piAgentDir) && fssync.existsSync(path.join(piAgentDir, "sessions"));
   const piFiles = piInstalled ? resolvePiSessionFiles(process.env) : [];
+
+  // Prime Agent — passive scan only (no hooks).
+  const primeAgentDir = resolvePrimeAgentDir(process.env);
+  const primeAgentInstalled = Boolean(primeAgentDir) && fssync.existsSync(path.join(primeAgentDir, "sessions"));
+  const primeAgentFiles = primeAgentInstalled ? resolvePrimeAgentSessionFiles(process.env) : [];
 
   // Craft Agents — passive scan only (no hooks).
   const craftConfigDir = resolveCraftConfigDir(process.env);
@@ -873,6 +880,9 @@ async function cmdStatus(argv = []) {
         pi: piInstalled
           ? { installed: true, files: piFiles.length }
           : { installed: false },
+        prime_agent: primeAgentInstalled
+          ? { installed: true, files: primeAgentFiles.length }
+          : { installed: false },
         craft: craftInstalled
           ? { installed: true, files: craftFiles.length }
           : { installed: false },
@@ -1013,6 +1023,9 @@ async function cmdStatus(argv = []) {
         : null,
       piInstalled
         ? `- pi: passive reader (${piFiles.length} session jsonl file${piFiles.length !== 1 ? "s" : ""} found)`
+        : null,
+      primeAgentInstalled
+        ? `- Prime Agent: passive reader (${primeAgentFiles.length} session jsonl file${primeAgentFiles.length !== 1 ? "s" : ""} found)`
         : null,
       craftInstalled
         ? `- Craft Agents: passive reader (${craftFiles.length} session jsonl file${craftFiles.length !== 1 ? "s" : ""} found)`

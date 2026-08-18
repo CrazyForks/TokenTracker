@@ -26,6 +26,18 @@ export function formatProviderDisplayName(value) {
   if (!raw) return "";
 
   const normalized = normalizedProviderKey(raw);
+  if (normalized === "primeagent") return "Prime Agent";
+  if (normalized.startsWith("primeagent") && normalized.length > "primeagent".length) {
+    const provider = raw
+      .replace(/^prime[-_ ]?agent[-_ ]?/i, "")
+      .split(/[-_ ]+/)
+      .filter(Boolean)
+      .map((part) => part.toLowerCase() === "github"
+        ? "GitHub"
+        : part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+      .join(" ");
+    return provider ? `Prime Agent · ${provider}` : "Prime Agent";
+  }
   const specialCopyKey = SPECIAL_PROVIDER_COPY_KEYS[normalized];
   if (specialCopyKey) return copy(specialCopyKey);
 

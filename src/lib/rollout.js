@@ -12397,6 +12397,57 @@ function resolvePiDefaultModel() {
   return "pi-unknown";
 }
 
+// Prime Agent (PrimeIntellect-ai/prime-agent) persists the same metadata-only
+// assistant usage envelope as pi, but uses a flat sessions directory:
+//   ~/.prime/agent/sessions/<session-id>.jsonl
+// Keep its path and cursor namespace independent from pi so installations of
+// both tools can never suppress or double-count each other.
+function resolvePrimeAgentHome(env = process.env) {
+  if (env.TOKENTRACKER_PRIME_AGENT_HOME) {
+    return expandHomePath(env.TOKENTRACKER_PRIME_AGENT_HOME, env);
+  }
+  const home = env.HOME || require("node:os").homedir();
+  if (process.platform === "win32") {
+    return pickWin32ProviderPath({
+      env,
+      nativeValue: path.join(home, ".prime"),
+      wslProviderDir: ".prime",
+    });
+  }
+  return path.join(home, ".prime");
+}
+
+function resolvePrimeAgentDir(env = process.env) {
+  if (env.TOKENTRACKER_PRIME_AGENT_DIR) {
+    return expandHomePath(env.TOKENTRACKER_PRIME_AGENT_DIR, env);
+  }
+  const primeHome = resolvePrimeAgentHome(env);
+  return primeHome ? path.join(primeHome, "agent") : null;
+}
+
+function resolvePrimeAgentSessionFiles(env = process.env) {
+  const agentDir = resolvePrimeAgentDir(env);
+  if (!agentDir) return [];
+  const sessionsDir = path.join(agentDir, "sessions");
+  if (!fssync.existsSync(sessionsDir)) return [];
+  const files = [];
+  const walk = (dir) => {
+    let entries;
+    try { entries = fssync.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push(full);
+    }
+  };
+  walk(sessionsDir);
+  return files.sort((a, b) => a.localeCompare(b));
+}
+
+function resolvePrimeAgentDefaultModel() {
+  return "prime-agent-unknown";
+}
+
 // Pi is a router: the same session can send turns to Anthropic, GitHub
 // Copilot, or another backend. Keep provider names in the queue source so
 // those turns cannot collapse into one bucket (or inherit the wrong pricing).
@@ -12413,30 +12464,47 @@ function piSourceForProvider(provider) {
   return slug ? `pi-${slug}` : "pi";
 }
 
-async function parsePiIncremental({
+function primeAgentSourceForProvider(provider) {
+  if (typeof provider !== "string" || !provider.trim()) return "prime-agent";
+  const slug = provider
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+  return slug ? `prime-agent-${slug}` : "prime-agent";
+}
+
+async function parsePiLikeIncremental({
   sessionFiles,
   cursors,
   queuePath,
   onProgress,
   env,
   defaultModel,
+  stateKey,
+  resolveSessionFiles,
+  resolveDefaultModel,
+  sourceForProvider,
 } = {}) {
   await ensureDir(path.dirname(queuePath));
-  const piState = cursors.pi && typeof cursors.pi === "object" ? cursors.pi : {};
-  const seenIds = new Set(Array.isArray(piState.seenIds) ? piState.seenIds : []);
+  const providerState = cursors[stateKey] && typeof cursors[stateKey] === "object"
+    ? cursors[stateKey]
+    : {};
+  const seenIds = new Set(Array.isArray(providerState.seenIds) ? providerState.seenIds : []);
   const fileOffsets =
-    piState.fileOffsets && typeof piState.fileOffsets === "object"
-      ? { ...piState.fileOffsets }
+    providerState.fileOffsets && typeof providerState.fileOffsets === "object"
+      ? { ...providerState.fileOffsets }
       : {};
 
   const files = Array.isArray(sessionFiles)
     ? sessionFiles
-    : resolvePiSessionFiles(env || process.env);
-  const fallbackModel = defaultModel || resolvePiDefaultModel();
+    : resolveSessionFiles(env || process.env);
+  const fallbackModel = defaultModel || resolveDefaultModel();
 
   if (files.length === 0) {
-    cursors.pi = {
-      ...piState,
+    cursors[stateKey] = {
+      ...providerState,
       seenIds: Array.from(seenIds),
       fileOffsets,
       updatedAt: new Date().toISOString(),
@@ -12463,12 +12531,29 @@ async function parsePiIncremental({
     if (stat.size <= startOffset) continue;
 
     let stream;
+    let streamedBytes = 0;
+    let lastCompleteOffset = startOffset;
     try {
       stream = fssync.createReadStream(filePath, {
         encoding: "utf8",
         start: startOffset,
       });
     } catch { continue; }
+    // readline emits an unterminated final fragment as if it were a line. If
+    // the producer is still writing that JSON object, parsing fails; advancing
+    // to stat.size here would then lose the completed record forever. Track the
+    // last physical newline and commit only through that byte boundary.
+    stream.on("data", (chunk) => {
+      let searchFrom = 0;
+      let newlineIndex;
+      while ((newlineIndex = chunk.indexOf("\n", searchFrom)) !== -1) {
+        lastCompleteOffset = startOffset
+          + streamedBytes
+          + Buffer.byteLength(chunk.slice(0, newlineIndex + 1), "utf8");
+        searchFrom = newlineIndex + 1;
+      }
+      streamedBytes += Buffer.byteLength(chunk, "utf8");
+    });
     const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
 
     for await (const line of rl) {
@@ -12529,7 +12614,7 @@ async function parsePiIncremental({
           : input + output + cacheRead + cacheWrite + reasoningTokens;
 
       const model = normalizeModelInput(msg.model) || fallbackModel;
-      const source = piSourceForProvider(msg.provider);
+      const source = sourceForProvider(msg.provider);
 
       const delta = {
         input_tokens: input,
@@ -12561,7 +12646,7 @@ async function parsePiIncremental({
     let postStat = stat;
     try { postStat = fssync.statSync(filePath); } catch {}
     fileOffsets[filePath] = {
-      size: postStat.size,
+      size: Math.min(lastCompleteOffset, postStat.size),
       mtimeMs: postStat.mtimeMs,
       ino: postStat.ino,
     };
@@ -12579,14 +12664,34 @@ async function parsePiIncremental({
   const updatedAt = new Date().toISOString();
   hourlyState.updatedAt = updatedAt;
   cursors.hourly = hourlyState;
-  cursors.pi = {
-    ...piState,
+  cursors[stateKey] = {
+    ...providerState,
     seenIds: cappedSeen,
     fileOffsets,
     updatedAt,
   };
 
   return { recordsProcessed, eventsAggregated, bucketsQueued };
+}
+
+async function parsePiIncremental(options = {}) {
+  return parsePiLikeIncremental({
+    ...options,
+    stateKey: "pi",
+    resolveSessionFiles: resolvePiSessionFiles,
+    resolveDefaultModel: resolvePiDefaultModel,
+    sourceForProvider: piSourceForProvider,
+  });
+}
+
+async function parsePrimeAgentIncremental(options = {}) {
+  return parsePiLikeIncremental({
+    ...options,
+    stateKey: "primeAgent",
+    resolveSessionFiles: resolvePrimeAgentSessionFiles,
+    resolveDefaultModel: resolvePrimeAgentDefaultModel,
+    sourceForProvider: primeAgentSourceForProvider,
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -17182,6 +17287,11 @@ module.exports = {
   resolvePiDefaultModel,
   parsePiIncremental,
   piAgentDirCollidesWithOmp,
+  resolvePrimeAgentHome,
+  resolvePrimeAgentDir,
+  resolvePrimeAgentSessionFiles,
+  resolvePrimeAgentDefaultModel,
+  parsePrimeAgentIncremental,
   resolveCraftConfigDir,
   resolveCraftWorkspaceRoots,
   resolveCraftSessionFiles,

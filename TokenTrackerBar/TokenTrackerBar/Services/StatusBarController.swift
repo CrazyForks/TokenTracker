@@ -823,13 +823,10 @@ final class StatusBarController: NSObject {
             window.collectionBehavior.insert([.canJoinAllSpaces, .fullScreenAuxiliary])
             window.makeKey()
 
-            // Tahoe's automatic NSPopover Liquid Glass is subdued while the owning app is
-            // inactive. Make the popover key first, then force activation, so AppKit associates
-            // it with this window and the current Space instead of restoring a stale Dashboard
-            // window. Older systems use the classic material and stay non-activating.
-            if #available(macOS 26, *) {
-                NSApp.activate(ignoringOtherApps: true)
-            }
+            // Keep the status-bar popover non-activating. App-wide activation can
+            // restore a Dashboard window on another display/Space and move the
+            // popover away from the menu-bar item that was clicked (#481). Tahoe's
+            // inactive Liquid Glass treatment is preferable to incorrect placement.
         }
 
         popoverDismissMonitor = NSEvent.addGlobalMonitorForEvents(

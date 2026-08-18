@@ -78,6 +78,8 @@ const {
   resolvePiSessionFiles,
   parsePiIncremental,
   piAgentDirCollidesWithOmp,
+  resolvePrimeAgentSessionFiles,
+  parsePrimeAgentIncremental,
   resolveCraftSessionFiles,
   parseCraftIncremental,
   resolveReasonixTelemetryFiles,
@@ -2079,6 +2081,34 @@ async function cmdSync(argv, context = {}) {
       }
     }
 
+    // ── Prime Agent — passive ~/.prime/agent/sessions/*.jsonl usage reader ──
+    let primeAgentResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+    const primeAgentFiles = sourceAllowed("prime-agent")
+      ? mergeBothFileSources({ resolveFiles: resolvePrimeAgentSessionFiles, env: process.env })
+      : [];
+    if (primeAgentFiles.length > 0) {
+      if (progress?.enabled) {
+        progress.start(`Parsing Prime Agent ${renderBar(0)} | buckets 0`);
+      }
+      try {
+        primeAgentResult = await parsePrimeAgentIncremental({
+          sessionFiles: primeAgentFiles,
+          cursors,
+          queuePath,
+          env: process.env,
+          onProgress: (p) => {
+            if (!progress?.enabled) return;
+            const pct = p.total > 0 ? p.index / p.total : 1;
+            progress.update(
+              `Parsing Prime Agent ${renderBar(pct)} ${formatNumber(p.index)}/${formatNumber(p.total)} files | buckets ${formatNumber(p.bucketsQueued)}`,
+            );
+          },
+        });
+      } catch (err) {
+        warnProviderParseFailure("Prime Agent", err, opts);
+      }
+    }
+
     // ── Craft Agents (passive ~/.craft-agent + workspaces session.jsonl reader) ──
     let craftResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
     const craftFiles = sourceAllowed("craft")
@@ -2563,6 +2593,7 @@ async function cmdSync(argv, context = {}) {
       workbuddyResult.recordsProcessed +
       ompResult.recordsProcessed +
       piResult.recordsProcessed +
+      primeAgentResult.recordsProcessed +
       craftResult.recordsProcessed +
       reasonixResult.recordsProcessed +
       grokResult.recordsProcessed +
@@ -2597,6 +2628,7 @@ async function cmdSync(argv, context = {}) {
       workbuddyResult.bucketsQueued +
       ompResult.bucketsQueued +
       piResult.bucketsQueued +
+      primeAgentResult.bucketsQueued +
       craftResult.bucketsQueued +
       reasonixResult.bucketsQueued +
       grokResult.bucketsQueued +

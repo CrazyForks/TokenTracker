@@ -45,7 +45,7 @@ test("menu-bar popover keeps cached dashboard content visible during background 
   );
 });
 
-test("menu-bar popover activates Tahoe glass only after the popover becomes key", () => {
+test("menu-bar popover does not activate the app while opening", () => {
   const source = readStatusBarController();
   const toggleStart = source.indexOf("private func togglePopover()");
   const toggleEnd = source.indexOf("private func makePopoverAnchorWindow()");
@@ -54,15 +54,10 @@ test("menu-bar popover activates Tahoe glass only after the popover becomes key"
   const didCloseEnd = source.indexOf("// MARK: - Click Handling");
   const handlePopoverDidClose = source.slice(didCloseStart, didCloseEnd);
 
-  assert.match(
+  assert.doesNotMatch(
     togglePopover,
-    /window\.makeKey\(\)[\s\S]*if\s+#available\(macOS\s+26,\s*\*\)\s*\{[\s\S]*NSApp\.activate\(ignoringOtherApps:\s*true\)/,
-    "Tahoe should activate only after the popover is key so Liquid Glass stays active without restoring the Dashboard first.",
-  );
-  assert.ok(
-    togglePopover.indexOf("window.makeKey()") <
-      togglePopover.indexOf("NSApp.activate(ignoringOtherApps: true)"),
-    "Forced activation must never run before the popover is key, or AppKit may restore a stale Dashboard window and Space.",
+    /NSApp\.activate/,
+    "Opening the menu-bar popover must not activate the app and restore a Dashboard window on another display or Space.",
   );
   assert.match(
     togglePopover,

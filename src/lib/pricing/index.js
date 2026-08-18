@@ -15,7 +15,12 @@ const {
 const { loadLitellmData } = require("./litellm-fetcher");
 
 const ZERO_PRICING = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
-const PI_SUBSCRIPTION_SOURCES = new Set(["pi-github-copilot", "pi-copilot"]);
+const PI_SUBSCRIPTION_SOURCES = new Set([
+  "pi-github-copilot",
+  "pi-copilot",
+  "prime-agent-github-copilot",
+  "prime-agent-copilot",
+]);
 const SEED_SNAPSHOT_PATH = path.resolve(__dirname, "seed-snapshot.json");
 
 // Sync seed load. Done at require-time so callers that haven't awaited

@@ -65,6 +65,7 @@ const {
   resolveOmpAgentDir,
   resolvePiAgentDir,
   piAgentDirCollidesWithOmp,
+  resolvePrimeAgentDir,
   resolveAnythingllmDbPath,
   resolveReasonixHome,
   resolveTraeStoragePath,
@@ -121,6 +122,7 @@ const SUPPORTED_PROVIDERS = [
   "Grok Build",
   "oh-my-pi",
   "pi",
+  "Prime Agent",
   "Craft Agents",
   "Reasonix",
   "Kilo CLI",
@@ -707,6 +709,14 @@ async function applyIntegrationSetup({
     const piAgentDir = resolvePiAgentDir(process.env);
     if (piAgentDir && fssync.existsSync(path.join(piAgentDir, "sessions"))) {
       summary.push({ label: "pi", status: "detected", detail: "Passive reader (no hook needed)" });
+    }
+  }
+
+  // Prime Agent: metadata-only passive reader — no hook installation needed.
+  {
+    const primeAgentDir = resolvePrimeAgentDir(process.env);
+    if (primeAgentDir && fssync.existsSync(path.join(primeAgentDir, "sessions"))) {
+      summary.push({ label: "Prime Agent", status: "detected", detail: "Passive usage reader (no hook needed)" });
     }
   }
 

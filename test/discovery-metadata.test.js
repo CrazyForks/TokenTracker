@@ -9,14 +9,14 @@ const ROOT = path.resolve(__dirname, "..");
 const read = (relativePath) => fs.readFileSync(path.join(ROOT, relativePath), "utf8");
 
 const README_EXPECTATIONS = [
-  ["README.md", /31 AI coding tools/, /\|\s+\*\*AI tools supported\*\*\s+\|\s+\*\*31\*\*/, /Rate-limit tracking.*✅ 13 providers/],
-  ["README.zh-CN.md", /31 款 AI 编码工具/, /\|\s+\*\*支持的 AI 工具数\*\*\s+\|\s+\*\*31\*\*/, /限额追踪.*✅ 13 家 provider/],
-  ["README.ja.md", /31 種類の AI コーディングツール/, /\|\s+\*\*対応 AI ツール数\*\*\s+\|\s+\*\*31\*\*/, /レート制限トラッキング.*✅ 13 プロバイダー/],
-  ["README.ko.md", /31개의 AI 코딩 도구/, /\|\s+\*\*지원하는 AI 도구 수\*\*\s+\|\s+\*\*31\*\*/, /레이트 제한 추적.*✅ 13개 프로바이더/],
-  ["README.de.md", /31 KI-Coding-Tools/, /\|\s+\*\*Unterstützte KI-Tools\*\*\s+\|\s+\*\*31\*\*/, /Rate-Limit-Tracking.*✅ 13 Provider/],
+  ["README.md", /32 AI coding tools/, /\|\s+\*\*AI tools supported\*\*\s+\|\s+\*\*32\*\*/, /Rate-limit tracking.*✅ 13 providers/],
+  ["README.zh-CN.md", /32 款 AI 编码工具/, /\|\s+\*\*支持的 AI 工具数\*\*\s+\|\s+\*\*32\*\*/, /限额追踪.*✅ 13 家 provider/],
+  ["README.ja.md", /32 種類の AI コーディングツール/, /\|\s+\*\*対応 AI ツール数\*\*\s+\|\s+\*\*32\*\*/, /レート制限トラッキング.*✅ 13 プロバイダー/],
+  ["README.ko.md", /32개의 AI 코딩 도구/, /\|\s+\*\*지원하는 AI 도구 수\*\*\s+\|\s+\*\*32\*\*/, /레이트 제한 추적.*✅ 13개 프로바이더/],
+  ["README.de.md", /32 KI-Coding-Tools/, /\|\s+\*\*Unterstützte KI-Tools\*\*\s+\|\s+\*\*32\*\*/, /Rate-Limit-Tracking.*✅ 13 Provider/],
 ];
 
-test("public discovery surfaces describe all 31 supported tools", () => {
+test("public discovery surfaces describe all 32 supported tools", () => {
   for (const [file, countPattern, comparisonPattern, limitCountPattern] of README_EXPECTATIONS) {
     const source = read(file);
     assert.match(source, countPattern, `${file} has the current provider count`);
@@ -30,7 +30,7 @@ test("public discovery surfaces describe all 31 supported tools", () => {
 
   const index = read("dashboard/index.html");
   assert.doesNotMatch(index, /13 AI coding/);
-  assert.match(index, /Supported AI coding tools \(31\)/);
+  assert.match(index, /Supported AI coding tools \(32\)/);
   assert.match(index, /Desktop pet/);
   assert.match(index, /Four desktop widgets/);
   assert.match(index, /Achievements/);
@@ -38,31 +38,31 @@ test("public discovery surfaces describe all 31 supported tools", () => {
   assert.match(index, /usage limits for 13 providers/i);
 
   const llms = read("dashboard/public/llms.txt");
-  assert.match(llms, /Supported AI coding tools \(31\)/);
+  assert.match(llms, /Supported AI coding tools \(32\)/);
   assert.match(llms, /desktop pet/i);
   assert.match(llms, /four desktop widgets/i);
   assert.match(llms, /achievements/i);
 });
 
-test("marketing logo wall includes the same 31 product integrations", () => {
+test("marketing logo wall includes the same 32 product integrations", () => {
   const source = read("dashboard/src/ui/marketing/agent-logos.js");
   const providers = [...source.matchAll(/provider:\s*"([^"]+)"/g)].map((match) => match[1]);
-  assert.equal(providers.length, 31);
-  assert.equal(new Set(providers).size, 31);
+  assert.equal(providers.length, 32);
+  assert.equal(new Set(providers).size, 32);
 
   for (const provider of ["every-code", "reasonix", "kilocode", "roocode", "zed", "goose", "droid", "qoder", "anythingllm", "dsh"]) {
     assert.ok(providers.includes(provider), `logo wall includes ${provider}`);
   }
 });
 
-test("CLI onboarding advertises the same 31 supported integrations", () => {
+test("CLI onboarding advertises the same 32 supported integrations", () => {
   const source = read("src/commands/init.js");
   const block = source.match(/const SUPPORTED_PROVIDERS = \[([\s\S]*?)\];/);
   assert.ok(block, "init defines SUPPORTED_PROVIDERS");
 
   const providers = [...block[1].matchAll(/^\s*"([^"]+)",?$/gm)].map((match) => match[1]);
-  assert.equal(providers.length, 31);
-  assert.equal(new Set(providers).size, 31);
+  assert.equal(providers.length, 32);
+  assert.equal(new Set(providers).size, 32);
   assert.ok(providers.includes("Droid"));
   assert.ok(providers.includes("AnythingLLM Desktop"));
   assert.ok(providers.includes("Qoder"));
@@ -72,7 +72,7 @@ test("CLI onboarding advertises the same 31 supported integrations", () => {
 
 test("npm metadata carries the current product hook", () => {
   const pkg = JSON.parse(read("package.json"));
-  assert.match(pkg.description, /31 tools/);
+  assert.match(pkg.description, /32 tools/);
   assert.match(pkg.description, /desktop pet/);
   assert.ok(pkg.keywords.includes("desktop-widget"));
   assert.ok(pkg.keywords.includes("ai-coding-tools"));

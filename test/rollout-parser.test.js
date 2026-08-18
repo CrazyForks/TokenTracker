@@ -52,6 +52,9 @@ const {
   resolvePiSessionFiles,
   resolvePiAgentDir,
   piAgentDirCollidesWithOmp,
+  parsePrimeAgentIncremental,
+  resolvePrimeAgentSessionFiles,
+  resolvePrimeAgentDir,
   parseCraftIncremental,
   resolveCraftSessionFiles,
   resolveCraftWorkspaceRoots,
@@ -9502,6 +9505,135 @@ test("resolvePiSessionFiles includes nested pi-subagents transcripts", async () 
     assert.deepEqual(result, [mainFile, nestedFile].sort((a, b) => a.localeCompare(b)));
   } finally {
     await fs.rm(home, { recursive: true, force: true });
+  }
+});
+
+// ─── Prime Agent tests — flat ~/.prime/agent/sessions/*.jsonl format ───
+
+test("resolvePrimeAgentSessionFiles discovers flat sessions and nested child sessions", async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "tt-prime-agent-home-"));
+  try {
+    const sessionsDir = path.join(home, ".prime", "agent", "sessions");
+    const mainFile = path.join(sessionsDir, "session-main.jsonl");
+    const childFile = path.join(sessionsDir, "children", "session-child.jsonl");
+    await fs.mkdir(path.dirname(childFile), { recursive: true });
+    await fs.writeFile(mainFile, buildOmpSessionHeader() + "\n", "utf8");
+    await fs.writeFile(childFile, buildOmpSessionHeader() + "\n", "utf8");
+    await fs.writeFile(path.join(sessionsDir, "ignored.txt"), "ignored", "utf8");
+
+    assert.deepEqual(
+      resolvePrimeAgentSessionFiles({ HOME: home }),
+      [mainFile, childFile].sort((a, b) => a.localeCompare(b)),
+    );
+  } finally {
+    await fs.rm(home, { recursive: true, force: true });
+  }
+});
+
+test("parsePrimeAgentIncremental reads usage metadata with an independent cursor and ignores attribution bookkeeping", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-prime-agent-"));
+  try {
+    const filePath = path.join(tmp, "session.jsonl");
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1, pi: { seenIds: ["prime-msg-1"] } };
+    const ts = Date.UTC(2026, 7, 18, 8, 10, 0);
+    const lines = [
+      buildOmpSessionHeader(),
+      buildOmpAssistantLine({
+        id: "prime-msg-1",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        input: 120,
+        output: 30,
+        cacheRead: 50,
+        cacheWrite: 10,
+        timestamp: ts,
+        totalTokens: 210,
+      }),
+      JSON.stringify({
+        type: "child_usage_attributed",
+        targetId: "prime-msg-1",
+        childUsage: { input: 999, output: 999, totalTokens: 1998 },
+      }),
+    ];
+    await fs.writeFile(filePath, lines.join("\n") + "\n", "utf8");
+
+    const first = await parsePrimeAgentIncremental({ sessionFiles: [filePath], cursors, queuePath });
+    assert.equal(first.eventsAggregated, 1, "pi cursor must not suppress Prime Agent messages");
+    assert.ok(cursors.primeAgent.seenIds.includes("prime-msg-1"));
+
+    const queued = await readJsonLines(queuePath);
+    assert.equal(queued.length, 1, "child attribution bookkeeping must not be counted again");
+    assert.equal(queued[0].source, "prime-agent-anthropic");
+    assert.equal(queued[0].model, "claude-sonnet-4-6");
+    assert.equal(queued[0].input_tokens, 120);
+    assert.equal(queued[0].cached_input_tokens, 50);
+    assert.equal(queued[0].cache_creation_input_tokens, 10);
+    assert.equal(queued[0].output_tokens, 30);
+    assert.equal(queued[0].total_tokens, 210);
+
+    const second = await parsePrimeAgentIncremental({ sessionFiles: [filePath], cursors, queuePath });
+    assert.equal(second.eventsAggregated, 0);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("parsePrimeAgentIncremental retries a trailing JSON fragment after the writer completes it", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tt-prime-agent-tail-"));
+  try {
+    const filePath = path.join(tmp, "session.jsonl");
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1 };
+    const completeLine = buildOmpAssistantLine({
+      id: "prime-tail-1",
+      provider: "openai",
+      model: "gpt-5.2-codex",
+      input: 40,
+      output: 12,
+      timestamp: Date.UTC(2026, 7, 18, 9, 0, 0),
+      totalTokens: 52,
+    });
+    const splitAt = Math.floor(completeLine.length / 2);
+    await fs.writeFile(
+      filePath,
+      buildOmpSessionHeader() + "\n" + completeLine.slice(0, splitAt),
+      "utf8",
+    );
+
+    const first = await parsePrimeAgentIncremental({ sessionFiles: [filePath], cursors, queuePath });
+    assert.equal(first.eventsAggregated, 0);
+    assert.equal(cursors.primeAgent.fileOffsets[filePath].size, Buffer.byteLength(buildOmpSessionHeader() + "\n"));
+
+    await fs.appendFile(filePath, completeLine.slice(splitAt) + "\n", "utf8");
+    const second = await parsePrimeAgentIncremental({ sessionFiles: [filePath], cursors, queuePath });
+    assert.equal(second.eventsAggregated, 1);
+    const queued = await readJsonLines(queuePath);
+    assert.equal(queued.at(-1).source, "prime-agent-openai");
+    assert.equal(queued.at(-1).total_tokens, 52);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("TOKENTRACKER_PRIME_AGENT_DIR expands HOME and overrides default discovery", async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "tt-prime-home-"));
+  const relocated = await fs.mkdtemp(path.join(os.tmpdir(), "tt-prime-relocated-"));
+  try {
+    const sessionsDir = path.join(relocated, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    await fs.writeFile(path.join(sessionsDir, "session.jsonl"), buildOmpSessionHeader() + "\n", "utf8");
+    assert.equal(
+      resolvePrimeAgentDir({ HOME: home, TOKENTRACKER_PRIME_AGENT_DIR: "~/custom-prime-agent" }),
+      path.join(home, "custom-prime-agent"),
+    );
+    assert.equal(
+      resolvePrimeAgentSessionFiles({ HOME: home, TOKENTRACKER_PRIME_AGENT_DIR: relocated }).length,
+      1,
+    );
+  } finally {
+    await fs.rm(home, { recursive: true, force: true });
+    await fs.rm(relocated, { recursive: true, force: true });
   }
 });
 

@@ -20,6 +20,12 @@ describe("formatProviderDisplayName", () => {
     expect(formatProviderDisplayName("PI-GITHUB-COPILOT")).toBe("Pi · GitHub Copilot");
   });
 
+  it("gives Prime Agent routed providers distinct readable names", () => {
+    expect(formatProviderDisplayName("prime-agent")).toBe("Prime Agent");
+    expect(formatProviderDisplayName("prime-agent-anthropic")).toBe("Prime Agent · Anthropic");
+    expect(formatProviderDisplayName("PRIME_AGENT_GITHUB_COPILOT")).toBe("Prime Agent · GitHub Copilot");
+  });
+
   it("formats omp as oh-my-pi", () => {
     expect(formatProviderDisplayName("omp")).toBe("oh-my-pi");
     expect(formatProviderDisplayName("OMP")).toBe("oh-my-pi");
