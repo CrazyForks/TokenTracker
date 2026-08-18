@@ -984,13 +984,25 @@ final class StatusBarController: NSObject {
         // Display Metrics Submenu (affects both Dynamic Island & Menu Bar Icon)
         let displayItem = NSMenuItem(title: Strings.menuDisplayMetrics, action: nil, keyEquivalent: "")
         let displayMenu = NSMenu()
+        displayMenu.autoenablesItems = false
 
         let statsItem = NSMenuItem(title: Strings.menuShowStats, action: #selector(toggleStats), keyEquivalent: "")
         statsItem.target = self
         statsItem.state = showStats ? .on : .off
         displayMenu.addItem(statsItem)
 
-        if showStats {
+        let compactItem = NSMenuItem(title: Strings.menuDynamicIslandCompactMode, action: #selector(toggleDynamicIslandCompact), keyEquivalent: "")
+        compactItem.target = self
+        compactItem.state = DynamicIslandCompactPolicy.isEnabled() ? .on : .off
+        compactItem.isEnabled = islandEnabled
+        displayMenu.addItem(compactItem)
+
+        let remainingItem = NSMenuItem(title: Strings.menuRingShowsRemaining, action: #selector(selectRingDisplayMode(_:)), keyEquivalent: "")
+        remainingItem.target = self
+        remainingItem.state = LimitsSettingsStore.shared.displayMode == .remaining ? .on : .off
+        displayMenu.addItem(remainingItem)
+
+        if showStats || islandEnabled {
             displayMenu.addItem(.separator())
             let selectedIDs = MenuBarDisplayPreferences.read()
             let payload = MenuBarDisplayPreferences.availableItemsPayload(
@@ -1163,6 +1175,17 @@ final class StatusBarController: NSObject {
 
     @objc private func toggleStats() {
         showStats.toggle()
+    }
+
+    @objc private func toggleDynamicIslandCompact() {
+        DynamicIslandCompactPolicy.write(!DynamicIslandCompactPolicy.isEnabled())
+        NotificationCenter.default.post(name: .nativeSettingsChanged, object: nil)
+    }
+
+    @objc private func selectRingDisplayMode(_ sender: NSMenuItem) {
+        let next: LimitDisplayMode =
+            LimitsSettingsStore.shared.displayMode == .remaining ? .used : .remaining
+        LimitsSettingsStore.shared.setDisplayModeFromMenu(next)
     }
 
     @objc private func selectMenuBarSlotMetric(_ sender: NSMenuItem) {

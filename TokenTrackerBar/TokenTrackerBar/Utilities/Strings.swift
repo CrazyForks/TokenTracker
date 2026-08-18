@@ -234,6 +234,8 @@ enum Strings {
     static var menuStarOnGitHub: String { t("★ Star on GitHub", "★ 在 GitHub 上标星", "★ 在 GitHub 上標星", "★ GitHub でスターを付ける", "★ GitHub에서 스타하기") }
     static var menuShowStats: String { t("Show Numeric Values", "显示数值", "顯示數值", "数値の表示", "수치 표시") }
     static var menuDisplayMetrics: String { t("Display Metrics", "显示指标", "顯示指標", "表示メトリクス", "표시 메트릭") }
+    static var menuDynamicIslandCompactMode: String { t("Compact Mode (Ring)", "紧凑模式（圆环）", "緊湊模式（圓環）", "コンパクトモード（リング）", "컴팩트 모드(링)") }
+    static var menuRingShowsRemaining: String { t("Show Remaining", "显示剩余量", "顯示剩餘量", "残りを表示", "남은 양 표시") }
     static var menuPrimarySlot: String { t("Primary", "主指标", "主指標", "プライマリ", "기본") }
     static var menuSecondarySlot: String { t("Secondary", "副指标", "副指標", "セカンダリ", "보조") }
     static var menuSlotNone: String { t("None", "不显示", "不顯示", "表示しない", "표시 안 함") }
