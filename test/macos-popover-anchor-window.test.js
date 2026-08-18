@@ -45,7 +45,7 @@ test("menu-bar popover keeps cached dashboard content visible during background 
   );
 });
 
-test("menu-bar popover does not activate the app while opening", () => {
+test("menu-bar popover restores Tahoe glass via deferred activation with a realign guard", () => {
   const source = readStatusBarController();
   const toggleStart = source.indexOf("private func togglePopover()");
   const toggleEnd = source.indexOf("private func makePopoverAnchorWindow()");
@@ -54,10 +54,70 @@ test("menu-bar popover does not activate the app while opening", () => {
   const didCloseEnd = source.indexOf("// MARK: - Click Handling");
   const handlePopoverDidClose = source.slice(didCloseStart, didCloseEnd);
 
-  assert.doesNotMatch(
+  // Full Liquid Glass needs app activation on macOS 26+, but activating in the
+  // same runloop pass as popover.show() strands the popover on another display
+  // (#481). The contract: activation is deferred to the next runloop tick,
+  // gated on the popover still being shown, and followed by a realign guard.
+  assert.match(
     togglePopover,
-    /NSApp\.activate/,
-    "Opening the menu-bar popover must not activate the app and restore a Dashboard window on another display or Space.",
+    /if\s+#available\(macOS\s+26,\s*\*\)\s*\{[\s\S]*?DispatchQueue\.main\.async[\s\S]*?self\.popover\.isShown[\s\S]*?canActivateForPopoverGlass\(\)[\s\S]*?NSApp\.activate\(ignoringOtherApps:\s*true\)[\s\S]*?realignPopoverWithAnchorIfDisplaced\(\)/,
+    "Tahoe activation must be deferred past the anchoring pass, gated on popover.isShown plus the focus-steal guard, and followed by the realign guard (#481).",
+  );
+  assert.match(
+    source,
+    /private\s+func\s+canActivateForPopoverGlass\(\)\s*->\s*Bool\s*\{[\s\S]*?window\.canBecomeKey[\s\S]*?window\.screen\s*!==\s*anchorScreen\s*\|\|\s*!window\.isOnActiveSpace[\s\S]*?return\s+false/,
+    "Activation must be skipped while another key-capable window is visible on a different screen or Space — it would dismiss the transient popover (#481).",
+  );
+  assert.ok(
+    togglePopover.indexOf("window.makeKey()") <
+      togglePopover.indexOf("NSApp.activate(ignoringOtherApps: true)"),
+    "Forced activation must never run before the popover is key, or AppKit may restore a stale Dashboard window and Space.",
+  );
+  const activateMatches = togglePopover.match(/NSApp\.activate/g) || [];
+  assert.equal(
+    activateMatches.length,
+    2,
+    "togglePopover must contain exactly two NSApp.activate calls — the guarded everyday one and the full-screen admission one, both deferred.",
+  );
+  assert.ok(
+    togglePopover.indexOf("DispatchQueue.main.async") <
+      togglePopover.indexOf("NSApp.activate"),
+    "A synchronous NSApp.activate in the popover-open path regresses #481; it must stay inside the deferred block.",
+  );
+  assert.match(
+    togglePopover,
+    /if\s+ProcessInfo\.processInfo\.systemUptime\s*-\s*popoverShownAt\s*>\s*0\.5\s*\{\s*closePopoverIfShown\(\)\s*\}/,
+    "One physical click on the full-screen revealed menu bar dispatches the button action twice (macOS 26); the close toggle must be debounced or the popover closes before it is ever seen.",
+  );
+  assert.match(
+    togglePopover,
+    /anchorWindow\.addChildWindow\(window,\s*ordered:\s*\.above\)/,
+    "The popover window must be attached as a child of the anchor window — an inactive app's popover is otherwise never admitted onto another app's full-screen Space.",
+  );
+  assert.match(
+    togglePopover,
+    /isOnActiveSpace[\s\S]*?reshowPopoverAfterFullScreenActivation\(\)/,
+    "When the anchor is not admitted onto the active (full-screen) Space, activation plus the one-shot re-show recovery must run.",
+  );
+  assert.match(
+    source,
+    /private\s+func\s+reshowPopoverAfterFullScreenActivation\(\)\s*\{[\s\S]*?guard\s+!popoverReshowAttempted\s+else\s*\{\s*return\s*\}[\s\S]*?popoverReshowAttempted\s*=\s*true[\s\S]*?togglePopover\(\)/,
+    "The full-screen re-show recovery must be latched to a single attempt so it can never loop.",
+  );
+  assert.match(
+    source,
+    /private\s+func\s+positionPopoverAnchorWindow[\s\S]*?NSEvent\.mouseLocation[\s\S]*?clickScreen\s*!=\s*buttonScreen/,
+    "The anchor must follow the display the click happened on — the status item's real window can live on another display's menu bar (#481).",
+  );
+  assert.match(
+    handlePopoverDidClose,
+    /removeChildWindow\(popoverWindow\)/,
+    "Popover close must detach the reused popover window from the anchor or the next show inherits a stale child relationship.",
+  );
+  assert.match(
+    source,
+    /private\s+func\s+realignPopoverWithAnchorIfDisplaced\(\)\s*\{[\s\S]*?popoverWindow\.screen\s*!==\s*anchorWindow\.screen[\s\S]*?popoverWindow\.setFrame\(frame,\s*display:\s*true\)/,
+    "The realign guard must compare the popover window against the app-owned anchor and move it back when displaced (#481).",
   );
   assert.match(
     togglePopover,
@@ -114,8 +174,8 @@ test("menu-bar popover is anchored to an app-owned positioning window", () => {
   );
   assert.match(
     source,
-    /if\s+popover\.isShown\s*\{\s*closePopoverIfShown\(\)\s*return\s*\}/,
-    "Left-click toggling should use the same synchronous close cleanup path as other close triggers.",
+    /if\s+popover\.isShown\s*\{[\s\S]*?closePopoverIfShown\(\)[\s\S]*?return\s*\}/,
+    "Left-click toggling should use the same synchronous close cleanup path as other close triggers (with the duplicate-dispatch debounce).",
   );
   assert.match(
     didCloseObserver,
