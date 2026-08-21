@@ -398,6 +398,11 @@ const PROVIDER_LOGO_MAP = {
   "PI-GITHUB-COPILOT": "/brand-logos/pi.svg",
   "PI-COPILOT": "/brand-logos/pi.svg",
   "PI-OPENAI-CODEX": "/brand-logos/pi.svg",
+  // Dots has its own recognizable brand mark, unlike the other pi backends
+  // above which stay generic PI icons — keep it a distinct logo for both the
+  // standalone "dots" provider and the pi-routed source.
+  DOTS: "/brand-logos/dots.svg",
+  "PI-DOTS": "/brand-logos/dots.svg",
   QODER: "/brand-logos/qoder.svg",
   REASONIX: "/brand-logos/reasonix.png",
   // Qoder CN ships its own brand mark — the domestic edition's icon (a green

@@ -122,6 +122,7 @@ const SUPPORTED_PROVIDERS = [
   "Grok Build",
   "oh-my-pi",
   "pi",
+  "Dots",
   "Prime Agent",
   "Craft Agents",
   "Reasonix",

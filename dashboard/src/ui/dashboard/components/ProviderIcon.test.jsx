@@ -56,6 +56,15 @@ describe("ProviderIcon", () => {
     expect(icon).toHaveAttribute("width", "18");
   });
 
+  it("renders the Dots brand logo for both the standalone and pi-routed sources", () => {
+    for (const provider of ["dots", "pi-dots"]) {
+      const { container } = render(<ProviderIcon provider={provider} size={18} />);
+      const icon = container.querySelector('img[src="/brand-logos/dots.svg"]');
+      expect(icon, `${provider} maps to dots.svg`).not.toBeNull();
+      expect(icon).toHaveAttribute("width", "18");
+    }
+  });
+
   it("renders the Reasonix brand icon", () => {
     const { container } = render(<ProviderIcon provider="reasonix" size={20} />);
     const icon = container.querySelector('img[src="/brand-logos/reasonix.png"]');
