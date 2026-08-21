@@ -119,14 +119,30 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            dashboard/package-lock.json
 
-      - name: Test OpenClaw parser on macOS
-        run: |
-          npm ci
-          node --test test/openclaw-parser.test.js
+      - name: Install root dependencies
+        run: npm ci
 
-      - name: Test macOS native pet limit reset interpolation
-        run: node --test test/native-pet-limit-reset.test.js
+      - name: Install dashboard dependencies
+        run: npm ci --prefix dashboard
+
+      # Same reason as the Linux job: the local-runtime install test asserts the
+      # bundled dashboard/dist/index.html exists, and a fresh checkout has none.
+      - name: Build dashboard
+        env:
+          VITE_INSFORGE_BASE_URL: https://srctyff5.us-east.insforge.app
+          VITE_INSFORGE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3OC0xMjM0LTU2NzgtOTBhYi1jZGVmMTIzNDU2NzgiLCJlbWFpbCI6ImFub25AaW5zZm9yZ2UuY29tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODExNDU5NDd9.T0auta_IrVIh0uXW1bob5QSnzvsnJmN28r5XkSGEuQY
+        run: npm run dashboard:build
+
+      # The whole suite, not a hand-picked pair of files: host assumptions that
+      # only hold on GNU userland (coreutils, GNU sed, ...) are invisible to the
+      # Linux job by construction, and `npm test` is what CONTRIBUTING asks
+      # contributors to run before opening a PR.
+      - name: Test suite on macOS
+        run: npm test
 
       - name: Install xcodegen
         run: brew install xcodegen
