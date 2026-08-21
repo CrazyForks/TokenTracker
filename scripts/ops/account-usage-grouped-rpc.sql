@@ -230,6 +230,18 @@ AS $func$
         ELSE ''
       END AS bucket,
       hourly.source, hourly.model,
+      CASE
+        WHEN lower(hourly.model) LIKE '%deepseek-v4-flash%'
+          OR lower(hourly.model) LIKE '%deepseek-v4-pro%'
+        THEN CASE
+          WHEN extract(hour FROM hourly.hour_start AT TIME ZONE 'UTC') >= 1
+               AND extract(hour FROM hourly.hour_start AT TIME ZONE 'UTC') < 4
+            OR extract(hour FROM hourly.hour_start AT TIME ZONE 'UTC') >= 6
+               AND extract(hour FROM hourly.hour_start AT TIME ZONE 'UTC') < 10
+          THEN 'peak' ELSE 'off_peak'
+        END
+        ELSE 'peak'
+      END AS pricing_tier,
       hourly.total_tokens, hourly.input_tokens, hourly.output_tokens,
       hourly.cached_input_tokens, hourly.cache_creation_input_tokens,
       hourly.reasoning_output_tokens, hourly.conversations
@@ -244,7 +256,7 @@ AS $func$
   ),
   grouped AS (
     SELECT
-      bucket, source, model,
+      bucket, source, model, pricing_tier,
       SUM(total_tokens)::bigint                AS total_tokens,
       SUM(input_tokens)::bigint                AS input_tokens,
       SUM(output_tokens)::bigint               AS output_tokens,
@@ -253,10 +265,10 @@ AS $func$
       SUM(reasoning_output_tokens)::bigint     AS reasoning_output_tokens,
       SUM(conversations)::bigint               AS conversations
     FROM loc
-    GROUP BY bucket, source, model
+    GROUP BY bucket, source, model, pricing_tier
   )
   SELECT COALESCE(
-           jsonb_agg(to_jsonb(grouped.*) ORDER BY grouped.bucket, grouped.source, grouped.model),
+           jsonb_agg(to_jsonb(grouped.*) ORDER BY grouped.bucket, grouped.source, grouped.model, grouped.pricing_tier),
            '[]'::jsonb
          )
   FROM grouped

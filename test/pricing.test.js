@@ -711,6 +711,59 @@ test("index: getModelPricing resolves Cursor Grok and version-first Claude alias
   );
 });
 
+test("index: DeepSeek V4 pricing follows official UTC peak and off-peak windows (#491)", () => {
+  pricing.resetPricingForTests();
+  const row = (model, hour_start) => ({
+    source: "dsh",
+    model,
+    hour_start,
+    input_tokens: 1_000_000,
+    cached_input_tokens: 1_000_000,
+    cache_creation_input_tokens: 1_000_000,
+    output_tokens: 1_000_000,
+    reasoning_output_tokens: 0,
+  });
+
+  assert.deepEqual(
+    pricing.getModelPricing("deepseek-v4-flash"),
+    { input: 0.44, output: 1.32, cache_read: 0.014, cache_write: 0.44 },
+  );
+  assert.deepEqual(
+    pricing.getModelPricing("deepseek-v4-pro"),
+    { input: 1.32, output: 3.96, cache_read: 0.044, cache_write: 1.32 },
+  );
+  assert.deepEqual(
+    pricing.getModelPricing("deepseek-v4-flash-vision-exp"),
+    { input: 0.44, output: 1.32, cache_read: 0.014, cache_write: 0.44 },
+  );
+
+  assert.equal(pricing.computeRowCost(row("deepseek-v4-flash", "2026-08-21T01:00:00Z")), 2.214);
+  assert.equal(pricing.computeRowCost(row("deepseek-v4-flash", "2026-08-21T03:30:00Z")), 2.214);
+  assert.equal(pricing.computeRowCost(row("deepseek-v4-flash", "2026-08-21T04:00:00Z")), 1.107);
+  assert.equal(pricing.computeRowCost(row("deepseek-v4-pro", "2026-08-21T06:00:00Z")), 6.644);
+  assert.equal(pricing.computeRowCost(row("deepseek-v4-pro", "2026-08-21T10:00:00Z")), 3.322);
+
+  assert.equal(
+    pricing.computeRowCost({ ...row("deepseek-v4-pro", null), pricing_tier: "off_peak" }),
+    3.322,
+  );
+  assert.equal(
+    pricing.computeRowCost({ ...row("deepseek-v4-pro", "2026-08-21T12:00:00Z"), pricing_tier: "peak" }),
+    6.644,
+  );
+  assert.equal(
+    pricing.computeRowCost(row("deepseek-v4-pro", "invalid")),
+    6.644,
+    "missing/invalid timestamps fail closed to peak pricing",
+  );
+
+  assert.deepEqual(
+    pricing.getModelPricing("deepseek-chat"),
+    { input: 0.14, output: 0.28, cache_read: 0.0028, cache_write: 0.14 },
+    "legacy model ids keep their historical static rate",
+  );
+});
+
 test("index: Cursor Fast SKUs keep their distinct curated pricing (#446)", () => {
   const rates = (model) => {
     const { input, output, cache_read, cache_write } = model;

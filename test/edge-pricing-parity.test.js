@@ -104,7 +104,7 @@ test("all cloud cost paths keep Pi Copilot subscription rows at zero cost", () =
     if (name === "tokentracker-account-model-breakdown.ts") {
       assert.match(
         source,
-        /const cost = subscriptionBacked\s*\? 0/,
+        /ma\.totalCostUsd \+= subscriptionBacked\s*\? 0/,
         `${name}: subscription rows must bypass model pricing`,
       );
     } else {
@@ -115,4 +115,20 @@ test("all cloud cost paths keep Pi Copilot subscription rows at zero cost", () =
       );
     }
   }
+});
+
+test("all cloud cost paths retain DeepSeek V4 peak/off-peak pricing tiers", () => {
+  for (const name of [CANONICAL, ...MIRRORS]) {
+    const source = readEdge(name);
+    assert.ok(source.includes('function getRowPricing('), `${name}: row pricing helper missing`);
+    assert.ok(source.includes('pricing_tier === "off_peak"'), `${name}: off-peak tier missing`);
+    assert.ok(source.includes('hour >= 1 && hour < 4'), `${name}: first peak window missing`);
+    assert.ok(source.includes('hour >= 6 && hour < 10'), `${name}: second peak window missing`);
+  }
+  const breakdown = readEdge("tokentracker-account-model-breakdown.ts");
+  assert.match(
+    breakdown,
+    /ma\.totalCostUsd \+= subscriptionBacked/,
+    "model breakdown must price each pricing-tier row before collapsing models",
+  );
 });
