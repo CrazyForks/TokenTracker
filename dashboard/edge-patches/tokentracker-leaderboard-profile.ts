@@ -418,7 +418,7 @@ function canonicalSource(s: string) {
 // RPC, and tokentracker-leaderboard-refresh.ts
 // (parity: test/account-source-parity.test.js).
 // deno-lint-ignore no-unused-vars
-const ACCOUNT_LEVEL_SOURCES = new Set<string>(["cursor"]);
+const ACCOUNT_LEVEL_SOURCES = new Set<string>(["cursor", "trae-cn"]);
 
 // ─────────────────────────── Window bounds ──────────────────────────
 function normalizeTimeZone(value: string | null): string | null {
@@ -532,8 +532,8 @@ async function fetchDailyGroupedRows(
 ): Promise<GroupedRow[]> {
   // The two-class cross-device aggregation runs in Postgres
   // (account_usage_grouped), matching tokentracker-leaderboard-refresh.ts:
-  //   * ACCOUNT-LEVEL sources (cursor): ONE canonical whole row per
-  //     (bucket, source, model), across ALL devices (device-independent).
+  //   * ACCOUNT-LEVEL sources (cursor, trae-cn): ONE canonical whole row
+  //     per (bucket, source, model), across ALL devices (device-independent).
   //   * MACHINE-LEVEL sources: summed across the user's ACTIVE devices
   //     (revoked_at IS NULL), dropping historic device churn.
   // Day grain is enough — the modal only aggregates by day. The cached

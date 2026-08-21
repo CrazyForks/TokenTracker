@@ -77,6 +77,22 @@ describe("ProviderIcon", () => {
       expect(icon?.querySelector('path[fill="currentColor"]')).not.toBeNull();
     }
   });
+
+  it("renders the compact TRAE CN mark instead of the unknown-provider placeholder", () => {
+    const { container } = render(<ProviderIcon provider="trae-cn" size={20} />);
+    const icon = container.querySelector('svg[data-brand="trae-cn"]');
+
+    expect(icon).not.toBeNull();
+    expect(icon).toHaveAttribute("width", "20");
+    expect(icon).toHaveAttribute("height", "20");
+    expect(icon).toHaveAttribute("aria-hidden", "true");
+    // Official app-icon palette: white rounded square + black mask, fixed
+    // colors instead of currentColor (same policy as the Craft mark).
+    expect(icon?.querySelector("rect")).not.toBeNull();
+    expect(icon?.querySelector("path")).not.toBeNull();
+    expect(icon?.querySelector("circle")).toBeNull();
+    expect(container.querySelector(".text-oai-gray-400")).toBeNull();
+  });
 });
 
   it("renders the Qoder CN green-crescent mark from its own asset", () => {

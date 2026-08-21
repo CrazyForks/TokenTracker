@@ -1,6 +1,7 @@
 // Canonical list of supported coding agents, in display order. Shared by the
 // marketing landing carousel and the dashboard auth/expired gate so the two
 // surfaces can't drift. Names are tooltip/a11y metadata only.
+
 export const AGENT_LOGOS = [
   { id: 1, name: "Claude Code", provider: "claude" },
   { id: 2, name: "Codex", provider: "codex" },
@@ -34,4 +35,12 @@ export const AGENT_LOGOS = [
   { id: 30, name: "AnythingLLM", provider: "anythingllm" },
   { id: 31, name: "Claude Science", provider: "claude-science" },
   { id: 32, name: "DeepSeek Harness", provider: "dsh" },
+  {
+    id: 33,
+    // No hardcoded English fallback name: every consumer renders through
+    // copy() (LogoCarousel prefers nameKey; see LogoCarousel.test.jsx), so a
+    // parallel "name" string would just duplicate the copy.csv entry.
+    nameKey: "provider.display.trae_work_cn",
+    provider: "trae-cn",
+  },
 ];
