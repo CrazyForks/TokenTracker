@@ -56,12 +56,13 @@ describe("ProviderIcon", () => {
     expect(icon).toHaveAttribute("width", "18");
   });
 
-  it("renders the Dots brand logo for both the standalone and pi-routed sources", () => {
+  it("renders the Dots Studio sail brand logo for both the standalone and pi-routed sources", () => {
     for (const provider of ["dots", "pi-dots"]) {
       const { container } = render(<ProviderIcon provider={provider} size={18} />);
-      const icon = container.querySelector('img[src="/brand-logos/dots.svg"]');
-      expect(icon, `${provider} maps to dots.svg`).not.toBeNull();
+      const icon = container.querySelector('img[src="/brand-logos/dots.png"]');
+      expect(icon, `${provider} maps to dots.png`).not.toBeNull();
       expect(icon).toHaveAttribute("width", "18");
+      expect(icon).toHaveClass("dark:invert");
     }
   });
 
