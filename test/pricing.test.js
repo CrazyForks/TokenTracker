@@ -757,6 +757,47 @@ test("index: DeepSeek V4 pricing follows official UTC peak and off-peak windows 
     "missing/invalid timestamps fail closed to peak pricing",
   );
 
+  // From 00:00 Beijing time on 2026-08-23 — 2026-08-22T16:00Z — whole Beijing
+  // weekends bill off-peak, peak hours included.
+  assert.equal(
+    pricing.computeRowCost(row("deepseek-v4-pro", "2026-08-22T06:00:00Z")),
+    6.644,
+    "Beijing Saturday before the rule takes effect is still peak",
+  );
+  assert.equal(
+    pricing.computeRowCost(row("deepseek-v4-pro", "2026-08-23T01:00:00Z")),
+    3.322,
+    "Beijing Sunday 09:00 is the first peak window the weekend rule flips",
+  );
+  assert.equal(
+    pricing.computeRowCost(row("deepseek-v4-flash", "2026-08-23T09:59:00Z")),
+    1.107,
+    "Beijing Sunday 17:59 is still inside the weekend",
+  );
+  assert.equal(
+    pricing.computeRowCost(row("deepseek-v4-pro", "2026-08-24T01:00:00Z")),
+    6.644,
+    "Beijing Monday 09:00 is a weekday again",
+  );
+  assert.equal(
+    pricing.computeRowCost(row("deepseek-v4-pro", "2026-08-28T06:00:00Z")),
+    6.644,
+    "Beijing Friday 14:00 is a weekday",
+  );
+  assert.equal(
+    pricing.computeRowCost(row("deepseek-v4-pro", "2026-08-29T06:00:00Z")),
+    3.322,
+    "Beijing Saturday 14:00 is off-peak",
+  );
+  assert.equal(
+    pricing.computeRowCost({
+      ...row("deepseek-v4-pro", "2026-08-23T01:00:00Z"),
+      pricing_tier: "peak",
+    }),
+    6.644,
+    "an explicit stored tier still wins over the derived weekend rule",
+  );
+
   assert.deepEqual(
     pricing.getModelPricing("deepseek-chat"),
     { input: 0.14, output: 0.28, cache_read: 0.0028, cache_write: 0.14 },

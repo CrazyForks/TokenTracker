@@ -370,6 +370,16 @@ function getRowPricing(row: { model?: string; hour_start?: string; pricing_tier?
     if (Number.isFinite(timestamp)) {
       const hour = new Date(timestamp).getUTCHours();
       offPeak = !((hour >= 1 && hour < 4) || (hour >= 6 && hour < 10));
+      // From 00:00 Beijing time on 2026-08-23 (2026-08-22T16:00Z) DeepSeek bills
+      // whole Beijing weekends off-peak, peak hours included. That weekend runs
+      // 16:00Z Friday to 16:00Z Sunday, so the +08:00 shift before getUTCDay()
+      // is what puts both edges in the right place; reading the weekday off the
+      // raw instant marks a different 48 hours. China has had no daylight saving
+      // since 1991. https://api-docs.deepseek.com/quick_start/pricing/
+      if (timestamp >= Date.UTC(2026, 7, 22, 16, 0, 0)) {
+        const beijingDay = new Date(timestamp + 8 * 60 * 60 * 1000).getUTCDay();
+        if (beijingDay === 0 || beijingDay === 6) offPeak = true;
+      }
     }
   }
   if (!offPeak) return pricing;
