@@ -20,6 +20,13 @@ describe("formatProviderDisplayName", () => {
     expect(formatProviderDisplayName("PI-GITHUB-COPILOT")).toBe("Pi · GitHub Copilot");
   });
 
+  it("names Dots both standalone and pi-routed", () => {
+    expect(formatProviderDisplayName("dots")).toBe("Dots");
+    expect(formatProviderDisplayName("DOTS")).toBe("Dots");
+    expect(formatProviderDisplayName("pi-dots")).toBe("Pi · Dots");
+    expect(formatProviderDisplayName("PI-DOTS")).toBe("Pi · Dots");
+  });
+
   it("gives Prime Agent routed providers distinct readable names", () => {
     expect(formatProviderDisplayName("prime-agent")).toBe("Prime Agent");
     expect(formatProviderDisplayName("prime-agent-anthropic")).toBe("Prime Agent · Anthropic");

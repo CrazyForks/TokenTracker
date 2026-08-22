@@ -58,6 +58,16 @@ describe("ProviderIcon", () => {
     expect(icon).toHaveClass("brightness-0", "dark:brightness-100");
   });
 
+  it("renders the Dots Studio sail brand logo for both the standalone and pi-routed sources", () => {
+    for (const provider of ["dots", "pi-dots"]) {
+      const { container } = render(<ProviderIcon provider={provider} size={18} />);
+      const icon = container.querySelector('img[src="/brand-logos/dots.png"]');
+      expect(icon, `${provider} maps to dots.png`).not.toBeNull();
+      expect(icon).toHaveAttribute("width", "18");
+      expect(icon).toHaveClass("dark:invert");
+    }
+  });
+
   it("renders the Reasonix brand icon", () => {
     const { container } = render(<ProviderIcon provider="reasonix" size={20} />);
     const icon = container.querySelector('img[src="/brand-logos/reasonix.png"]');
