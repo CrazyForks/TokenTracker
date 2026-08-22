@@ -395,15 +395,10 @@ const PROVIDER_LOGO_MAP = {
   OPENCLAW: "/brand-logos/openclaw.svg",
   OPENCODE: "/brand-logos/opencode.svg",
   PI: "/brand-logos/pi.svg",
-  "PI-ANTHROPIC": "/brand-logos/pi.svg",
-  "PI-DEEPSEEK": "/brand-logos/pi.svg",
-  "PI-GITHUB-COPILOT": "/brand-logos/pi.svg",
-  "PI-COPILOT": "/brand-logos/pi.svg",
-  "PI-OPENAI-CODEX": "/brand-logos/pi.svg",
   // Dots Studio's sail mark (right triangle + hull bar), not the chat-app
-  // droplet — has its own recognizable brand mark, unlike the other pi
-  // backends above which stay generic PI icons — keep it a distinct logo for
-  // both the standalone "dots" provider and the pi-routed source.
+  // droplet — Dots has its own recognizable brand mark, so it overrides the
+  // generic pi fallback below for both the standalone "dots" provider and the
+  // pi-routed source.
   DOTS: "/brand-logos/dots.png",
   "PI-DOTS": "/brand-logos/dots.png",
   QODER: "/brand-logos/qoder.svg",
@@ -424,17 +419,21 @@ const PROVIDER_LOGO_CLASS_MAP = {
   // pi publishes its mark in white only (pi.dev/logo.svg) — same treatment
   // as AnythingLLM: black on light backgrounds, native white on dark.
   PI: "brightness-0 dark:brightness-100",
-  "PI-ANTHROPIC": "brightness-0 dark:brightness-100",
-  "PI-DEEPSEEK": "brightness-0 dark:brightness-100",
-  "PI-GITHUB-COPILOT": "brightness-0 dark:brightness-100",
-  "PI-COPILOT": "brightness-0 dark:brightness-100",
-  "PI-OPENAI-CODEX": "brightness-0 dark:brightness-100",
   QODER: "dark:invert",
   // The sail PNG is solid black on transparent — invert to white in dark
   // mode so it doesn't disappear against the dark dashboard background.
   DOTS: "dark:invert",
   "PI-DOTS": "dark:invert",
 };
+
+// pi is a router: rollout.js mints one source per routed backend
+// (`pi-anthropic`, `pi-xai`, `pi-opencode-go`, …) from an open-ended provider
+// slug, so the brand mark is resolved by prefix rather than by enumerating
+// backends — an unlisted one used to fall through to the dashed placeholder.
+function piAwareLogoKey(normalized) {
+  if (PROVIDER_LOGO_MAP[normalized]) return normalized;
+  return normalized.startsWith("PI-") ? "PI" : normalized;
+}
 
 function PlaceholderIcon({ size = 16, className = "" }) {
   return (
@@ -460,10 +459,11 @@ function PlaceholderIcon({ size = 16, className = "" }) {
  */
 export function ProviderIcon({ provider, size = 16, color, className = "" }) {
   const normalized = provider?.toUpperCase?.() || "";
-  const logoSrc = PROVIDER_LOGO_MAP[normalized];
+  const logoKey = piAwareLogoKey(normalized);
+  const logoSrc = PROVIDER_LOGO_MAP[logoKey];
 
   if (logoSrc) {
-    const logoClassName = `${PROVIDER_LOGO_CLASS_MAP[normalized] || ""} ${className}`.trim();
+    const logoClassName = `${PROVIDER_LOGO_CLASS_MAP[logoKey] || ""} ${className}`.trim();
     return (
       <img
         src={logoSrc}

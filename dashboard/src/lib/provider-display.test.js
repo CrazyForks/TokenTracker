@@ -27,6 +27,12 @@ describe("formatProviderDisplayName", () => {
     expect(formatProviderDisplayName("PI-DOTS")).toBe("Pi · Dots");
   });
 
+  it("names pi backends that are not in the enumerated list", () => {
+    expect(formatProviderDisplayName("pi-xai")).toBe("Pi · xAI");
+    expect(formatProviderDisplayName("pi-opencode-go")).toBe("Pi · OpenCode Go");
+    expect(formatProviderDisplayName("pi")).toBe("Pi");
+  });
+
   it("gives Prime Agent routed providers distinct readable names", () => {
     expect(formatProviderDisplayName("prime-agent")).toBe("Prime Agent");
     expect(formatProviderDisplayName("prime-agent-anthropic")).toBe("Prime Agent · Anthropic");

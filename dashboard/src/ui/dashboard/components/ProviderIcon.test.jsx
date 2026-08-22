@@ -116,8 +116,16 @@ describe("ProviderIcon", () => {
     expect(icon).not.toHaveClass("dark:invert");
   });
 
-  it("renders the multi-color Pi mark for the DeepSeek and OpenAI-Codex variants", () => {
-    for (const provider of ["pi-deepseek", "pi-openai-codex"]) {
+  it("renders the Pi mark for every routed pi-* source, listed or not", () => {
+    // rollout.js mints `pi-<provider>` from an open-ended slug, so unlisted
+    // backends (pi-xai, pi-opencode-go) must resolve too. A backend with its
+    // own brand mark (pi-dots) keeps it — see the Dots case above.
+    for (const provider of [
+      "pi-deepseek",
+      "pi-openai-codex",
+      "pi-xai",
+      "pi-opencode-go",
+    ]) {
       const { container } = render(<ProviderIcon provider={provider} size={16} />);
       const icon = container.querySelector('img[src="/brand-logos/pi.svg"]');
       expect(icon, `${provider} maps to pi.svg`).not.toBeNull();
