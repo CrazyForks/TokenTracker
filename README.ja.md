@@ -199,7 +199,7 @@ brew install xiufengsun/tokentracker/tokentracker
 | **AnythingLLM Desktop** | ✅ 自動 | パッシブな SQLite リーダー (`anythingllm-desktop/storage/anythingllm.db`、メッセージごとの token 指標のみ) |
 | **Claude Science** | ✅ 自動 | パッシブな SQLite リーダー (`~/.claude-science/operon-cli.db`、`frames` テーブルの token カウンタのみ。prompt・成果物・研究内容は読みません)。ネイティブ Windows 版はなく、Windows では WSL 内で動作するアプリを読み取ります。 |
 | **DeepSeek Harness** | ✅ 自動 | パッシブなセッションリーダー (`~/.dsh/sessions/**/session.jsonl[.zstd]`、セッションヘッダーと assistant イベントを解析し、複数フレームの zstd 展開に対応) |
-| **TRAE Work CN** | ✅ 自動 | ローカル TRAE Work CN のサインイン認証がある場合、実行可能な非バックグラウンド同期中に macOS のサインイン済みアプリから session-token 使用量を読み取ります。内部 API は変更される可能性があります |
+| **TRAE Work CN** | ✅ 自動 | **明示的なオプトインが必要です: `TOKENTRACKER_TRAE_CN_USAGE=1` を設定してください。** 使用量の読み取りはローカルに保存されたサインイン認証を TRAE の内部 API に送信するため、有効にするまで何も送信されません。有効化後: ローカル TRAE Work CN のサインイン認証がある場合、実行可能な非バックグラウンド同期中に macOS のサインイン済みアプリから session-token 使用量を読み取ります。内部 API は変更される可能性があります |
 
 > **プラグインや hook を手動でインストールする必要はありますか?** いいえ。`tokentracker`（または `tokentracker init`）が初回実行ですべて処理します:
 > - **Hook ベース**のツール (Claude Code、Codex、Gemini、Every Code、**CodeBuddy**、**WorkBuddy**、**Grok Build**) — ツール自身の設定に SessionEnd hook または TOML notify エントリーを書き込みます。

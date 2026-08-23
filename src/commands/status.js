@@ -1149,7 +1149,11 @@ async function cmdStatus(argv = []) {
         ? `- Trae SOLO plan: ${formatTraeEntitlementLine(traeEntitlement)}`
         : null,
       traeCnInstalled
-        ? `- Trae SOLO CN: usage sync ${traeCnUsageOptIn ? "opted in" : `off (set ${TRAE_CN_USAGE_ENV}=1 to enable)`}, auth ${traeCnAuthState} (${traeCnStoragePath})`
+        // Installed, signed in, and one env var away from usage data is the
+        // one actionable state on this line — mark it so it does not read
+        // like the ~30 neutral install lines around it (#492). Every other
+        // combination (opted in, or no readable auth to send) is neutral.
+        ? `- ${traeCnAuthState === "readable" && !traeCnUsageOptIn ? "⚠ " : ""}Trae SOLO CN: usage sync ${traeCnUsageOptIn ? "opted in" : `off (set ${TRAE_CN_USAGE_ENV}=1 to enable)`}, auth ${traeCnAuthState} (${traeCnStoragePath})`
         : null,
       ...(() => {
         if (!hermesInstalled) return [];
