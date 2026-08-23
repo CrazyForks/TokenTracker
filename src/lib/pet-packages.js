@@ -9,7 +9,11 @@ const PET_SPRITESHEET = "spritesheet.webp";
 const MAX_PACKAGE_BYTES = 12 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 16 * 1024;
 const MAX_SPRITESHEET_BYTES = 10 * 1024 * 1024;
-const BUILTIN_IDS = new Set(["clawd", "sprout", "byte", "ember"]);
+// `bot` joins clawd as a built-in with no sprite atlas: it is drawn from the
+// vector engine in dashboard/src/lib/bot/, so it costs no disk space and is
+// therefore not in REMOVABLE_BUILTIN_IDS — that list exists to reclaim the
+// space an atlas takes.
+const BUILTIN_IDS = new Set(["clawd", "bot", "sprout", "byte", "ember"]);
 const REMOVABLE_BUILTIN_IDS = new Set(["sprout", "byte", "ember"]);
 const HIDDEN_BUILTINS_FILE = ".hidden-builtins.json";
 // codex-pets.net added `kind` to pet.json long after launch, and its enum may keep

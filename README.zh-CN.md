@@ -491,6 +491,8 @@ xattr -cr /Applications/TokenTracker.app
 
 ## 🙏 致谢
 
+`bot` 伙伴的形变引擎来自 [bloub](https://github.com/jeremy-prt/bloub)，作者 Jérémy Perret（MIT 许可）。
+
 Clawd 角色设计归属 Anthropic。本项目是社区项目，和 Anthropic 无官方隶属关系。
 
 ## 🔗 友情链接

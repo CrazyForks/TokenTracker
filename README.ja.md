@@ -485,6 +485,8 @@ GitHub プロフィールやプロジェクトの README で自分のトーク�
 
 ## 🙏 クレジット
 
+`bot` コンパニオンのモーフィングエンジンは Jérémy Perret 氏の [bloub](https://github.com/jeremy-prt/bloub)（MIT）です。
+
 Clawd キャラクターのデザインは Anthropic に帰属します。本プロジェクトはコミュニティ主導のものであり、Anthropic との公式な提携関係はありません。
 
 ## 🔗 リンク

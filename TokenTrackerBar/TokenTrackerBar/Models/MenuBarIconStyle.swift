@@ -4,6 +4,7 @@ import Foundation
 enum MenuBarIconStyle: String, CaseIterable {
     case clawd
     case cat
+    case bot
     case pet
     case `static`
 
@@ -42,6 +43,11 @@ enum MenuBarRunnerMotion {
 enum MenuBarRunnerPace {
     /// Seconds per frame. The cat is RunCat-style: state is expressed through
     /// running speed (sleeping uses a dedicated curled-up pose instead).
+    ///
+    /// `bot` is different in kind: its clips were pre-rendered at a fixed 12 fps
+    /// (see scripts/gen-bot-frames.cjs), so its state shows in WHICH clip plays,
+    /// not how fast. Speeding it up would just play the same morph too quickly,
+    /// so it holds 1/12s and only drops to a slow poll while asleep.
     static func frameInterval(style: MenuBarIconStyle, motion: MenuBarRunnerMotion) -> TimeInterval {
         switch style {
         case .cat:
@@ -58,6 +64,11 @@ enum MenuBarRunnerPace {
             case .syncing: return 0.15
             case .sprinting: return 0.08
             }
+        case .bot:
+            // The bot clips the menu bar plays are sampled at 24 fps (the pet window
+            // interpolates instead; the menu bar plays images and cannot), so this is
+            // the rate that reproduces them at their authored speed.
+            return motion == .sleeping ? 1.0 / 12.0 : 1.0 / 24.0
         case .clawd, .static:
             return 0.15
         }

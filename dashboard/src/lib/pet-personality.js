@@ -1,4 +1,21 @@
-export const PET_CHARACTER_IDS = ["clawd", "sprout", "byte", "ember"];
+export const PET_CHARACTER_IDS = ["clawd", "bot", "sprout", "byte", "ember"];
+
+/**
+ * How a character is drawn. Explicit because it used to be inferred from the
+ * absence of a sprite atlas — which meant "no atlas" was the same thing as
+ * "this is Clawd". `bot` also has no atlas (it is drawn from a vector engine),
+ * so that inference had to go.
+ *
+ *   "clawd"  — the hand-authored per-state SVGs under /clawd/
+ *   "vector" — the morphing engine in lib/bot/, see BotAnimated.jsx
+ *   "atlas"  — a 192x208 sprite sheet, built in or from a pet package
+ */
+const RENDERERS = { clawd: "clawd", bot: "vector" };
+
+/** @returns {"clawd" | "vector" | "atlas"} */
+export function petRenderer(character) {
+  return RENDERERS[normalizePetCharacter(character)] || "atlas";
+}
 
 export function normalizePetCharacter(value) {
   const id = String(value || "").trim().toLowerCase();

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { petVisualScale } from "../../lib/pet-appearance.js";
-import { normalizePetCharacter } from "../../lib/pet-personality.js";
+import { normalizePetCharacter, petRenderer } from "../../lib/pet-personality.js";
+import { BotAnimated } from "./BotAnimated.jsx";
 import { PetAtlasAnimated } from "./PetAtlasAnimated.jsx";
 
 /**
@@ -153,9 +154,21 @@ export function ClawdAnimated({
   character = "clawd",
   pet = null,
   lookDirectionIndex = null,
+  botColor = "auto",
 }) {
   const id = normalizePetCharacter(character);
-  if (id !== "clawd") {
+  const renderer = petRenderer(id);
+  if (renderer === "vector") {
+    return (
+      <BotAnimated
+        state={state}
+        size={size * petVisualScale(id)}
+        className={className}
+        color={botColor}
+      />
+    );
+  }
+  if (renderer === "atlas") {
     return (
       <PetAtlasAnimated
         character={id}

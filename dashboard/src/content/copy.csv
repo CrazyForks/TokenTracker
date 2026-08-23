@@ -602,6 +602,7 @@ pet.menubar.hint,ui,PetPage,PetPage,pet_menubar_hint,"Your pet replaces the menu
 settings.menubar.iconStyle,ui,WidgetsPage,MenuBarDisplayCard,mb_icon_style,"Menu bar icon",,active
 settings.menubar.iconStyleHint,ui,WidgetsPage,MenuBarDisplayCard,mb_icon_style_hint,"Choose who lives in the menu bar. The cat and your pet run faster while your AI tools are burning tokens.",,active
 settings.menubar.iconStyle.clawd,ui,WidgetsPage,MenuBarDisplayCard,mb_icon_style_clawd,"Clawd",,active
+settings.menubar.iconStyle.bot,ui,WidgetsPage,MenuBarDisplayCard,mb_icon_style_bot,"Bot",,active
 settings.menubar.iconStyle.cat,ui,WidgetsPage,MenuBarDisplayCard,mb_icon_style_cat,"Cat",,active
 settings.menubar.iconStyle.pet,ui,WidgetsPage,MenuBarDisplayCard,mb_icon_style_pet,"My pet",,active
 settings.menubar.iconStyle.static,ui,WidgetsPage,MenuBarDisplayCard,mb_icon_style_static,"Static",,active
@@ -1276,6 +1277,16 @@ pet.characters.title,dashboard,PetPage,PetPage,characters_title,"Choose your com
 pet.characters.subtitle,dashboard,PetPage,PetPage,characters_subtitle,"Every character shares the full state system, with its own palette and silhouette.",,active
 pet.character.clawd,dashboard,PetPage,PetPage,character_clawd,"Clawd",,active
 pet.character.clawd_desc,dashboard,PetPage,PetPage,character_clawd_desc,"The original claw-shaped token keeper.",,active
+pet.character.bot,dashboard,PetPage,PetPage,character_bot,"Bot",,active
+pet.character.bot_desc,dashboard,PetPage,PetPage,character_bot_desc,"A single shape that morphs to match your token pace.",,active
+pet.bot.color,dashboard,PetPage,PetPage,bot_color,"Body colour",,active
+pet.bot.color.auto,dashboard,PetPage,PetPage,bot_color_auto,"Match theme",,active
+pet.bot.color.bleu,dashboard,PetPage,PetPage,bot_color_bleu,"Blue",,active
+pet.bot.color.turquoise,dashboard,PetPage,PetPage,bot_color_turquoise,"Teal",,active
+pet.bot.color.vert,dashboard,PetPage,PetPage,bot_color_vert,"Green",,active
+pet.bot.color.ambre,dashboard,PetPage,PetPage,bot_color_ambre,"Amber",,active
+pet.bot.color.rose,dashboard,PetPage,PetPage,bot_color_rose,"Pink",,active
+pet.bot.color.violet,dashboard,PetPage,PetPage,bot_color_violet,"Violet",,active
 pet.character.sprout,dashboard,PetPage,PetPage,character_sprout,"Sprout",,active
 pet.character.sprout_desc,dashboard,PetPage,PetPage,character_sprout_desc,"A leaf-eared seedling spirit with tiny root feet.",,active
 pet.character.byte,dashboard,PetPage,PetPage,character_byte,"Byte",,active

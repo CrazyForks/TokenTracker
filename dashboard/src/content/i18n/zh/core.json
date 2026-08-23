@@ -407,6 +407,7 @@
   "settings.menubar.iconStyle": "菜单栏图标",
   "settings.menubar.iconStyleHint": "选择谁住在菜单栏。AI 工具消耗 token 时，小猫和宠物会跑得更快。",
   "settings.menubar.iconStyle.clawd": "Clawd",
+  "settings.menubar.iconStyle.bot": "Bot",
   "settings.menubar.iconStyle.cat": "小猫",
   "settings.menubar.iconStyle.pet": "我的宠物",
   "settings.menubar.iconStyle.static": "静态",

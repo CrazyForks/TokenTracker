@@ -485,6 +485,8 @@ GitHub 프로필이나 프로젝트 README에서 토큰 사용량을 자랑해 �
 
 ## 🙏 크레딧
 
+`bot` 컴패니언의 모핑 엔진은 Jérémy Perret의 [bloub](https://github.com/jeremy-prt/bloub)(MIT)입니다.
+
 Clawd 캐릭터 디자인은 Anthropic의 자산입니다. 이 프로젝트는 커뮤니티 프로젝트이며 Anthropic과의 공식적인 제휴 관계는 없습니다.
 
 ## 🔗 링크

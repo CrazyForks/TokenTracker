@@ -5,6 +5,14 @@ import { normalizePetCharacter } from "./pet-personality.js";
 // without changing the user's small / medium / large window preset.
 export const CLAWD_VISUAL_SCALE = 0.84;
 
+// bot draws into a 316-unit viewBox while the resting ball is only 200 across —
+// the margin is headroom for the orbit rings, which reach 1.4x the radius. Scale
+// up so the ball carries the same visual weight as an atlas character; the rings
+// are allowed to overflow, they are translucent decoration.
+export const BOT_VISUAL_SCALE = 1.35;
+
+const SCALES = { clawd: CLAWD_VISUAL_SCALE, bot: BOT_VISUAL_SCALE };
+
 export function petVisualScale(character) {
-  return normalizePetCharacter(character) === "clawd" ? CLAWD_VISUAL_SCALE : 1;
+  return SCALES[normalizePetCharacter(character)] ?? 1;
 }

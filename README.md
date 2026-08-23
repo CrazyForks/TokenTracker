@@ -577,6 +577,8 @@ Renders shields.io-compatible badges with your current totals (60s cache):
 
 ## 🙏 Credits
 
+The `bot` companion's morphing engine is [bloub](https://github.com/jeremy-prt/bloub) by Jérémy Perret (MIT).
+
 The Clawd character design belongs to Anthropic. This is a community project with no official affiliation with Anthropic.
 
 ## 🔗 Friendly Links

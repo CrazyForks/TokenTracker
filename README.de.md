@@ -509,6 +509,8 @@ Shields.io-kompatible Badges mit deinen aktuellen Gesamtwerten (60s Cache):
 
 ## 🙏 Danksagungen
 
+Die Morphing-Engine des `bot`-Begleiters ist [bloub](https://github.com/jeremy-prt/bloub) von Jérémy Perret (MIT).
+
 Das Clawd-Charakterdesign gehört Anthropic. Dies ist ein Community-Projekt ohne offizielle Verbindung zu Anthropic.
 
 ## 🔗 Links

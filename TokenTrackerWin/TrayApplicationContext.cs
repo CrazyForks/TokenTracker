@@ -651,7 +651,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
             case "character":
                 SetPetCharacter(value ?? PetWindow.CharacterClawd);
                 break;
+            case "botColor":
+                SetPetBotColor(value ?? "auto");
+                break;
         }
+    }
+
+    private void SetPetBotColor(string colorId)
+    {
+        if (_petWindow is not null) _petWindow.ApplyBotColor(colorId);
+        else PetWindow.PersistBotColor(colorId);
+        PushDashboardPetSettings();
     }
 
     private void PushDashboardPetSettings()
@@ -659,7 +669,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _dashboard?.PushPetSettings(
             _petWindow?.IsVisible == true,
             PetWindow.CurrentSize,
-            PetWindow.CurrentCharacter);
+            PetWindow.CurrentCharacter,
+            PetWindow.CurrentBotColor);
     }
 
     /// <summary>

@@ -34,6 +34,7 @@ final class MenuBarAnimator {
     private var renderedImage: NSImage
 
     private let petFrameProvider = MenuBarPetFrameProvider()
+    private let botFrameProvider = MenuBarBotFrameProvider()
     private var sprintUntil: Date = .distantPast
 
     /// Static fallback icon (original lightning bolt)
@@ -120,6 +121,8 @@ final class MenuBarAnimator {
             applyClawd()
         case .cat:
             applyCat()
+        case .bot:
+            applyBot()
         case .pet:
             applyPet()
         }
@@ -206,6 +209,41 @@ final class MenuBarAnimator {
 
     private var petInterval: TimeInterval {
         MenuBarRunnerPace.frameInterval(style: .pet, motion: runnerMotion)
+    }
+
+    // MARK: - Bot (vector morphing character)
+
+    /// Same shape as `applyPet`, but every tier is a real clip rather than one still:
+    /// `bot` expresses state by WHICH clip plays, so `disconnected` animates too.
+    private func applyBot() {
+        guard let frames = botFrameProvider.frames() else {
+            // BotFrames.json missing or schema-stale — run gen:bot-frames.
+            applyClawd()
+            return
+        }
+
+        if reduceMotion {
+            setButtonImage(frames.idle[0])
+            return
+        }
+
+        switch currentState {
+        case .disconnected:
+            startAnimation(frames: frames.disconnected, interval: botInterval)
+        case .sleeping where !isSprinting:
+            startAnimation(frames: frames.sleeping, interval: botInterval)
+        case .syncing:
+            startAnimation(frames: frames.active, interval: botInterval)
+        case .idle, .sleeping:
+            startAnimation(
+                frames: isSprinting ? frames.active : frames.idle,
+                interval: botInterval
+            )
+        }
+    }
+
+    private var botInterval: TimeInterval {
+        MenuBarRunnerPace.frameInterval(style: .bot, motion: runnerMotion)
     }
 
     private var runnerMotion: MenuBarRunnerMotion {

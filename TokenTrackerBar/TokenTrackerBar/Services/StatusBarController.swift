@@ -1334,6 +1334,7 @@ final class StatusBarController: NSObject {
     private func iconStyleLabel(_ style: MenuBarIconStyle) -> String {
         switch style {
         case .clawd: return Strings.petCharacterClawd
+        case .bot: return Strings.petCharacterBot
         case .cat: return Strings.iconStyleCat
         case .pet: return Strings.iconStyleMyPet
         case .static: return Strings.iconStyleStatic
