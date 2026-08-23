@@ -1,12 +1,12 @@
 {
-  "generatedAt": "2026-08-22T23:41:36.383Z",
+  "generatedAt": "2026-08-23T00:50:54.206Z",
   "root": "dashboard/src",
   "rules": {
     "colors": "hex/rgb(a) literals",
     "rawText": "JSX text nodes containing letters or digits"
   },
   "totals": {
-    "colors": 406,
+    "colors": 404,
     "rawText": 161
   },
   "files": {
@@ -97,6 +97,11 @@
       "rawText": 0,
       "rawTextTokens": []
     },
+    "dashboard/src/lib/bot-appearance.js": {
+      "colors": 2,
+      "rawText": 0,
+      "rawTextTokens": []
+    },
     "dashboard/src/pages/AchievementsPage.jsx": {
       "colors": 0,
       "rawText": 1,
@@ -147,11 +152,6 @@
         ") : realSignedIn ? (",
         "Token Tracker"
       ]
-    },
-    "dashboard/src/pages/PetPage.jsx": {
-      "colors": 2,
-      "rawText": 0,
-      "rawTextTokens": []
     },
     "dashboard/src/pages/SessionsPage.jsx": {
       "colors": 0,
@@ -481,7 +481,7 @@
       "rawTextTokens": []
     },
     "dashboard/src/ui/foundation/BotAnimated.jsx": {
-      "colors": 5,
+      "colors": 3,
       "rawText": 0,
       "rawTextTokens": []
     },

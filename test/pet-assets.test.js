@@ -21,7 +21,7 @@ function configuredCharacterIds() {
  * clawd" used to imply "has an atlas", and `bot` broke that.
  */
 function nonAtlasCharacterIds() {
-  const match = personalitySource().match(/const RENDERERS\s*=\s*\{([^}]+)\}/);
+  const match = personalitySource().match(/const RENDERERS\s*=\s*Object\.assign\([^{]*\{([^}]+)\}/);
   assert.ok(match, "RENDERERS must remain a literal object so assets can be validated");
   return [...match[1].matchAll(/([a-z0-9-]+)\s*:/g)].map((entry) => entry[1]);
 }

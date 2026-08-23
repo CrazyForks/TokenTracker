@@ -16,7 +16,11 @@ import {
 } from "../lib/pets-api.js";
 import { copy } from "../lib/copy";
 import { cn } from "../lib/cn";
-import { BOT_COLOR_CHOICES } from "../lib/bot-appearance.js";
+import {
+  BOT_COLOR_CHOICES,
+  BOT_DEFAULT_COLOR_DARK,
+  BOT_DEFAULT_COLOR_LIGHT,
+} from "../lib/bot-appearance.js";
 import { COLOR_BY_ID } from "../lib/bot/skins";
 import { petRenderer } from "../lib/pet-personality.js";
 import { ClawdAnimated } from "../ui/foundation/ClawdAnimated.jsx";
@@ -128,7 +132,7 @@ function BotColorSwatches({ value, onChange }) {
   };
   return (
     <div
-      className="hidden items-center gap-1.5 rounded-full border border-black/5 bg-white/65 px-2.5 py-1.5 backdrop-blur-md dark:border-white/10 dark:bg-black/20 sm:flex"
+      className="flex flex-wrap items-center justify-end gap-1.5 rounded-full border border-black/5 bg-white/65 px-2.5 py-1.5 backdrop-blur-md dark:border-white/10 dark:bg-black/20"
       role="radiogroup"
       aria-label={copy("pet.bot.color")}
     >
@@ -151,7 +155,11 @@ function BotColorSwatches({ value, onChange }) {
             )}
             style={
               id === "auto"
-                ? { background: "linear-gradient(135deg, #0a0a0c 0 50%, #f1efe9 50% 100%)" }
+                ? {
+                    // Derived from the palette, not restated: these are exactly what
+                    // "auto" resolves to per appearance.
+                    background: `linear-gradient(135deg, ${COLOR_BY_ID.get(BOT_DEFAULT_COLOR_LIGHT).hex} 0 50%, ${COLOR_BY_ID.get(BOT_DEFAULT_COLOR_DARK).hex} 50% 100%)`,
+                  }
                 : { background: COLOR_BY_ID.get(id)?.hex }
             }
           />

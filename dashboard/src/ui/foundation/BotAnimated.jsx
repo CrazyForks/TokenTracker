@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   BOT_DEFAULT_SHAPE,
+  BOT_PAPER,
   botSceneForPetState,
   resolveBotColor,
 } from "../../lib/bot-appearance.js";
@@ -26,10 +27,6 @@ const FRAME_MS = 1000 / 30;
  * engine's resting gaze (28.5deg) so a lean reads as looking rather than drifting.
  */
 const LOOK_MAX_YAW = 34;
-
-/** What the eye holes reveal. They are holes in the body, so this is the "eye white". */
-const PAPER_LIGHT = "#f8fafc";
-const PAPER_DARK = "#0f172a";
 
 /**
  * Follows the `dark` class ThemeProvider puts on <html>, without going through
@@ -103,7 +100,7 @@ export function BotAnimated({
   const reducedMotion = useReducedMotion();
   const pageVisible = usePageVisible();
   const dark = useDarkRoot();
-  const resolvedPaper = paper || (dark ? PAPER_DARK : PAPER_LIGHT);
+  const resolvedPaper = paper || (dark ? BOT_PAPER.dark : BOT_PAPER.light);
   const ink = COLOR_BY_ID.get(resolveBotColor(color, dark)).hex;
 
   const rawId = useId();

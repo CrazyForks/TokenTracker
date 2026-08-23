@@ -678,8 +678,12 @@ final class PetCatalog: ObservableObject {
         }
         discovered.sort { $0.1.displayName.localizedCaseInsensitiveCompare($1.1.displayName) == .orderedAscending }
         metadata = Dictionary(uniqueKeysWithValues: discovered.map { ($0.0.rawValue, $0.1) })
+        // Only atlas-backed builtins are hideable — that list exists to reclaim the
+        // space a sheet takes. Keyed on the renderer rather than special-casing clawd,
+        // so it matches REMOVABLE_BUILTIN_IDS in src/lib/pet-packages.js; otherwise a
+        // hidden-builtins file naming `bot` would hide it here but not on the web.
         characters = Self.builtins.filter {
-            $0 == .clawd || !hiddenBuiltinIDs.contains($0.rawValue)
+            $0.renderer != .atlas || !hiddenBuiltinIDs.contains($0.rawValue)
         } + discovered.map(\.0)
     }
 

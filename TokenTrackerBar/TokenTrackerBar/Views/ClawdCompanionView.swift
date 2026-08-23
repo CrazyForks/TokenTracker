@@ -500,7 +500,17 @@ struct ClawdCompanionView: View {
                 )
             }
         }
-        .scaleEffect(activeCharacter.visualScale)
+        // Scaled by what is actually being DRAWN, not by the selected character: the
+        // vector fallback above draws Clawd, and applying bot's 1.35 to Clawd's tightly
+        // cropped artwork would render it 61% oversized and clipped by the window.
+        .scaleEffect(paintedVisualScale)
+    }
+
+    private var paintedVisualScale: CGFloat {
+        if activeCharacter.renderer == .vector && !BotFrames.isAvailable {
+            return PetCharacter.clawd.visualScale
+        }
+        return activeCharacter.visualScale
     }
 
     private var activeCharacter: PetCharacter {
@@ -2096,7 +2106,7 @@ extension ClawdCompanionView.ClawdState {
     /// The web vocabulary for this state, as used by `dashboard/src/lib/bot-appearance.js`.
     ///
     /// The two sides genuinely have different vocabularies — a Swift enum here, string
-    /// state names there — so this bridge is unavoidable. `test/pet-parity.test.js`
+    /// state names there — so this bridge is unavoidable. `test/bot-parity.test.js`
     /// asserts every name below is one the web mapping actually knows.
     var petStateName: String {
         switch self {

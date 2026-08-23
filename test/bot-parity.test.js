@@ -43,7 +43,7 @@ test("every state macOS can ask for is one the web mapping knows", () => {
 
 test("the pre-rendered frames cover every state macOS can ask for", () => {
   const payload = JSON.parse(read(FRAMES));
-  assert.equal(payload.schema, 3, "bump BotFrames.expectedSchema in Swift alongside the generator");
+  assert.equal(payload.schema, 4, "bump BotFrames.expectedSchema in Swift alongside the generator");
   for (const name of swiftPetStateNames()) {
     const engineState = payload.scenes[name];
     assert.ok(engineState, `BotFrames.json has no scene for "${name}" — run npm run gen:bot-frames`);
@@ -64,8 +64,9 @@ test("the shipped frames match what the engine produces now", () => {
 });
 
 test("renderer classification agrees between web and macOS", () => {
-  const web = read(PERSONALITY).match(/const RENDERERS\s*=\s*\{([^}]+)\}/);
-  assert.ok(web, "RENDERERS must remain a literal object");
+  // Object.create(null)-based to keep prototype keys ("constructor") from resolving.
+  const web = read(PERSONALITY).match(/const RENDERERS\s*=\s*Object\.assign\(\s*Object\.create\(null\)\s*,\s*\{([^}]+)\}/);
+  assert.ok(web, "RENDERERS must remain a literal object behind Object.create(null)");
   const webPairs = [...web[1].matchAll(/([a-z0-9-]+)\s*:\s*"([a-z]+)"/g)].map((m) => [m[1], m[2]]);
   assert.deepEqual(webPairs, [["clawd", "clawd"], ["bot", "vector"]]);
 

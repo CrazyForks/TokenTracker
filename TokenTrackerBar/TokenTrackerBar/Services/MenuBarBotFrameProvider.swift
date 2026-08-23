@@ -76,11 +76,19 @@ final class MenuBarBotFrameProvider {
         }
 
         // Solid dots only: a template image carries alpha, so the engine's depth and
-        // opacity fades would read as noise rather than distance at 22pt.
+        // opacity fades would read as noise rather than distance at 22pt. Shape is kept
+        // though — `alert`, the disconnected clip, has ONLY shaped particles, so
+        // skipping those left that animation as a bare body morph.
         var extras = Path()
         for dot in frame.dots where dot.opacity > 0.5 {
             if let r = dot.r {
                 extras.addPath(circlePath(BotFrames.Circle(x: dot.x, y: dot.y, r: r), transform: transform))
+            } else if let d = dot.d {
+                extras.addPath(BotGeometry.polylinePath(
+                    d,
+                    closed: true,
+                    transform: Self.dotTransform(dot, viewTransform: transform)
+                ))
             }
         }
         if let notif = frame.notif {
@@ -110,6 +118,18 @@ final class MenuBarBotFrameProvider {
         // Template: AppKit tints it for the current menu bar appearance.
         image.isTemplate = true
         return image
+    }
+
+    /// Shaped particles are authored in ball-radius units, then positioned and rotated.
+    private static func dotTransform(_ dot: BotFrames.Dot, viewTransform: CGAffineTransform) -> CGAffineTransform {
+        let radius = BotFrames.payload?.radius ?? 100
+        var t = CGAffineTransform(scaleX: CGFloat(radius), y: CGFloat(radius))
+        if let rot = dot.rot {
+            t = t.concatenating(CGAffineTransform(rotationAngle: CGFloat(rot) * .pi / 180))
+        }
+        return t
+            .concatenating(CGAffineTransform(translationX: CGFloat(dot.x), y: CGFloat(dot.y)))
+            .concatenating(viewTransform)
     }
 
     private static func circlePath(_ circle: BotFrames.Circle, transform: CGAffineTransform) -> Path {

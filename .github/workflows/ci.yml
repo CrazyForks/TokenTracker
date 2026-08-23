@@ -55,6 +55,12 @@ jobs:
       - name: Test dashboard limits preferences
         run: npm --prefix dashboard test -- src/hooks/use-limits-display-prefs.test.js
 
+      # The bot character's renderer and its cross-host contracts live on the dashboard
+      # side, so npm test alone does not cover them; test/bot-parity.test.js only pins
+      # the values, not the rendering.
+      - name: Test bot companion renderer
+        run: npm --prefix dashboard test -- src/ui/foundation/BotAnimated.test.jsx src/lib/pets-api.test.js
+
       # Same checks as `npm run ci:local`, with the dashboard build hoisted above.
       - name: Test and validate
         run: |

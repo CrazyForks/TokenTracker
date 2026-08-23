@@ -10,7 +10,9 @@ export const PET_CHARACTER_IDS = ["clawd", "bot", "sprout", "byte", "ember"];
  *   "vector" — the morphing engine in lib/bot/, see BotAnimated.jsx
  *   "atlas"  — a 192x208 sprite sheet, built in or from a pet package
  */
-const RENDERERS = { clawd: "clawd", bot: "vector" };
+// Prototype-free: a package id like "constructor" would otherwise resolve to Object
+// and match neither "vector" nor "atlas", falling through to the Clawd branch.
+const RENDERERS = Object.assign(Object.create(null), { clawd: "clawd", bot: "vector" });
 
 /** @returns {"clawd" | "vector" | "atlas"} */
 export function petRenderer(character) {

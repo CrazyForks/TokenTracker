@@ -1,4 +1,4 @@
-import { render } from "@testing-library/react";
+import { render, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import {
   BOT_COLOR_CHOICES,
@@ -92,9 +92,11 @@ describe("character renderer dispatch", () => {
     expect(petRenderer("some-community-pet")).toBe("atlas");
   });
 
-  it("sends the bot character to the vector renderer, not the atlas one", () => {
+  it("sends the bot character to the vector renderer, not the atlas one", async () => {
     const { container } = render(<ClawdAnimated character="bot" state="idle-living" size={64} />);
-    expect(container.querySelector("svg mask")).toBeTruthy();
+    // BotAnimated is lazy so the engine stays out of the dashboard entry chunk;
+    // the first paint is the Suspense fallback.
+    await waitFor(() => expect(container.querySelector("svg mask")).toBeTruthy());
     expect(container.querySelector(".pet-atlas-animated")).toBeNull();
   });
 });

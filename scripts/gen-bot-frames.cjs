@@ -213,8 +213,28 @@ function main() {
     const count = Math.max(1, Math.round(def.duration * fps));
     const frames = [];
     for (let i = 0; i < count; i++) frames.push(serializeFrame(engine.sample(i / fps)));
+    // Whether the clip can be looped, measured rather than assumed. Several states
+    // are one-shot in the upstream engine (its editor plays them as a montage, not on
+    // repeat): orbit morphs the body out of a spinning triangle and ends as a ball
+    // with rings faded in, so wrapping it back to frame 0 crosses ~130 viewBox units
+    // in a single frame. Those clips hold their last frame instead, which is also
+    // what the web renderer does — its clock keeps running and the engine settles.
+    const first = frames[0].body;
+    const last = frames[frames.length - 1].body;
+    let seam = 0;
+    if (first.length === last.length) {
+      for (let i = 0; i < first.length; i++) seam = Math.max(seam, Math.abs(first[i] - last[i]));
+    } else {
+      seam = Infinity;
+    }
+    // 6 units of a 316-unit box: below this the wrap is imperceptible, and it cleanly
+    // separates the genuinely cyclic states from the one-shot ones.
+    const loops = seam <= 6;
+
     states[id] = {
       fps,
+      loops,
+      seam: Number.isFinite(seam) ? round(seam, 1) : null,
       duration: round(def.duration, 3),
       // How long the engine takes to morph INTO this state; Swift reuses it as
       // the cross-fade length when it lerps out of the previous clip.
@@ -248,12 +268,13 @@ function main() {
 
   const payload = {
     // Bumped when the frame schema changes so a stale bundled file is detectable.
-    schema: 3,
+    schema: 4,
     radius: bot.RAYON,
     halfViewBox: bot.DEMI_VIEWBOX,
     shape: bot.BOT_DEFAULT_SHAPE,
     expression: bot.BOT_DEFAULT_EXPRESSION,
     scenes,
+    paper: bot.BOT_PAPER,
     menubarClips: bot.BOT_MENUBAR_CLIPS,
     palette,
     autoColors,

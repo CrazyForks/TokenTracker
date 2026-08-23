@@ -28,6 +28,15 @@ struct BotSpriteView: View {
     @State private var shown: String?
     @State private var fadingFrom: String?
     @State private var fadeStartedAt: Date?
+    /// How far the outgoing clip had played when the state changed. The cross-fade
+    /// starts from that frozen pose, which is what the engine itself does — blending
+    /// from the previous clip's frame 0 would jump before it eased.
+    @State private var fadingFromElapsed: TimeInterval = 0
+    /// When the current clip started. Phase must be measured from here, not from the
+    /// absolute clock: frame 0 is the state's morph-in (the generator builds a fresh
+    /// engine per clip), so entering at a wall-clock-derived offset skips it and can
+    /// wrap immediately.
+    @State private var clipStartedAt = Date()
 
     private var engineState: String { BotFrames.engineState(forPetState: state) }
 
@@ -37,21 +46,28 @@ struct BotSpriteView: View {
                 draw(in: &ctx, side: min(canvasSize.width, canvasSize.height), now: context.date)
             }
         }
-        .onAppear { shown = engineState }
+        .onAppear {
+            shown = engineState
+            clipStartedAt = Date()
+        }
         .onChange(of: engineState) { next in
+            let now = Date()
             if let shown, shown != next {
                 fadingFrom = shown
-                fadeStartedAt = Date()
+                fadeStartedAt = now
+                fadingFromElapsed = now.timeIntervalSince(clipStartedAt)
             }
             shown = next
+            clipStartedAt = now
         }
         .accessibilityHidden(true)
     }
 
-    private func frame(_ clip: BotFrames.Clip, at time: TimeInterval) -> BotFrames.Frame? {
+    private func frame(_ clip: BotFrames.Clip, at elapsed: TimeInterval) -> BotFrames.Frame? {
         guard !clip.frames.isEmpty else { return nil }
-        let index = Int((time * clip.fps).rounded(.down))
-        return clip.frames[wrap(index, clip.frames.count)]
+        let index = Int(max(0, elapsed * clip.fps).rounded(.down))
+        let count = clip.frames.count
+        return clip.loops ? clip.frames[wrap(index, count)] : clip.frames[min(index, count - 1)]
     }
 
     private func wrap(_ index: Int, _ count: Int) -> Int {
@@ -63,20 +79,29 @@ struct BotSpriteView: View {
     /// This is where the smoothness comes from: every silhouette is sampled at the same
     /// 64 angles, so the two frames' point lists correspond one-to-one and the midpoint
     /// is a pairwise lerp. 12 fps of data therefore plays back at any display rate.
-    private func span(_ clip: BotFrames.Clip, at time: TimeInterval)
+    private func span(_ clip: BotFrames.Clip, at elapsed: TimeInterval)
         -> (from: BotFrames.Frame, to: BotFrames.Frame, t: Double)? {
         guard !clip.frames.isEmpty else { return nil }
-        let position = time * clip.fps
-        let index = Int(position.rounded(.down))
         let count = clip.frames.count
-        return (clip.frames[wrap(index, count)], clip.frames[wrap(index + 1, count)],
-                position - position.rounded(.down))
+        let position = max(0, elapsed) * clip.fps
+        let index = Int(position.rounded(.down))
+        let fraction = position - position.rounded(.down)
+
+        guard clip.loops else {
+            // One-shot: settle on the last frame rather than whipping back to frame 0.
+            if index >= count - 1 {
+                let last = clip.frames[count - 1]
+                return (last, last, 0)
+            }
+            return (clip.frames[index], clip.frames[index + 1], fraction)
+        }
+        return (clip.frames[wrap(index, count)], clip.frames[wrap(index + 1, count)], fraction)
     }
 
     private func draw(in ctx: inout GraphicsContext, side: CGFloat, now: Date) {
         guard let payload = BotFrames.payload,
               let clip = BotFrames.clip(engineState),
-              let span = span(clip, at: now.timeIntervalSinceReferenceDate)
+              let span = span(clip, at: now.timeIntervalSince(clipStartedAt))
         else { return }
         // Decoration (rings, particles) is read from the leading frame rather than
         // interpolated: their point counts change between frames, and they are
@@ -89,7 +114,8 @@ struct BotSpriteView: View {
         )
         // The eye holes reveal whatever is behind the body, so they need an opaque
         // backing — otherwise the rings drawn behind the ball show up inside the eyes.
-        let paper = colorScheme == .dark ? Color(white: 0.06) : Color(white: 0.97)
+        // Colour comes from the shipped data so it matches the dashboard preview.
+        let paper = BotGeometry.color(hex: BotFrames.paperHex(dark: colorScheme == .dark))
 
         // Interpolate within the clip, then blend out of the previous clip if a state
         // change is still morphing.
@@ -97,7 +123,7 @@ struct BotSpriteView: View {
         var bodyAlpha = BotGeometry.lerp(span.from.bodyAlpha, span.to.bodyAlpha, span.t)
         if let fadingFrom, let startedAt = fadeStartedAt, fadingFrom != engineState,
            let previousClip = BotFrames.clip(fadingFrom),
-           let previousFrame = frame(previousClip, at: startedAt.timeIntervalSinceReferenceDate) {
+           let previousFrame = frame(previousClip, at: fadingFromElapsed) {
             let elapsed = now.timeIntervalSince(startedAt)
             if elapsed < clip.morph {
                 // easeOutQuint, the engine's own transition curve.

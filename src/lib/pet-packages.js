@@ -301,9 +301,48 @@ function loadPetDirectory(directory, expectedId = null) {
   return value;
 }
 
+/**
+ * Move third-party packages out of directories whose id we have since reserved.
+ *
+ * `bot` became a built-in in 0.93.0. A user who had imported a package with that id
+ * would otherwise lose it silently: BUILTIN_IDS skips it in every listing, and
+ * removeInstalledPet routes it to hideBuiltinPet, which rejects a non-removable
+ * built-in — so the directory became invisible AND undeletable, up to 10 MB of it.
+ *
+ * Renaming keeps the package usable instead of just deleting it. Idempotent by
+ * construction: after the rename the reserved path no longer exists. If the manifest
+ * rewrite fails mid-way the package is unusable but freely removable, which still
+ * beats the state above.
+ */
+function reclaimReservedPetDirectories(root) {
+  for (const reserved of BUILTIN_IDS) {
+    const source = path.join(root, reserved);
+    if (!fs.existsSync(path.join(source, PET_MANIFEST))) continue;
+    let target = `${reserved}-imported`;
+    for (let suffix = 2; fs.existsSync(path.join(root, target)); suffix += 1) {
+      target = `${reserved}-imported-${suffix}`;
+    }
+    try {
+      fs.renameSync(source, path.join(root, target));
+    } catch {
+      continue;
+    }
+    // The manifest id must match the directory name or the package fails to load.
+    const manifestPath = path.join(root, target, PET_MANIFEST);
+    try {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      manifest.id = target;
+      fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    } catch {
+      // Left unusable but removable; nothing else to do here.
+    }
+  }
+}
+
 function listInstalledPets() {
   migrateLegacyCodexPets();
   const root = resolvePetsDir();
+  reclaimReservedPetDirectories(root);
   let names = [];
   try { names = fs.readdirSync(root); } catch (error) {
     if (error?.code === "ENOENT") return [];
@@ -674,6 +713,7 @@ module.exports = {
   readCodexImportableAsset,
   readHiddenBuiltinIds,
   readWebpDimensions,
+  reclaimReservedPetDirectories,
   removeInstalledPet,
   resolveCodexPetsDir,
   resolvePetAsset,

@@ -4,7 +4,7 @@
  *
  * Kept OUT of `lib/bot/` so that directory stays an unmodified vendor copy
  * (see lib/bot/README.md). This module is the single source of truth shared by
- * the web renderer and `scripts/gen-bot-frames.mjs`, which pre-renders the same
+ * the web renderer and `scripts/gen-bot-frames.cjs`, which pre-renders the same
  * scenes for macOS — so a change here must be followed by re-running that script.
  */
 
@@ -18,6 +18,13 @@ export const BOT_DEFAULT_EXPRESSION = "neutre";
  */
 export const BOT_DEFAULT_COLOR_LIGHT = "encre";
 export const BOT_DEFAULT_COLOR_DARK = "creme";
+
+/**
+ * What the eye holes reveal. They are holes punched in the body, so this is the
+ * visible "eye white" — every host must use the same values or the eyes differ
+ * between the desktop pet and the dashboard preview.
+ */
+export const BOT_PAPER = { light: "#f8fafc", dark: "#0f172a" };
 
 /** @param {boolean} dark */
 export function botDefaultColor(dark) {

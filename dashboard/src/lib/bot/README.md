@@ -44,7 +44,7 @@ silhouette 自动裁掉，零裁剪代码。代价：洞会透出身体后面画
 
 `states.ts` 的 15 个 `StateId`：`idle` `thinking` `wink` `wide` `alert`
 `notify` `exclaim` `sleep` `egg` `hexagon` `play` `orbit` `burst` `comet`
-`swirl`。我们的宠物状态 → StateId 的映射在 `../pet-personality.js`。
+`swirl`。我们的宠物状态 → StateId 的映射在 `../bot-appearance.js`（`SCENES`）。
 
 `StateDef.pose(local)` **是真函数**（含条件、easing、三角函数），不是数据表。
 所以 macOS 端**不能**把它导出成 JSON 直接翻译成 Swift。
@@ -53,14 +53,15 @@ silhouette 自动裁掉，零裁剪代码。代价：洞会透出身体后面画
 
 `skins.ts` 的 8 个形状（`cercle/galet/squircle/capsule/triangle/hexagone/
 nuage/goutte`）、12 个颜色、`expressions.ts` 的 16 个表情都是普通数据表。
-我们用自己的默认组合，见 `../pet-appearance.js`。
+我们用自己的默认组合，见 `../bot-appearance.js`（形状/调色板/paper 都在那里）。
 
 ## 三端怎么消费
 
 | 端 | 做法 |
 |---|---|
-| Web / Windows / Linux | 直接 `import`，实时 `sample(t)`，见 `ui/foundation/BotAnimated.jsx` |
-| macOS（宠物 + 菜单栏） | 构建期 `scripts/gen-bot-frames.mjs` 跑本引擎导出点序列 JSON，Swift 只做播放 + 64 点 lerp |
+| Web / Windows | 直接 `import`，实时 `sample(t)`，见 `ui/foundation/BotAnimated.jsx`（懒加载，不进 dashboard 主 chunk） |
+| Linux | 无桌宠、无动画托盘（平台限制，见 `TokenTrackerLinux/src-tauri/src/tray.rs`）；Pet 设置页仍可预览 |
+| macOS（宠物 + 菜单栏） | 构建期 `scripts/gen-bot-frames.cjs` 跑本引擎导出点序列 JSON，Swift 只做播放 + 64 点 lerp |
 
 macOS 走预渲染是**刻意的**：手抄 `states`/`decor`/`face`/`expressions`/`eyefit`
 约 1900 行逻辑会重造我们想消除的双份镜像。改了引擎或状态映射后**必须重跑生成

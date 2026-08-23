@@ -648,6 +648,19 @@ function Pet() {
     window.addEventListener("pet:botColor", update);
     return () => window.removeEventListener("pet:botColor", update);
   }, []);
+  // This host renders without ThemeProvider, so the `dark` class nothing else sets
+  // here is applied from the appearance the native shell pushes. BotAnimated reads
+  // that class to resolve its theme-following default colour.
+  useEffect(() => {
+    const apply = () => {
+      // Undefined only before the first PushContext; the Windows shell opens dark.
+      const dark = window.__ttPetDark !== false;
+      document.documentElement.classList.toggle("dark", dark);
+    };
+    apply();
+    window.addEventListener("pet:dark", apply);
+    return () => window.removeEventListener("pet:dark", apply);
+  }, []);
   // Syncing state pushed by the native host (drives the typing animation, like macOS).
   useEffect(() => {
     const update = () => setIsSyncing(Boolean(window.__ttPetSyncing));

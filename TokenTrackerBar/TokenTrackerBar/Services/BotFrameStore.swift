@@ -12,7 +12,7 @@ import SwiftUI
 /// Re-run `npm run gen:bot-frames` after touching the engine or the state mapping.
 enum BotFrames {
     /// Bump in lockstep with `schema` in the generator.
-    static let expectedSchema = 3
+    static let expectedSchema = 4
 
     struct Payload: Decodable {
         let schema: Int
@@ -23,6 +23,8 @@ enum BotFrames {
         let scenes: [String: String]
         /// The menu bar's own four-state vocabulary -> engine state id.
         let menubarClips: [String: String]
+        /// What the eye holes reveal, per appearance. Shared with the web renderer.
+        let paper: AutoColors
         /// Pickable body colours, id -> hex. Shipped from the engine's skins.ts.
         let palette: [String: String]
         /// What "auto" resolves to per appearance, so the silhouette never sinks
@@ -40,6 +42,12 @@ enum BotFrames {
         /// Sampling rate of THIS clip. The menu bar clips are denser because the
         /// menu bar plays images and cannot interpolate; see gen-bot-frames.cjs.
         let fps: Double
+        /// False for clips whose first and last frames are far apart — upstream plays
+        /// them once, not on repeat. Those hold their last frame instead of wrapping,
+        /// which is also what the web renderer ends up doing.
+        let loops: Bool
+        /// Distance between first and last frame, in viewBox units. Diagnostic.
+        let seam: Double?
         let duration: Double
         /// Engine morph-in duration, reused as the cross-fade length between clips.
         let morph: Double
@@ -119,6 +127,12 @@ enum BotFrames {
     /// Engine state for one of the menu bar's four tiers.
     static func menubarClip(_ tier: String) -> String {
         payload?.menubarClips[tier] ?? "idle"
+    }
+
+    /// Eye-white colour, matching BOT_PAPER in lib/bot-appearance.js.
+    static func paperHex(dark: Bool) -> String {
+        guard let payload else { return dark ? "#0f172a" : "#f8fafc" }
+        return dark ? payload.paper.dark : payload.paper.light
     }
 
     /// Body colour for a stored preference. "auto" — and anything stale, such as a

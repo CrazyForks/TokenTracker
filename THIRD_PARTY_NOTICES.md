@@ -27,8 +27,13 @@ limitations under the License.
 
 The vector morphing engine behind the `bot` pet character and its menu bar icon
 (`dashboard/src/lib/bot/`, and the frame data generated from it by
-`scripts/gen-bot-frames.mjs`) is from [bloub](https://github.com/jeremy-prt/bloub)
-by Jérémy Perret.
+`scripts/gen-bot-frames.cjs`) is from [bloub](https://github.com/jeremy-prt/bloub)
+by Jérémy Perret, vendored unmodified at commit
+[`b4bb3c1b5f93`](https://github.com/jeremy-prt/bloub/tree/b4bb3c1b5f93c7b87a2e8d620f667c4093d97749).
+
+Note when re-vendoring: `dashboard/src/lib/bot/README.md` is ours, not upstream's, and
+`decor.ts` / `skins.ts` are listed in `scripts/ops/ui-hardcode-baseline.json`, so a
+refresh needs that file re-copied and the baseline regenerated.
 
 Copyright © 2026 Jérémy Perret
 

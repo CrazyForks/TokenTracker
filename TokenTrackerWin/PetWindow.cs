@@ -716,6 +716,10 @@ internal sealed class PetWindow : Window
         var loc = System.Text.Json.JsonSerializer.Serialize(_locale);
         var character = System.Text.Json.JsonSerializer.Serialize(_character);
         var botColor = System.Text.Json.JsonSerializer.Serialize(_botColor);
+        // The pet host renders without ThemeProvider, so nothing there can resolve the
+        // appearance on its own. Without this the bot's default "auto" body colour is
+        // stuck on the light value — a near-black blob on a dark desktop.
+        var petDark = NativeTheme.ResolveIsLight(NativeTheme.CurrentPreference) ? "false" : "true";
         var syncing = _syncing ? "true" : "false";
         var cost = _stats.TodayCostUsd.ToString(inv);
         var limitsJson = _limits?.ToJsonString() ?? "null";
@@ -744,6 +748,7 @@ internal sealed class PetWindow : Window
                 $"window.__ttPetLocale={loc};" +
                 $"window.__ttPetCharacter={character};" +
                 $"window.__ttPetBotColor={botColor};" +
+                $"window.__ttPetDark={petDark};" +
                 $"window.__ttPetLookDirectionIndex={lookDirection};" +
                 $"window.__ttPetSyncing={syncing};" +
                 $"window.__ttPetTokens={_stats.TodayTokens};" +
@@ -757,6 +762,7 @@ internal sealed class PetWindow : Window
                 "window.dispatchEvent(new Event('pet:locale'));" +
                 "window.dispatchEvent(new Event('pet:character'));" +
                 "window.dispatchEvent(new Event('pet:botColor'));" +
+                "window.dispatchEvent(new Event('pet:dark'));" +
                 "window.dispatchEvent(new Event('pet:look'));" +
                 "window.dispatchEvent(new Event('pet:syncing'));" +
                 "window.dispatchEvent(new Event('pet:usage'));" +
@@ -911,6 +917,7 @@ internal sealed class PetWindow : Window
     public const string SizeLarge = "large";
 
     public const string CharacterClawd = "clawd";
+    public const string CharacterBot = "bot";
     public const string CharacterSprout = "sprout";
     public const string CharacterByte = "byte";
     public const string CharacterEmber = "ember";
@@ -940,6 +947,7 @@ internal sealed class PetWindow : Window
             CharacterByte => CharacterByte,
             CharacterEmber => CharacterEmber,
             CharacterClawd => CharacterClawd,
+            CharacterBot => CharacterBot,
             _ when Regex.IsMatch(normalized, "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
                 => normalized,
             _ => CharacterClawd,
