@@ -680,15 +680,24 @@ final class DynamicIslandController: NSObject {
 
         let screenFrame = screen.frame
         let primaryMaxY = primary.frame.maxY
+        // With the menu bar set to auto-hide, `visibleFrame` reaches the
+        // physical top edge and every maximized window "covers the screen
+        // including the menu bar". Geometry alone can then no longer prove
+        // full-screen — pass the reserved strip height through so the policy
+        // can reject the false positive (issue #507).
+        let menuBarHeight = screenFrame.maxY - screen.visibleFrame.maxY
 
         for info in infoList {
             if let alpha = info[kCGWindowAlpha as String] as? NSNumber, alpha.doubleValue <= 0 {
                 continue
             }
-            // Dock (20) / menu bar (24) can report screen-sized frames.
-            // Screensaver (1000) should still hide the island.
+            // Dock (20) / menu bar (24) / Control Center (25) can report
+            // screen-sized frames, and so can the negative-layer surfaces
+            // behind the desktop. Screensaver (>= 1000) should still hide the
+            // island. The owner check below is a belt-and-braces English-only
+            // fallback — the layer is what actually filters (issue #507).
             let layer = (info[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
-            if layer >= 20 && layer < 1000 { continue }
+            guard DynamicIslandFullscreenPolicy.windowLayerCanCoverIslandScreen(layer) else { continue }
             if let owner = info[kCGWindowOwnerName as String] as? String,
                Self.fullscreenIgnoredWindowOwners.contains(owner) {
                 continue
@@ -705,7 +714,8 @@ final class DynamicIslandController: NSObject {
             )
             if DynamicIslandFullscreenPolicy.windowCoversScreenIncludingMenuBar(
                 windowBounds: windowBounds,
-                screenFrame: screenFrame
+                screenFrame: screenFrame,
+                menuBarHeight: menuBarHeight
             ) {
                 return true
             }

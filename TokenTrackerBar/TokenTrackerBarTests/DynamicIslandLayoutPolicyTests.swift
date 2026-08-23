@@ -265,21 +265,59 @@ final class DynamicIslandLayoutPolicyTests: XCTestCase {
         XCTAssertTrue(
             DynamicIslandFullscreenPolicy.windowCoversScreenIncludingMenuBar(
                 windowBounds: fullscreen,
-                screenFrame: screen
+                screenFrame: screen,
+                menuBarHeight: 25
             )
         )
         XCTAssertFalse(
             DynamicIslandFullscreenPolicy.windowCoversScreenIncludingMenuBar(
                 windowBounds: zoomed,
-                screenFrame: screen
+                screenFrame: screen,
+                menuBarHeight: 25
             )
         )
         XCTAssertFalse(
             DynamicIslandFullscreenPolicy.windowCoversScreenIncludingMenuBar(
                 windowBounds: splitHalf,
-                screenFrame: screen
+                screenFrame: screen,
+                menuBarHeight: 25
             )
         )
+    }
+
+    func testWindowCoverageIsInconclusiveWhenMenuBarIsHidden() {
+        // With the menu bar set to auto-hide, `visibleFrame` reaches the
+        // physical top edge and a *maximized* (not full-screen) window covers
+        // the whole screen. Geometry can no longer prove full-screen, so the
+        // policy must defer to presentation options instead of suppressing
+        // the island behind the maximized window (issue #507).
+        let screen = CGRect(x: 0, y: 0, width: 1_440, height: 900)
+
+        XCTAssertFalse(
+            DynamicIslandFullscreenPolicy.windowCoversScreenIncludingMenuBar(
+                windowBounds: screen,
+                screenFrame: screen,
+                menuBarHeight: 0
+            )
+        )
+    }
+
+    func testOnlyApplicationAndShieldingLayersCanCoverTheIslandScreen() {
+        // Owner-name filtering cannot carry this: `kCGWindowOwnerName` is
+        // localized, so an English allowlist ("Control Center", "Notification
+        // Center") matches nothing on a non-English system and every system
+        // overlay reaches the coverage test (issue #507).
+        XCTAssertTrue(DynamicIslandFullscreenPolicy.windowLayerCanCoverIslandScreen(0))
+        XCTAssertTrue(DynamicIslandFullscreenPolicy.windowLayerCanCoverIslandScreen(1_000))
+        XCTAssertTrue(DynamicIslandFullscreenPolicy.windowLayerCanCoverIslandScreen(2_147_483_629))
+
+        XCTAssertFalse(DynamicIslandFullscreenPolicy.windowLayerCanCoverIslandScreen(20))
+        XCTAssertFalse(DynamicIslandFullscreenPolicy.windowLayerCanCoverIslandScreen(24))
+        XCTAssertFalse(DynamicIslandFullscreenPolicy.windowLayerCanCoverIslandScreen(25))
+        // Notification Center widgets / wallpaper backdrops sit far below the
+        // desktop and can report screen-sized frames.
+        XCTAssertFalse(DynamicIslandFullscreenPolicy.windowLayerCanCoverIslandScreen(-2_147_483_601))
+        XCTAssertFalse(DynamicIslandFullscreenPolicy.windowLayerCanCoverIslandScreen(-1))
     }
 
     func testQuartzBoundsConvertAgainstPrimaryDisplayTop() {

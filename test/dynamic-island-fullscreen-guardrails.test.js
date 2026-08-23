@@ -74,6 +74,46 @@ test("island presence is gated on a testable full-screen policy", () => {
   );
 });
 
+test("full-screen geometry proof requires a menu-bar strip (issue #507)", () => {
+  assert.match(
+    policySource,
+    /static\s+func\s+windowCoversScreenIncludingMenuBar\(\s*windowBounds:\s*CGRect,\s*screenFrame:\s*CGRect,\s*menuBarHeight:\s*CGFloat/,
+    "coverage must take the reserved menu-bar strip height",
+  );
+  assert.match(
+    policySource,
+    /guard\s+menuBarHeight\s*>=\s*1\s+else\s*\{\s*return\s+false\s*\}/,
+    "with the menu bar auto-hidden, every maximized window covers the screen — geometry must defer to presentation options",
+  );
+  assert.match(
+    controllerSource,
+    /menuBarHeight\s*=\s*screenFrame\.maxY\s*-\s*screen\.visibleFrame\.maxY/,
+    "the controller must derive the strip height from the island screen's visibleFrame",
+  );
+  assert.match(
+    controllerSource,
+    /windowCoversScreenIncludingMenuBar\(\s*windowBounds:\s*windowBounds,\s*screenFrame:\s*screenFrame,\s*menuBarHeight:\s*menuBarHeight/,
+    "the controller must pass the strip height into the coverage check",
+  );
+});
+
+test("window filtering is by CG layer, not by localized owner name (issue #507)", () => {
+  assert.match(
+    policySource,
+    /static\s+func\s+windowLayerCanCoverIslandScreen\(_\s+layer:\s*Int\)\s*->\s*Bool\s*\{\s*if\s+layer\s*<\s*0\s*\{\s*return\s+false\s*\}/,
+    "negative layers (Notification Center widgets, wallpaper backdrops) can report screen-sized frames and must never prove full-screen",
+  );
+  assert.match(
+    controllerSource,
+    /guard\s+DynamicIslandFullscreenPolicy\.windowLayerCanCoverIslandScreen\(layer\)\s+else\s*\{\s*continue\s*\}/,
+    "the controller must filter candidate windows through the layer policy",
+  );
+  assert.ok(
+    !/if\s+layer\s*>=\s*20\s*&&\s*layer\s*<\s*1000\s*\{\s*continue\s*\}/.test(controllerSource),
+    "the inline layer range must not survive alongside the policy — one source of truth",
+  );
+});
+
 test("Dynamic Island restore settles on fullscreen events with a bounded burst, not a poll", () => {
   const settleFunctionMatch = controllerSource.match(
     /private func scheduleNextFullscreenSettle\(\) \{([\s\S]*?)\n    private func cancelFullscreenSettleRetries/,

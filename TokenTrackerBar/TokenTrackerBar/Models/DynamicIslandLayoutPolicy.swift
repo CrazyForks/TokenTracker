@@ -102,13 +102,39 @@ enum DynamicIslandFullscreenPolicy {
         )
     }
 
+    /// Whether a window on this Core Graphics layer could be a full-screen
+    /// app window at all. A native full-screen window keeps
+    /// `NSWindow.Level.normal` (0); system chrome sits on its own layers
+    /// (Dock 20, menu bar 24, Control Center 25) and desktop-adjacent
+    /// surfaces — Notification Center widgets, wallpaper backdrops — use
+    /// large *negative* layers. A shielding-level window (>= 1000, e.g. the
+    /// screen saver) does cover the island, so it still counts.
+    ///
+    /// This has to carry the filtering on its own: `kCGWindowOwnerName` is
+    /// localized ("控制中心", "알림 센터"), so an English owner allowlist
+    /// matches nothing on a non-English system and every system overlay
+    /// reaches the coverage test (issue #507).
+    static func windowLayerCanCoverIslandScreen(_ layer: Int) -> Bool {
+        if layer < 0 { return false }
+        return !(layer >= 20 && layer < 1_000)
+    }
+
     /// A window that covers a screen including its menu-bar strip is in
     /// full-screen, not merely zoomed to `visibleFrame`.
+    ///
+    /// The strip must actually exist. With "Automatically hide and show the
+    /// menu bar" set to Always, `visibleFrame` reaches the physical top edge
+    /// (`menuBarHeight == 0`) and every maximized window covers the whole
+    /// screen — geometry can no longer prove full-screen, so return false and
+    /// let the caller fall back to presentation options. Otherwise the island
+    /// would hide forever behind a maximized (not full-screen) window.
     static func windowCoversScreenIncludingMenuBar(
         windowBounds: CGRect,
-        screenFrame: CGRect
+        screenFrame: CGRect,
+        menuBarHeight: CGFloat
     ) -> Bool {
-        windowBounds.minX <= screenFrame.minX + 1
+        guard menuBarHeight >= 1 else { return false }
+        return windowBounds.minX <= screenFrame.minX + 1
             && windowBounds.maxX >= screenFrame.maxX - 1
             && windowBounds.minY <= screenFrame.minY + 1
             && windowBounds.maxY >= screenFrame.maxY - 1
