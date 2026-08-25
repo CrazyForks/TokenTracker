@@ -16614,36 +16614,55 @@ function isCjkCodePoint(code) {
 // (session transcripts are SQLCipher-encrypted; memory summaries carry no
 // token counts), so the token-count-only queue is intentionally never written
 // for this provider — the cloud hourly table stays clean.
-function resolveTraePath(env = process.env) {
+// Ordered candidate app-dir names. The CN IDE build installs as "Trae CN" on
+// Windows; the international build installs as "TRAE SOLO". Both expose the same
+// iCubeServerData entitlement key, so either is a valid Trae IDE install.
+function traeCandidateAppDirs(env = process.env) {
   const override = env.TOKENTRACKER_TRAE_HOME;
   if (typeof override === "string" && override.trim().length > 0) {
-    return override.trim();
+    return [override.trim()];
   }
   const home = require("node:os").homedir();
   if (process.platform === "darwin") {
-    return path.join(home, "Library", "Application Support", "TRAE SOLO");
+    return [path.join(home, "Library", "Application Support", "TRAE SOLO")];
   }
   if (process.platform === "win32") {
     // A Windows box with no APPDATA still keeps Trae under the standard
     // roaming profile — falling through to the dot-dir below would point at
     // a location Trae never writes.
-    const appData = typeof env.APPDATA === "string" ? env.APPDATA.trim() : "";
-    return appData
-      ? path.join(appData, "TRAE SOLO")
-      : path.join(home, "AppData", "Roaming", "TRAE SOLO");
+    const appData =
+      typeof env.APPDATA === "string" && env.APPDATA.trim()
+        ? env.APPDATA.trim()
+        : path.join(home, "AppData", "Roaming");
+    return [
+      path.join(appData, "TRAE SOLO"),
+      path.join(appData, "Trae CN"),
+    ];
   }
   // Linux and friends: TRAE SOLO ships official builds for macOS/Windows
   // only, so there is no verified app-data layout to default to. Fall back to
   // a deterministic home-dir path (best-effort detection);
   // TOKENTRACKER_TRAE_HOME always wins for unusual installs.
-  return path.join(home, ".trae-solo");
+  return [path.join(home, ".trae-solo")];
+}
+
+// Best-effort: the first candidate that exists on disk (used for display/init
+// detection). When no install is present, returns the primary candidate so
+// callers still get a deterministic path to report.
+function resolveTraePath(env = process.env) {
+  const candidates = traeCandidateAppDirs(env);
+  for (const dir of candidates) {
+    try { if (fssync.existsSync(dir)) return dir; } catch (_error) {}
+  }
+  return candidates.length ? candidates[0] : null;
 }
 
 function resolveTraeStoragePath(env = process.env) {
-  const traHome = resolveTraePath(env);
-  if (!traHome) return null;
-  const p = path.join(traHome, "User", "globalStorage", "storage.json");
-  return fssync.existsSync(p) ? p : null;
+  for (const dir of traeCandidateAppDirs(env)) {
+    const p = path.join(dir, "User", "globalStorage", "storage.json");
+    try { if (fssync.existsSync(p)) return p; } catch (_error) {}
+  }
+  return null;
 }
 
 /**
