@@ -2698,7 +2698,8 @@ async function parseOpencodeMessageFile({
     };
   }
 
-  const model = normalizeModelInput(msg?.modelID || msg?.model || msg?.modelId) || DEFAULT_MODEL;
+  const { modelId: fileModelId } = normalizeOpencodeModelFields(msg);
+  const model = fileModelId || DEFAULT_MODEL;
   const bucket = getHourlyBucket(hourlyState, source, model, bucketStart);
   addTotals(bucket.totals, delta);
   touchedBuckets.add(bucketKey(source, model, bucketStart));
@@ -3289,8 +3290,11 @@ function deriveOpencodeMessageFingerprint({ msg, totals, source }) {
   const created = coerceEpochMs(msg?.time?.created) || 0;
   const completed = coerceEpochMs(msg?.time?.completed) || 0;
   if (!created && !completed) return null;
-  const model = normalizeModelInput(msg?.modelID || msg?.model || msg?.modelId) || DEFAULT_MODEL;
-  const provider = normalizeMessageKeyPart(msg?.providerID || msg?.provider || msg?.providerId);
+  // v1 keeps flat modelID/providerID strings; v2 nests them in
+  // `model: { id, providerID }` — normalize both (see normalizeOpencodeModelFields).
+  const { modelId, providerId } = normalizeOpencodeModelFields(msg);
+  const model = modelId || DEFAULT_MODEL;
+  const provider = providerId;
   const raw = [
     normalizeSourceInput(source) || "opencode",
     created,
@@ -3402,7 +3406,8 @@ function repairCountedOpencodeForkCopy({
   if (!timestampMs) return false;
   const bucketStart = toUtcHalfHourStart(new Date(timestampMs).toISOString());
   if (!bucketStart) return false;
-  const model = normalizeModelInput(msg?.modelID || msg?.model || msg?.modelId) || DEFAULT_MODEL;
+  const { modelId: repairModelId } = normalizeOpencodeModelFields(msg);
+  const model = repairModelId || DEFAULT_MODEL;
   const counted = { ...totals, conversation_count: 1 };
   const bucket = getHourlyBucket(hourlyState, source, model, bucketStart);
   subtractTotals(bucket.totals, counted);
@@ -3633,6 +3638,33 @@ function normalizeModelInput(value) {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+// OpenCode v1 stores the model as flat strings on every assistant message
+// (`modelID`, `providerID`), while OpenCode v2 (the `opencode2` beta, which
+// moved messages into the `session_message` table) nests them inside a single
+// object: `model: { id, providerID, variant }`. Some forks also wrote a plain
+// string into `model`. Resolve both shapes to { modelId, providerId } so
+// bucket keys and fork fingerprints stay identical across versions.
+function normalizeOpencodeModelFields(msg) {
+  const directModel =
+    normalizeModelInput(msg?.modelID) ||
+    normalizeModelInput(typeof msg?.model === "string" ? msg.model : null) ||
+    normalizeModelInput(msg?.modelId);
+  if (directModel) {
+    return {
+      modelId: directModel,
+      providerId: normalizeMessageKeyPart(msg?.providerID || msg?.provider || msg?.providerId),
+    };
+  }
+  const nested = msg?.model;
+  if (nested && typeof nested === "object") {
+    return {
+      modelId: normalizeModelInput(nested.id),
+      providerId: normalizeMessageKeyPart(nested.providerID),
+    };
+  }
+  return { modelId: null, providerId: "" };
 }
 
 async function resolveProjectMetaForPath(startDir, cache) {
@@ -4298,12 +4330,79 @@ async function walkOpencodeMessages(dir, out) {
 }
 
 // ---------------------------------------------------------------------------
-// OpenCode SQLite DB reader (v1.2+ stores messages in opencode.db)
+// OpenCode SQLite DB reader
+//
+// Four real database shapes exist in the wild (see PR #501 / opencode2):
+//   A  pure v1:        `message`(data) + `session_message`(empty) [+ `session`]
+//   B  beta-17887:     `session_message`(data) + `session_v2`
+//   C  upstream v2:    `session_message`(data) + `session`
+//   D  transitional:   `message`(old data) + `session_message`(new data)
+//
+// The reader must serve all four without firing a doomed SQL at type A (an
+// empty `session_message` table still EXISTS — querying it with a JOIN against
+// `session_v2` that does not exist throws "no such table" every sync, and the
+// old code silently swallowed that error). The combined probe below answers
+// both "is there v2 data?" and "which session table exists?" in one round-trip.
 // ---------------------------------------------------------------------------
+
+const OPENCODE_DB_V1_MESSAGE_SQL =
+  `SELECT id, session_id, time_updated, data FROM message ` +
+  `WHERE json_extract(data, '$.role') = 'assistant' ORDER BY time_created ASC`;
+
+// Build the v2 query. When a session table exists the LEFT JOIN restores the
+// project directory for downstream attribution; when it does not (type B
+// without session_v2, or an exotic fork) the join and directory column are
+// omitted and tokens are counted as-is.
+function buildV2Sql(sessionTable) {
+  const joinClause = sessionTable
+    ? `LEFT JOIN ${sessionTable} s ON s.id = sm.session_id `
+    : "";
+  const directorySelect = sessionTable
+    ? `s.directory AS directory, `
+    : "";
+  return (
+    `SELECT sm.id AS id, sm.session_id AS session_id, sm.time_updated AS time_updated, ` +
+    `${directorySelect}sm.data AS data ` +
+    `FROM session_message sm ${joinClause}` +
+    `WHERE sm.type = 'assistant' ORDER BY sm.time_created ASC`
+  );
+}
+
+// One combined probe: hasRows (is there any data in session_message?) plus
+// sessionTable (which session table exists, session_v2 preferred over session
+// via DESC). Returns null when the probe itself fails — callers treat that as
+// v1-only, matching the pre-existing silent-degradation contract.
+function detectOpencodeMessageLayout(dbPath, sqliteOptions = {}) {
+  let rows;
+  try {
+    rows = readSqliteJsonRows(
+      dbPath,
+      `SELECT (SELECT 1 FROM session_message LIMIT 1) AS hasRows,
+              (SELECT name FROM sqlite_master WHERE name IN ('session','session_v2') ORDER BY name DESC LIMIT 1) AS sessionTable`,
+      { label: "OpenCode", timeout: 10_000, maxBuffer: 1024 * 1024, ...sqliteOptions },
+    );
+  } catch (_e) {
+    return null;
+  }
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  const row = rows[0];
+  return {
+    hasRows: Boolean(row?.hasRows),
+    sessionTable: typeof row?.sessionTable === "string" && row.sessionTable.trim()
+      ? row.sessionTable.trim()
+      : null,
+  };
+}
+
+// Shared provider resolver: v1 rows carry a top-level providerID, v2 rows nest
+// it under model.providerID. Used by the mimo/zcode discriminators so they work
+// against both generations without duplicating the resolution logic.
+function opencodeMessageProvider(data) {
+  return data?.providerID || data?.model?.providerID || "";
+}
 
 function readOpencodeDbMessages(dbPath, sqliteOptions = {}) {
   if (!dbPath || !fssync.existsSync(dbPath)) return [];
-  const sql = `SELECT id, session_id, time_updated, data FROM message WHERE json_extract(data, '$.role') = 'assistant' ORDER BY time_created ASC`;
 
   let snapshot = null;
   let effectiveDbPath = dbPath;
@@ -4314,13 +4413,16 @@ function readOpencodeDbMessages(dbPath, sqliteOptions = {}) {
     } catch (_e) { }
   }
 
-  try {
-    const rows = readSqliteJsonRows(effectiveDbPath, sql, {
-      label: "OpenCode",
-      maxBuffer: 50 * 1024 * 1024,
-      timeout: 30_000,
-      ...sqliteOptions,
-    });
+  // Parse raw SQL rows into the shared { id, sessionID, timeUpdated, data }
+  // shape; optionally restore v2's session-level project directory as the
+  // per-message `path.cwd` the rest of the pipeline expects.
+  //
+  // D-state (transitional) union: both the legacy `message` table and the new
+  // `session_message` table may carry rows. Cross-table duplicates are caught
+  // by the existing cursor-key + #426 fingerprint dedup in
+  // parseOpencodeDbIncremental, so unioning here is safe — the downstream
+  // parser collapses identical sessionID|messageID pairs before bucketing.
+  const collectRows = (rows, isV2) => {
     const out = [];
     for (const row of rows) {
       if (!row || typeof row.data !== "string") continue;
@@ -4338,6 +4440,9 @@ function readOpencodeDbMessages(dbPath, sqliteOptions = {}) {
         toNonNegativeInt(tokens.output) > 0 ||
         toNonNegativeInt(tokens.reasoning) > 0;
       if (!hasTokens) continue;
+      if (isV2 && typeof row.directory === "string" && row.directory.trim()) {
+        data.path = { ...(typeof data.path === "object" && data.path ? data.path : {}), cwd: row.directory };
+      }
       out.push({
         id: row.id || data.id,
         sessionID: row.session_id || data.sessionID,
@@ -4345,6 +4450,40 @@ function readOpencodeDbMessages(dbPath, sqliteOptions = {}) {
         data,
       });
     }
+    return out;
+  };
+
+  const readGeneration = (sql) => {
+    try {
+      const rows = readSqliteJsonRows(effectiveDbPath, sql, {
+        label: "OpenCode",
+        maxBuffer: 50 * 1024 * 1024,
+        timeout: 30_000,
+        ...sqliteOptions,
+        throwOnReadFailure: true,
+      });
+      return Array.isArray(rows) ? rows : [];
+    } catch (_e) {
+      return null; // query-level failure (e.g. wrong generation's table)
+    }
+  };
+
+  try {
+    // Combined probe drives the orchestration: v1 always runs (it is the
+    // baseline every database carries or degrades to), v2 runs only when the
+    // probe confirms session_message has rows — this avoids firing a JOIN
+    // against a non-existent session table on type-A databases.
+    const probe = detectOpencodeMessageLayout(effectiveDbPath, sqliteOptions);
+    const out = [];
+
+    const rows1 = readGeneration(OPENCODE_DB_V1_MESSAGE_SQL);
+    if (rows1) out.push(...collectRows(rows1, false));
+
+    if (probe?.hasRows) {
+      const rows2 = readGeneration(buildV2Sql(probe.sessionTable));
+      if (rows2) out.push(...collectRows(rows2, true));
+    }
+
     return out;
   } finally {
     if (snapshot) snapshot.cleanup();
@@ -4369,7 +4508,7 @@ function readOpencodeDbMessages(dbPath, sqliteOptions = {}) {
 // subsumes it.
 function isMimoNativeMessage(data) {
   if (!data) return false;
-  const provider = String(data.providerID || "").toLowerCase();
+  const provider = String(opencodeMessageProvider(data)).toLowerCase();
   return provider === "mimo" || provider === "xiaomi";
 }
 
@@ -4403,7 +4542,7 @@ function readMimoDbMessages(dbPath, sqliteOptions = {}) {
 // re-count it. Mirrors the Mimo discipline.
 function isZcodeNativeMessage(data) {
   if (!data) return false;
-  const provider = String(data.providerID || "").toLowerCase();
+  const provider = String(opencodeMessageProvider(data)).toLowerCase();
   if (!provider) return false;
   return !(
     provider.includes("anthropic") ||
@@ -4562,7 +4701,8 @@ async function parseOpencodeDbIncremental({
       continue;
     }
 
-    const model = normalizeModelInput(msg?.modelID || msg?.model || msg?.modelId) || DEFAULT_MODEL;
+    const { modelId: dbModelId } = normalizeOpencodeModelFields(msg);
+    const model = dbModelId || DEFAULT_MODEL;
     const bucket = getHourlyBucket(hourlyState, defaultSource, model, bucketStart);
     addTotals(bucket.totals, delta);
     touchedBuckets.add(bucketKey(defaultSource, model, bucketStart));
