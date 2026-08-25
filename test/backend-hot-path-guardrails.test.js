@@ -256,6 +256,20 @@ test("anti-cheat health reports database-native scan freshness before protected 
   assert.match(source, /return json\(\{ ok: true, results, \.\.\.\(anomalyScan \? \{ scan: anomalyScan \} : \{\}\) \}\)/u);
 });
 
+test("database-native anti-cheat detector has a bounded hourly scan budget", () => {
+  const migration = readMigrationBySuffix("bound-anticheat-detector-window");
+  const runtime = read("docs/ops/leaderboard-anomaly-detector-runtime.sql");
+
+  assert.match(migration, /SET value = 1\s+WHERE key = 'lookback_days'/u,
+    "an hourly detector must not rescan two weeks of raw event and ingestion history");
+  assert.match(migration, /missing anti-cheat lookback_days configuration/u,
+    "deployment must fail instead of silently leaving the unbounded configuration in place");
+  assert.match(runtime, /ALTER FUNCTION public\.detect_leaderboard_anomalies\(\)\s+SET work_mem TO '16MB'/u,
+    "one detector query must not retain the old 64MB per-operation memory budget");
+  assert.match(runtime, /SET statement_timeout TO '45s'/u,
+    "a runaway detector must fail closed before it destabilizes the database server");
+});
+
 test("anti-cheat responder atomically reconciles snapshots only when the moderation queue changed", () => {
   const workflow = read(".github/workflows/leaderboard-anticheat.yml");
   const source = read("dashboard/edge-patches/tokentracker-leaderboard-refresh.ts");
