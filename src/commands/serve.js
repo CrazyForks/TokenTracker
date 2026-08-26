@@ -378,13 +378,55 @@ const TRACKER_ENTRY_RE = new RegExp(
 const NODE_SERVE_COMMAND_RE = /^(\S+)\s+(.+?)\s+serve(?:\s|$)/i;
 const NODE_EXECUTABLE_RE = /(?:^|[\\/])node(?:\.exe)?$/i;
 
-function isTokenTrackerServeCommand(command) {
+// The script path a `node ... serve` command would run, or null.
+function parseServeScriptPath(command) {
   const value = String(command || "").replaceAll("\0", " ").trim();
-  if (!value) return false;
+  if (!value) return null;
   const match = NODE_SERVE_COMMAND_RE.exec(value);
-  if (!match || !NODE_EXECUTABLE_RE.test(match[1])) return false;
-  const script = match[2].replace(/^["']/, "").replace(/["']$/, "");
-  return TRACKER_ENTRY_RE.test(script);
+  if (!match || !NODE_EXECUTABLE_RE.test(match[1])) return null;
+  return match[2].replace(/^["']/, "").replace(/["']$/, "");
+}
+
+// How far above the entry script a package.json may sit. `bin/tracker.js` puts
+// it one level up; the npm bin shims resolve into
+// `node_modules/<pkg>/bin/tracker.js`, which is the same shape.
+const TRACKER_PACKAGE_SEARCH_DEPTH = 3;
+
+function isTrackerPackageRoot(dir) {
+  try {
+    const manifest = JSON.parse(fssync.readFileSync(path.join(dir, "package.json"), "utf8"));
+    return manifest?.name === NPM_PACKAGE_NAME;
+  } catch (_e) {
+    return false;
+  }
+}
+
+// The path shape alone is not identifying: plenty of unrelated projects ship a
+// `bin/tracker.js`, and matching on that would signal one of them. Resolve the
+// script and require a real `${NPM_PACKAGE_NAME}` package around it.
+//
+// Fails closed. A server whose script cannot be resolved -- deleted, or in a
+// mount namespace this process cannot read -- is left alone, so the worst case
+// is a failed bind rather than a killed stranger.
+function isTokenTrackerServeCommand(command) {
+  const script = parseServeScriptPath(command);
+  if (!script || !TRACKER_ENTRY_RE.test(script)) return false;
+
+  let resolved;
+  try {
+    resolved = fssync.realpathSync(script);
+  } catch (_e) {
+    return false;
+  }
+
+  let dir = path.dirname(path.dirname(resolved));
+  for (let depth = 0; depth < TRACKER_PACKAGE_SEARCH_DEPTH; depth++) {
+    if (isTrackerPackageRoot(dir)) return true;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return false;
 }
 
 async function ensurePortFree(port) {
@@ -590,6 +632,7 @@ module.exports = {
   ensurePortFree,
   isRunningUnderWsl,
   isTokenTrackerServeCommand,
+  parseServeScriptPath,
   resolveDefaultPort,
   shouldServeSpaFallback,
   startNativeBackgroundSync,

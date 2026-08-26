@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const http = require("node:http");
+const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
 
@@ -11,6 +12,7 @@ const {
   isTokenTrackerServeCommand,
   listenOnAvailablePort,
   NPM_PACKAGE_NAME,
+  parseServeScriptPath,
   parseArgs,
   isRunningUnderWsl,
   resolveDefaultPort,
@@ -164,39 +166,61 @@ test("isRunningUnderWsl is false off Linux regardless of env", (t) => {
   assert.equal(resolveDefaultPort({ WSL_DISTRO_NAME: "Ubuntu" }), 7680);
 });
 
-test("port cleanup only targets a verified TokenTracker server", () => {
-  // `--port` may name a port owned by an unrelated application. Failing to
-  // bind is far safer than terminating a process that was never ours, so
-  // ensurePortFree identifies its target before signalling it.
-  const ours = [
-    "node /usr/lib/tokentracker/bin/tracker.js serve --port 7680",
-    "/opt/app/EmbeddedServer/node /opt/app/EmbeddedServer/tokentracker/bin/tracker.js serve --no-open",
-    // `ps -o command=` drops quoting, so the script path is only unambiguous
-    // relative to the `serve` argument that follows it.
-    "node /home/u/Token Tracker/bin/tracker.js serve",
-    // The published npm bin shims: ps reports the shim, not the resolved script.
-    "node /home/u/.local/bin/tokentracker-cli serve",
-  ];
-  for (const command of ours) {
-    assert.equal(isTokenTrackerServeCommand(command), true, command);
-  }
+test("serve-command parsing survives ps output quirks", () => {
+  // `ps -o command=` joins argv with spaces and drops all quoting, so the
+  // script path is only unambiguous relative to the `serve` argument after it.
+  assert.equal(
+    parseServeScriptPath("node /home/u/Token Tracker/bin/tracker.js serve"),
+    "/home/u/Token Tracker/bin/tracker.js",
+  );
+  assert.equal(
+    parseServeScriptPath("/opt/app/node /opt/app/tokentracker/bin/tracker.js serve --no-open"),
+    "/opt/app/tokentracker/bin/tracker.js",
+  );
 
-  const notOurs = [
-    // Requiring the bin/ component keeps a lookalike path from matching.
-    "node /srv/other/tracker.js serve",
-    "node /usr/lib/tokentracker/bin/tracker.js.bak serve",
-    // Our own sync process is not a server holding the port.
-    "node /usr/lib/tokentracker/bin/tracker.js sync",
-    "python3 /usr/lib/tokentracker/bin/tracker.js serve",
-    // Whatever else may legitimately own the port.
-    "/usr/bin/postgres -D /var/lib/pgsql serve",
-    "nginx: worker process",
-    // ps prints nothing once the pid is gone; never treat that as a match.
-    "",
-  ];
-  for (const command of notOurs) {
-    assert.equal(isTokenTrackerServeCommand(command), false, command);
-  }
+  // Not a node `serve` invocation at all.
+  assert.equal(parseServeScriptPath("python3 /usr/lib/tokentracker/bin/tracker.js serve"), null);
+  assert.equal(parseServeScriptPath("node /usr/lib/tokentracker/bin/tracker.js sync"), null);
+  assert.equal(parseServeScriptPath("/usr/bin/postgres -D /var/lib/pgsql serve"), null);
+  assert.equal(parseServeScriptPath("nginx: worker process"), null);
+  // ps prints nothing once the pid is gone; never treat that as a match.
+  assert.equal(parseServeScriptPath(""), null);
+});
+
+test("port cleanup only targets a real TokenTracker package", (t) => {
+  // Path shape alone is not identifying: unrelated projects ship a
+  // `bin/tracker.js` too, so the entry must resolve into a genuine
+  // tokentracker-cli package before anything is signalled.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tt-serve-id-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const install = (name, pkgName) => {
+    const dir = path.join(root, name);
+    fs.mkdirSync(path.join(dir, "bin"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "bin", "tracker.js"), "");
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: pkgName }));
+    return path.join(dir, "bin", "tracker.js");
+  };
+
+  const ours = install("ours", NPM_PACKAGE_NAME);
+  assert.equal(isTokenTrackerServeCommand(`node ${ours} serve --port 7680`), true);
+
+  // Same layout, different package: someone else's tracker.
+  const theirs = install("theirs", "some-other-tracker");
+  assert.equal(isTokenTrackerServeCommand(`node ${theirs} serve`), false);
+
+  // The npm bin shim is a symlink into the package; realpath must be followed.
+  const shimDir = path.join(root, "node_modules", ".bin");
+  fs.mkdirSync(shimDir, { recursive: true });
+  const shim = path.join(shimDir, "tokentracker-cli");
+  fs.symlinkSync(ours, shim);
+  assert.equal(isTokenTrackerServeCommand(`node ${shim} serve`), true);
+
+  // A lookalike path that does not exist resolves to nothing, so it is never
+  // signalled -- the case that made a bare path-shape check unsafe.
+  assert.equal(isTokenTrackerServeCommand("node /srv/other/bin/tracker.js serve"), false);
+  // tracker.js outside a bin/ directory is rejected before any filesystem work.
+  assert.equal(isTokenTrackerServeCommand("node /srv/other/tracker.js serve"), false);
 });
 
 test("port scan is limited to listeners, not everything touching the port", () => {
