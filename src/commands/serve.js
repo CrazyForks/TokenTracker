@@ -372,19 +372,36 @@ const TRACKER_ENTRY_RE = new RegExp(
   String.raw`(?:^|[\\/])\.?bin[\\/](?:tracker\.js|tokentracker-cli|tokentracker-tracker|tokentracker|tracker)$`,
   "i",
 );
-// `ps -o command=` joins argv with spaces and drops all quoting, so the script
-// path is only unambiguous relative to the `serve` argument that follows it --
-// splitting on whitespace would reject an install under `~/Token Tracker/`.
-const NODE_SERVE_COMMAND_RE = /^(\S+)\s+(.+?)\s+serve(?:\s|$)/i;
 const NODE_EXECUTABLE_RE = /(?:^|[\\/])node(?:\.exe)?$/i;
+// Every `serve` token that could be the subcommand rather than part of a path.
+const SERVE_BOUNDARY_RE = /\s+serve(?=\s|$)/g;
 
-// The script path a `node ... serve` command would run, or null.
+// The tracker entry path a `node ... serve` command would run, or null.
+//
+// `ps -o command=` joins argv with spaces and drops all quoting, so the script
+// path is only delimited by the `serve` argument after it -- splitting on
+// whitespace would reject an install under `~/Token Tracker/`. But `serve` can
+// occur inside the install path too, so every boundary is tried and the one
+// whose prefix is actually a tracker entry wins; taking the first would parse
+// `~/my serve dir/bin/tracker.js` as `~/my`.
 function parseServeScriptPath(command) {
   const value = String(command || "").replaceAll("\0", " ").trim();
   if (!value) return null;
-  const match = NODE_SERVE_COMMAND_RE.exec(value);
-  if (!match || !NODE_EXECUTABLE_RE.test(match[1])) return null;
-  return match[2].replace(/^["']/, "").replace(/["']$/, "");
+
+  const executable = /^\S+(?=\s)/.exec(value);
+  if (!executable || !NODE_EXECUTABLE_RE.test(executable[0])) return null;
+  const rest = value.slice(executable[0].length);
+
+  SERVE_BOUNDARY_RE.lastIndex = 0;
+  for (let match = SERVE_BOUNDARY_RE.exec(rest); match; match = SERVE_BOUNDARY_RE.exec(rest)) {
+    const candidate = rest
+      .slice(0, match.index)
+      .trim()
+      .replace(/^["']/, "")
+      .replace(/["']$/, "");
+    if (TRACKER_ENTRY_RE.test(candidate)) return candidate;
+  }
+  return null;
 }
 
 // How far above the entry script a package.json may sit. `bin/tracker.js` puts
@@ -410,7 +427,7 @@ function isTrackerPackageRoot(dir) {
 // is a failed bind rather than a killed stranger.
 function isTokenTrackerServeCommand(command) {
   const script = parseServeScriptPath(command);
-  if (!script || !TRACKER_ENTRY_RE.test(script)) return false;
+  if (!script) return false;
 
   let resolved;
   try {

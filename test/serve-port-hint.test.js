@@ -178,6 +178,19 @@ test("serve-command parsing survives ps output quirks", () => {
     "/opt/app/tokentracker/bin/tracker.js",
   );
 
+  // `serve` can occur inside the install path as well as being the subcommand,
+  // so the delimiter is chosen by which prefix is actually a tracker entry.
+  // Taking the first boundary would parse this as "/home/u/my".
+  assert.equal(
+    parseServeScriptPath("node /home/u/my serve dir/bin/tracker.js serve --port 7680"),
+    "/home/u/my serve dir/bin/tracker.js",
+  );
+  // ...and equally, a later `serve` among the arguments must not win.
+  assert.equal(
+    parseServeScriptPath("node /opt/tt/bin/tracker.js serve --dir /my serve/x"),
+    "/opt/tt/bin/tracker.js",
+  );
+
   // Not a node `serve` invocation at all.
   assert.equal(parseServeScriptPath("python3 /usr/lib/tokentracker/bin/tracker.js serve"), null);
   assert.equal(parseServeScriptPath("node /usr/lib/tokentracker/bin/tracker.js sync"), null);
@@ -215,6 +228,17 @@ test("port cleanup only targets a real TokenTracker package", (t) => {
   const shim = path.join(shimDir, "tokentracker-cli");
   fs.symlinkSync(ours, shim);
   assert.equal(isTokenTrackerServeCommand(`node ${shim} serve`), true);
+
+  // The same, end to end: a genuine package under a directory containing
+  // " serve " must still be recognised, or its cleanup silently stops working.
+  const oddDir = path.join(root, "my serve dir");
+  fs.mkdirSync(path.join(oddDir, "bin"), { recursive: true });
+  fs.writeFileSync(path.join(oddDir, "bin", "tracker.js"), "");
+  fs.writeFileSync(path.join(oddDir, "package.json"), JSON.stringify({ name: NPM_PACKAGE_NAME }));
+  assert.equal(
+    isTokenTrackerServeCommand(`node ${path.join(oddDir, "bin", "tracker.js")} serve --port 7680`),
+    true,
+  );
 
   // A lookalike path that does not exist resolves to nothing, so it is never
   // signalled -- the case that made a bare path-shape check unsafe.
