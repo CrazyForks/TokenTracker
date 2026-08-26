@@ -334,9 +334,15 @@ function startNativeBackgroundSync({
   };
 }
 
+// `-sTCP:LISTEN` matters: `lsof -i tcp:<port>` matches any socket with that
+// port as its LOCAL *or* REMOTE endpoint, so without it a browser merely
+// connected to the dashboard is reported alongside the server that owns it.
 function findPidOnPort(port) {
   try {
-    const out = cp.execFileSync("lsof", ["-ti", `tcp:${port}`], { encoding: "utf8", timeout: 5000 });
+    const out = cp.execFileSync("lsof", ["-ti", `tcp:${port}`, "-sTCP:LISTEN"], {
+      encoding: "utf8",
+      timeout: 5000,
+    });
     const pids = out.trim().split(/\s+/).map(Number).filter((n) => Number.isFinite(n) && n > 0);
     return pids;
   } catch (_e) {
@@ -344,13 +350,54 @@ function findPidOnPort(port) {
   }
 }
 
+function readProcessCommand(pid) {
+  try {
+    return cp
+      .execFileSync("ps", ["-p", String(pid), "-o", "command="], {
+        encoding: "utf8",
+        timeout: 5000,
+      })
+      .trim();
+  } catch (_e) {
+    return "";
+  }
+}
+
+// A TokenTracker server is always `node <somewhere>/bin/<entry> serve`: either
+// the real script (npm global, embedded desktop runtime, repo checkout) or one
+// of the published npm bin shims, which `ps` reports by the shim path rather
+// than the resolved script. Requiring the `bin/` component keeps an unrelated
+// `node /srv/other/tracker.js serve` from looking like ours.
+const TRACKER_ENTRY_RE = new RegExp(
+  String.raw`(?:^|[\\/])\.?bin[\\/](?:tracker\.js|tokentracker-cli|tokentracker-tracker|tokentracker|tracker)$`,
+  "i",
+);
+// `ps -o command=` joins argv with spaces and drops all quoting, so the script
+// path is only unambiguous relative to the `serve` argument that follows it --
+// splitting on whitespace would reject an install under `~/Token Tracker/`.
+const NODE_SERVE_COMMAND_RE = /^(\S+)\s+(.+?)\s+serve(?:\s|$)/i;
+const NODE_EXECUTABLE_RE = /(?:^|[\\/])node(?:\.exe)?$/i;
+
+function isTokenTrackerServeCommand(command) {
+  const value = String(command || "").replaceAll("\0", " ").trim();
+  if (!value) return false;
+  const match = NODE_SERVE_COMMAND_RE.exec(value);
+  if (!match || !NODE_EXECUTABLE_RE.test(match[1])) return false;
+  const script = match[2].replace(/^["']/, "").replace(/["']$/, "");
+  return TRACKER_ENTRY_RE.test(script);
+}
+
 async function ensurePortFree(port) {
   const pids = findPidOnPort(port);
   if (pids.length === 0) return;
 
-  // Don't kill ourselves
+  // Only stop a verified TokenTracker server. `--port` may name a port owned by
+  // an unrelated application, and failing to bind is far safer than terminating
+  // a process merely because it happens to hold that port.
   const self = process.pid;
-  const targets = pids.filter((p) => p !== self);
+  const targets = pids.filter(
+    (pid) => pid !== self && isTokenTrackerServeCommand(readProcessCommand(pid)),
+  );
   if (targets.length === 0) return;
 
   process.stdout.write(`Stopping previous server on port ${port} (pid ${targets.join(", ")})...\n`);
@@ -366,8 +413,10 @@ async function ensurePortFree(port) {
     if (findPidOnPort(port).length === 0) return;
   }
 
-  // Force kill if still alive
+  // Re-check identity before escalating: the pid may have exited during the
+  // wait above and been recycled by an unrelated process.
   for (const pid of targets) {
+    if (!isTokenTrackerServeCommand(readProcessCommand(pid))) continue;
     try {
       process.kill(pid, "SIGKILL");
     } catch (_e) {}
@@ -538,7 +587,9 @@ module.exports = {
   listenOnAvailablePort,
   getLocalServerUrl,
   parseArgs,
+  ensurePortFree,
   isRunningUnderWsl,
+  isTokenTrackerServeCommand,
   resolveDefaultPort,
   shouldServeSpaFallback,
   startNativeBackgroundSync,

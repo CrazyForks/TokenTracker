@@ -1,10 +1,14 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 const http = require("node:http");
+const path = require("node:path");
 const { test } = require("node:test");
 
 const {
   buildPortInUseHint,
   isPortUnavailableError,
+  ensurePortFree,
+  isTokenTrackerServeCommand,
   listenOnAvailablePort,
   NPM_PACKAGE_NAME,
   parseArgs,
@@ -158,4 +162,90 @@ test("isRunningUnderWsl is false off Linux regardless of env", (t) => {
   mockPlatform(t, "darwin");
   assert.equal(isRunningUnderWsl({ WSL_DISTRO_NAME: "Ubuntu" }), false);
   assert.equal(resolveDefaultPort({ WSL_DISTRO_NAME: "Ubuntu" }), 7680);
+});
+
+test("port cleanup only targets a verified TokenTracker server", () => {
+  // `--port` may name a port owned by an unrelated application. Failing to
+  // bind is far safer than terminating a process that was never ours, so
+  // ensurePortFree identifies its target before signalling it.
+  const ours = [
+    "node /usr/lib/tokentracker/bin/tracker.js serve --port 7680",
+    "/opt/app/EmbeddedServer/node /opt/app/EmbeddedServer/tokentracker/bin/tracker.js serve --no-open",
+    // `ps -o command=` drops quoting, so the script path is only unambiguous
+    // relative to the `serve` argument that follows it.
+    "node /home/u/Token Tracker/bin/tracker.js serve",
+    // The published npm bin shims: ps reports the shim, not the resolved script.
+    "node /home/u/.local/bin/tokentracker-cli serve",
+  ];
+  for (const command of ours) {
+    assert.equal(isTokenTrackerServeCommand(command), true, command);
+  }
+
+  const notOurs = [
+    // Requiring the bin/ component keeps a lookalike path from matching.
+    "node /srv/other/tracker.js serve",
+    "node /usr/lib/tokentracker/bin/tracker.js.bak serve",
+    // Our own sync process is not a server holding the port.
+    "node /usr/lib/tokentracker/bin/tracker.js sync",
+    "python3 /usr/lib/tokentracker/bin/tracker.js serve",
+    // Whatever else may legitimately own the port.
+    "/usr/bin/postgres -D /var/lib/pgsql serve",
+    "nginx: worker process",
+    // ps prints nothing once the pid is gone; never treat that as a match.
+    "",
+  ];
+  for (const command of notOurs) {
+    assert.equal(isTokenTrackerServeCommand(command), false, command);
+  }
+});
+
+test("port scan is limited to listeners, not everything touching the port", () => {
+  // `lsof -i tcp:<port>` matches a socket whose LOCAL *or REMOTE* port matches,
+  // so without -sTCP:LISTEN a browser connected to the dashboard is reported
+  // alongside the server it is talking to.
+  const source = fs.readFileSync(path.join(__dirname, "..", "src", "commands", "serve.js"), "utf8");
+  assert.match(source, /"-sTCP:LISTEN"/);
+});
+
+// Proves ensurePortFree consults the identity check rather than merely owning
+// one: a unit test of isTokenTrackerServeCommand alone still passes if the
+// filter is deleted from the kill path.
+test("ensurePortFree leaves an unrelated listener running", async (t) => {
+  const cp = require("node:child_process");
+  const hasLsof = (() => {
+    try {
+      cp.execFileSync("lsof", ["-v"], { stdio: "ignore", timeout: 5000 });
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  })();
+  if (!hasLsof) return t.skip("ensurePortFree is a no-op without lsof");
+
+  // A separate process, because ensurePortFree skips its own pid for free.
+  const child = cp.spawn(
+    process.execPath,
+    [
+      "-e",
+      "const n=require('net');n.createServer(c=>c.on('error',()=>{}))" +
+        ".listen(0,'127.0.0.1',function(){process.stdout.write(String(this.address().port))});" +
+        "setInterval(()=>{},1000);",
+    ],
+    { stdio: ["ignore", "pipe", "ignore"] },
+  );
+  t.after(() => child.kill("SIGKILL"));
+
+  const port = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("listener never reported a port")), 10000);
+    child.stdout.once("data", (chunk) => {
+      clearTimeout(timer);
+      resolve(Number(String(chunk).trim()));
+    });
+  });
+  assert.ok(port > 0, "child should report its port");
+
+  await ensurePortFree(port);
+
+  assert.equal(child.exitCode, null, "an unrelated listener must survive port cleanup");
+  assert.equal(child.signalCode, null, "an unrelated listener must not be signalled");
 });
