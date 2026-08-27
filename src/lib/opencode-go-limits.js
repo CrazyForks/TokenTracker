@@ -266,6 +266,9 @@ async function resolveWorkspaceId(authCookie, fetchImpl, timeoutMs) {
         headers: postHeaders,
         body: "[]"
       });
+      if (response.status === 401 || response.status === 403) {
+        throw new Error("Unauthorized or forbidden (401/403)");
+      }
       text = await response.text();
       ids = parseWorkspaceIds(text);
     } catch (postErr) {
