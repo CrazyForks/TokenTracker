@@ -743,8 +743,7 @@ async function fetchOpencodeGoLimits({
       return { ...api, source: "api" };
     }
     if (api?.auth_error) {
-      const { auth_error, ...result } = api;
-      return result;
+      return { ...api, source: "api" };
     }
     if (!cfg) return api || { configured: true, error: "OpenCode Go unavailable" };
   }
