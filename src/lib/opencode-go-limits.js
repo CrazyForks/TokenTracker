@@ -649,7 +649,13 @@ async function scrapeOpencodeGoWeb({ cfg, fetchImpl, nowMs, timeoutMs }) {
     try {
       workspaceId = await resolveWorkspaceId(cfg.authCookie, fetchImpl, timeoutMs);
     } catch (err) {
-      return { configured: true, error: `Failed to resolve Workspace ID: ${sanitizeMessage(err?.message || err)}` };
+      const msg = sanitizeMessage(err?.message || err);
+      const isAuth = /401|403|Unauthorized or forbidden/i.test(msg);
+      return {
+        configured: true,
+        error: `Failed to resolve Workspace ID: ${msg}`,
+        ...(isAuth ? { auth_error: true } : {}),
+      };
     }
     if (!workspaceId) {
       return { configured: true, error: "Could not auto-resolve OpenCode Workspace ID from cookie. Please set OPENCODE_GO_WORKSPACE_ID manually." };

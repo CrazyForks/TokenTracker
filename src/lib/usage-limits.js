@@ -3368,11 +3368,15 @@ async function fetchUsageLimitsUncached({
   const opencodeGoIsAuthError =
     Boolean(opencodeGoRaw?.auth_error) ||
     (typeof opencodeGoRaw?.error === "string" &&
-      /Not signed in|auth cookie|Refresh the auth cookie/i.test(opencodeGoRaw.error));
+      /Not signed in|auth cookie|Refresh the auth cookie|Failed to resolve Workspace ID.*401|Failed to resolve Workspace ID.*403/i.test(
+        opencodeGoRaw.error,
+      ));
   let opencodeGo;
   if (opencodeGoRaw && opencodeGoRaw.configured === false) {
     opencodeGo = opencodeGoRaw;
   } else if (opencodeGoIsAuthError) {
+    opencodeGo = opencodeGoRaw;
+  } else if (opencodeGoRaw?.subscription_status === "inactive") {
     opencodeGo = opencodeGoRaw;
   } else if (opencodeGoRaw && !opencodeGoRaw.error && hasOpencodeGoWindow(opencodeGoRaw)) {
     opencodeGo = {
