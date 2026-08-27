@@ -1297,6 +1297,7 @@ final class StatusBarController: NSObject {
     // MARK: - Menu Actions
 
     @objc private func openPopover() {
+        popoverReshowAttempted = false
         // Small delay to let the menu dismiss before showing popover
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.togglePopover()
