@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv } from "vite";
 import os from "node:os";
+import { copyRegistryPlugin } from "./scripts/copy-registry-plugin.mjs";
 
 const COPY_REQUIRED_KEYS = [
   "landing.meta.title",
@@ -1264,7 +1265,13 @@ export default defineConfig(({ mode }) => {
   }
 
   return {
-    plugins: [react(), richLinkMetaPlugin(), routeSeoPagesPlugin(), localDataApiPlugin()],
+    plugins: [
+      copyRegistryPlugin(),
+      react(),
+      richLinkMetaPlugin(),
+      routeSeoPagesPlugin(),
+      localDataApiPlugin(),
+    ],
     ...(Object.keys(define).length ? { define } : {}),
     build: {
       rollupOptions: {
