@@ -4549,10 +4549,195 @@ function isZcodeNativeMessage(data) {
   );
 }
 
+const ZCODE_NATIVE_USAGE_COLUMNS = new Set([
+  "id",
+  "logical_request_id",
+  "attempt_index",
+  "session_id",
+  "provider_id",
+  "model_id",
+  "status",
+  "started_at",
+  "input_tokens",
+  "output_tokens",
+  "reasoning_tokens",
+  "cache_creation_input_tokens",
+  "cache_read_input_tokens",
+]);
+
+function detectZcodeNativeUsageLayout(dbPath, sqliteOptions = {}) {
+  if (!dbPath || !fssync.existsSync(dbPath)) return null;
+  let rows;
+  try {
+    rows = readSqliteJsonRows(
+      dbPath,
+      `SELECT 'model_usage' AS table_name, name FROM pragma_table_info('model_usage')
+       UNION ALL
+       SELECT 'session' AS table_name, name FROM pragma_table_info('session')`,
+      {
+        label: "ZCode",
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
+        ...sqliteOptions,
+        throwOnReadFailure: true,
+      },
+    );
+  } catch (_error) {
+    return null;
+  }
+  const modelUsageColumns = new Set(
+    rows
+      .filter((row) => !row?.table_name || row.table_name === "model_usage")
+      .map((row) => String(row?.name || "")),
+  );
+  if (![...ZCODE_NATIVE_USAGE_COLUMNS].every((name) => modelUsageColumns.has(name))) {
+    return null;
+  }
+  const sessionColumns = new Set(
+    rows
+      .filter((row) => row?.table_name === "session")
+      .map((row) => String(row?.name || "")),
+  );
+  return {
+    hasSessionDirectory: sessionColumns.has("id") && sessionColumns.has("directory"),
+  };
+}
+
+function hasZcodeNativeUsageSchema(dbPath, sqliteOptions = {}) {
+  if (!dbPath || !fssync.existsSync(dbPath)) return false;
+  let snapshot = null;
+  let effectiveDbPath = dbPath;
+  if (isUncPath(dbPath)) {
+    try {
+      snapshot = snapshotSqliteDb(dbPath);
+      effectiveDbPath = snapshot.path;
+    } catch (_error) {
+      // Fall through to the direct read: some UNC servers support SQLite's
+      // read-only locking semantics even when the WSL bridge does not.
+    }
+  }
+  try {
+    return detectZcodeNativeUsageLayout(effectiveDbPath, sqliteOptions) !== null;
+  } finally {
+    if (snapshot) snapshot.cleanup();
+  }
+}
+
+function buildZcodeNativeUsageSql({ hasSessionDirectory }) {
+  const directorySelect = hasSessionDirectory ? ", s.directory AS directory" : "";
+  const directoryJoin = hasSessionDirectory
+    ? " LEFT JOIN session AS s ON s.id = mu.session_id"
+    : "";
+  return `SELECT
+    mu.id,
+    mu.logical_request_id,
+    mu.attempt_index,
+    mu.session_id,
+    mu.provider_id,
+    mu.model_id,
+    mu.started_at,
+    mu.input_tokens,
+    mu.output_tokens,
+    mu.reasoning_tokens,
+    mu.cache_creation_input_tokens,
+    mu.cache_read_input_tokens
+    ${directorySelect}
+    FROM model_usage AS mu${directoryJoin}
+    WHERE mu.status = 'completed'
+      AND trim(mu.model_id) != ''
+      AND (
+        mu.input_tokens > 0 OR mu.output_tokens > 0 OR mu.reasoning_tokens > 0 OR
+        mu.cache_creation_input_tokens > 0 OR mu.cache_read_input_tokens > 0
+      )
+    ORDER BY mu.started_at ASC, mu.id ASC`;
+}
+
+function readZcodeNativeUsageMessages(dbPath, sqliteOptions = {}) {
+  let snapshot = null;
+  let effectiveDbPath = dbPath;
+  if (isUncPath(dbPath)) {
+    try {
+      snapshot = snapshotSqliteDb(dbPath);
+      effectiveDbPath = snapshot.path;
+    } catch (_error) {
+      // Preserve the existing direct-read fallback for transient snapshot
+      // failures and UNC implementations that support SQLite locking.
+    }
+  }
+
+  let rows;
+  try {
+    const layout = detectZcodeNativeUsageLayout(effectiveDbPath, sqliteOptions);
+    if (!layout) return null;
+    rows = readSqliteJsonRows(effectiveDbPath, buildZcodeNativeUsageSql(layout), {
+      label: "ZCode",
+      maxBuffer: 50 * 1024 * 1024,
+      timeout: 30_000,
+      ...sqliteOptions,
+      throwOnReadFailure: true,
+    });
+  } catch (_error) {
+    return null;
+  } finally {
+    if (snapshot) snapshot.cleanup();
+  }
+
+  const messages = [];
+  for (const row of rows) {
+    const providerID = String(row?.provider_id || "").trim();
+    const modelID = String(row?.model_id || "").trim();
+    const sessionID = String(row?.session_id || "").trim();
+    const logicalRequestId = String(row?.logical_request_id || "").trim();
+    const attemptIndex = toNonNegativeInt(row?.attempt_index);
+    const id = String(row?.id || "").trim() ||
+      (logicalRequestId ? `${logicalRequestId}#${attemptIndex}` : "");
+    const startedAt = coerceEpochMs(row?.started_at);
+    if (!providerID || !modelID || !sessionID || !id || !startedAt) continue;
+
+    // ZCode's persisted input/output columns are inclusive parents:
+    // cache read/write are subsets of input, and reasoning is a subset of
+    // output. TokenTracker stores those five columns disjointly, so split the
+    // subsets here before entering the shared OpenCode parser. This preserves
+    // sum(input + cache read + cache write + output + reasoning) without
+    // billing either subset twice.
+    const rawInput = toNonNegativeInt(row?.input_tokens);
+    const rawOutput = toNonNegativeInt(row?.output_tokens);
+    const cacheRead = toNonNegativeInt(row?.cache_read_input_tokens);
+    const cacheWrite = toNonNegativeInt(row?.cache_creation_input_tokens);
+    const reasoning = toNonNegativeInt(row?.reasoning_tokens);
+
+    const data = {
+      id,
+      sessionID,
+      role: "assistant",
+      providerID,
+      modelID,
+      time: { created: startedAt, completed: startedAt },
+      tokens: {
+        input: Math.max(0, rawInput - cacheRead - cacheWrite),
+        output: Math.max(0, rawOutput - reasoning),
+        reasoning,
+        cache: {
+          read: cacheRead,
+          write: cacheWrite,
+        },
+      },
+    };
+    if (typeof row?.directory === "string" && row.directory.trim()) {
+      data.path = { cwd: row.directory.trim() };
+    }
+    if (!isZcodeNativeMessage(data)) continue;
+    messages.push({ id, sessionID, timeUpdated: startedAt, data });
+  }
+  return messages;
+}
+
 // Read only genuine ZCode assistant messages (its own GLM models via Z.ai /
 // BigModel), dropping any bundled sub-agent turns. See isZcodeNativeMessage.
 function readZcodeDbMessages(dbPath, sqliteOptions = {}) {
   if (!dbPath || !fssync.existsSync(dbPath)) return [];
+  const nativeMessages = readZcodeNativeUsageMessages(dbPath, sqliteOptions);
+  if (nativeMessages !== null) return nativeMessages;
   const all = readOpencodeDbMessages(dbPath, sqliteOptions);
   return all.filter((m) => isZcodeNativeMessage(m.data));
 }
@@ -18052,6 +18237,7 @@ module.exports = {
   readOpencodeDbMessages,
   readMimoDbMessages,
   readZcodeDbMessages,
+  hasZcodeNativeUsageSchema,
   resolveQoderDbPath,
   resolveQoderDbPaths,
   resolveQoderCnDbPaths,

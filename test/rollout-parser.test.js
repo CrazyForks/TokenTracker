@@ -3145,6 +3145,221 @@ function fakeZcodeSqliteOptions(dbPath, messages) {
   };
 }
 
+function fakeNativeZcodeSqliteOptions(dbPath, usageRows, { completeSchema = true } = {}) {
+  const requiredColumns = [
+    "id", "logical_request_id", "attempt_index", "session_id", "provider_id", "model_id",
+    "status", "started_at", "input_tokens", "output_tokens", "reasoning_tokens",
+    "cache_creation_input_tokens", "cache_read_input_tokens",
+  ];
+  return {
+    execFileSync() {
+      throw new Error("spawn sqlite3 ENOENT");
+    },
+    requireFn(name) {
+      assert.equal(name, "node:sqlite");
+      return {
+        DatabaseSync: class FakeDatabaseSync {
+          constructor(actualDbPath, options) {
+            assert.equal(actualDbPath, dbPath);
+            assert.deepEqual(options, { readOnly: true });
+          }
+          prepare(sql) {
+            return {
+              all() {
+                if (sql.includes("pragma_table_info('model_usage')")) {
+                  const columns = completeSchema ? requiredColumns : requiredColumns.filter((c) => c !== "reasoning_tokens");
+                  return [
+                    ...columns.map((name) => ({ table_name: "model_usage", name })),
+                    { table_name: "session", name: "id" },
+                    { table_name: "session", name: "directory" },
+                  ];
+                }
+                if (/FROM model_usage/i.test(sql)) return usageRows;
+                if (/session_message/i.test(sql)) return [{ hasRows: 0, sessionTable: "session" }];
+                if (/FROM message/i.test(sql)) return [];
+                throw new Error(`unexpected SQL: ${sql}`);
+              },
+            };
+          }
+          close() {}
+        },
+      };
+    },
+    stderr: { write() {} },
+  };
+}
+
+test("readZcodeDbMessages prefers complete native model_usage rows and keeps token columns", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-zcode-native-"));
+  try {
+    const dbPath = path.join(tmp, "db.sqlite");
+    await fs.writeFile(dbPath, "", "utf8");
+    const rows = readZcodeDbMessages(dbPath, fakeNativeZcodeSqliteOptions(dbPath, [
+      {
+        id: "usage-1", logical_request_id: "logical-1", attempt_index: 0,
+        session_id: "session-1", provider_id: "builtin:zai-start-plan", model_id: "GLM-5.2",
+        started_at: Date.parse("2026-06-15T09:00:00.000Z"), input_tokens: 100,
+        output_tokens: 20, reasoning_tokens: 5, cache_creation_input_tokens: 10,
+        cache_read_input_tokens: 30, directory: "/work/project",
+      },
+      {
+        id: "usage-subagent", logical_request_id: "logical-2", attempt_index: 0,
+        session_id: "session-2", provider_id: "anthropic", model_id: "claude-opus-4-8",
+        started_at: Date.parse("2026-06-15T09:01:00.000Z"), input_tokens: 999,
+        output_tokens: 99, reasoning_tokens: 0, cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0, directory: "/work/project",
+      },
+    ]));
+
+    assert.equal(rows.length, 1, "bundled Claude/Codex/Gemini providers remain excluded");
+    assert.equal(rows[0].id, "usage-1");
+    assert.equal(rows[0].sessionID, "session-1");
+    assert.equal(rows[0].data.modelID, "GLM-5.2");
+    assert.equal(rows[0].data.providerID, "builtin:zai-start-plan");
+    assert.deepEqual(rows[0].data.tokens, {
+      input: 60,
+      output: 15,
+      reasoning: 5,
+      cache: { read: 30, write: 10 },
+    });
+    assert.equal(rows[0].data.path.cwd, "/work/project");
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("readZcodeDbMessages falls back when model_usage schema is incomplete", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-zcode-native-fallback-"));
+  try {
+    const dbPath = path.join(tmp, "db.sqlite");
+    await fs.writeFile(dbPath, "", "utf8");
+    const rows = readZcodeDbMessages(
+      dbPath,
+      fakeNativeZcodeSqliteOptions(dbPath, [], { completeSchema: false }),
+    );
+    assert.deepEqual(rows, []);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("readZcodeDbMessages queries a real native schema and ignores unfinished requests", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-zcode-native-sql-"));
+  try {
+    const dbPath = path.join(tmp, "db.sqlite");
+    runSqliteWrite(dbPath, `
+      CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT NOT NULL);
+      CREATE TABLE model_usage (
+        id TEXT PRIMARY KEY,
+        logical_request_id TEXT NOT NULL,
+        attempt_index INTEGER NOT NULL DEFAULT 0,
+        session_id TEXT NOT NULL,
+        provider_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_input_tokens INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO session VALUES ('session-real', '/real/project');
+      INSERT INTO model_usage VALUES
+        ('done', 'logical-done', 0, 'session-real', 'builtin:zai-start-plan', 'GLM-5.2',
+         'completed', 1781514000000, 101, 21, 6, 11, 31),
+        ('running', 'logical-running', 0, 'session-real', 'builtin:zai-start-plan', 'GLM-5.2',
+         'running', 1781514060000, 999, 99, 0, 0, 0);
+    `);
+
+    const rows = readZcodeDbMessages(dbPath);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].id, "done");
+    assert.equal(rows[0].data.path.cwd, "/real/project");
+    assert.deepEqual(rows[0].data.tokens, {
+      input: 59,
+      output: 15,
+      reasoning: 6,
+      cache: { read: 31, write: 11 },
+    });
+
+    const queuePath = path.join(tmp, "queue.jsonl");
+    const cursors = { version: 1, files: {}, updatedAt: null };
+    const first = await parseOpencodeDbIncremental({
+      dbMessages: rows,
+      dbPath,
+      cursors,
+      queuePath,
+      source: "zcode",
+      cursorKey: "zcode",
+    });
+    assert.equal(first.bucketsQueued, 1);
+    const [queued] = await readJsonLines(queuePath);
+    assert.equal(queued.source, "zcode");
+    assert.equal(queued.input_tokens, 59);
+    assert.equal(queued.output_tokens, 15);
+    assert.equal(queued.reasoning_output_tokens, 6);
+    assert.equal(queued.cached_input_tokens, 31);
+    assert.equal(queued.cache_creation_input_tokens, 11);
+    assert.equal(queued.total_tokens, 122);
+
+    const beforeSecondRun = await fs.readFile(queuePath, "utf8");
+    const second = await parseOpencodeDbIncremental({
+      dbMessages: readZcodeDbMessages(dbPath),
+      dbPath,
+      cursors,
+      queuePath,
+      source: "zcode",
+      cursorKey: "zcode",
+    });
+    assert.equal(second.bucketsQueued, 0);
+    assert.equal(await fs.readFile(queuePath, "utf8"), beforeSecondRun);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test("readZcodeDbMessages snapshots native model_usage DBs on UNC paths", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-zcode-native-unc-"));
+  try {
+    const dbPath = path.join(tmp, "db.sqlite");
+    runSqliteWrite(dbPath, `
+      CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT NOT NULL);
+      CREATE TABLE model_usage (
+        id TEXT PRIMARY KEY,
+        logical_request_id TEXT NOT NULL,
+        attempt_index INTEGER NOT NULL DEFAULT 0,
+        session_id TEXT NOT NULL,
+        provider_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_input_tokens INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO session VALUES ('session-unc', '/unc/project');
+      INSERT INTO model_usage VALUES
+        ('usage-unc', 'logical-unc', 0, 'session-unc', 'builtin:zai-start-plan', 'GLM-5.2',
+         'completed', 1781514000000, 80, 20, 5, 10, 20);
+    `);
+    const uncStyle = process.platform === "win32" ? `\\\\?\\${dbPath}` : `/${dbPath}`;
+    const rows = readZcodeDbMessages(uncStyle);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].id, "usage-unc");
+    assert.deepEqual(rows[0].data.tokens, {
+      input: 50,
+      output: 15,
+      reasoning: 5,
+      cache: { read: 20, write: 10 },
+    });
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("readZcodeDbMessages keeps Z.ai/BigModel + third-party rows, drops bundled sub-agent turns", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-zcode-db-"));
   try {
