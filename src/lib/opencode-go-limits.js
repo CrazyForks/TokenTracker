@@ -266,6 +266,9 @@ async function resolveWorkspaceId(authCookie, fetchImpl, timeoutMs) {
         headers: postHeaders,
         body: "[]"
       });
+      if (response.status === 401 || response.status === 403) {
+        throw new Error("Unauthorized or forbidden (401/403)");
+      }
       text = await response.text();
       ids = parseWorkspaceIds(text);
     } catch (postErr) {
@@ -649,7 +652,13 @@ async function scrapeOpencodeGoWeb({ cfg, fetchImpl, nowMs, timeoutMs }) {
     try {
       workspaceId = await resolveWorkspaceId(cfg.authCookie, fetchImpl, timeoutMs);
     } catch (err) {
-      return { configured: true, error: `Failed to resolve Workspace ID: ${sanitizeMessage(err?.message || err)}` };
+      const msg = sanitizeMessage(err?.message || err);
+      const isAuth = /401|403|Unauthorized or forbidden/i.test(msg);
+      return {
+        configured: true,
+        error: `Failed to resolve Workspace ID: ${msg}`,
+        ...(isAuth ? { auth_error: true } : {}),
+      };
     }
     if (!workspaceId) {
       return { configured: true, error: "Could not auto-resolve OpenCode Workspace ID from cookie. Please set OPENCODE_GO_WORKSPACE_ID manually." };
@@ -743,8 +752,7 @@ async function fetchOpencodeGoLimits({
       return { ...api, source: "api" };
     }
     if (api?.auth_error) {
-      const { auth_error, ...result } = api;
-      return result;
+      return { ...api, source: "api" };
     }
     if (!cfg) return api || { configured: true, error: "OpenCode Go unavailable" };
   }
