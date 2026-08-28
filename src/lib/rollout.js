@@ -4422,8 +4422,7 @@ function readOpencodeDbMessages(dbPath, sqliteOptions = {}) {
   // by the existing cursor-key + #426 fingerprint dedup in
   // parseOpencodeDbIncremental, so unioning here is safe — the downstream
   // parser collapses identical sessionID|messageID pairs before bucketing.
-  const collectRows = (rows, isV2) => {
-    const out = [];
+  const appendRows = (rows, isV2, out) => {
     for (const row of rows) {
       if (!row || typeof row.data !== "string") continue;
       let data;
@@ -4450,7 +4449,6 @@ function readOpencodeDbMessages(dbPath, sqliteOptions = {}) {
         data,
       });
     }
-    return out;
   };
 
   const readGeneration = (sql) => {
@@ -4477,11 +4475,11 @@ function readOpencodeDbMessages(dbPath, sqliteOptions = {}) {
     const out = [];
 
     const rows1 = readGeneration(OPENCODE_DB_V1_MESSAGE_SQL);
-    if (rows1) out.push(...collectRows(rows1, false));
+    if (rows1) appendRows(rows1, false, out);
 
     if (probe?.hasRows) {
       const rows2 = readGeneration(buildV2Sql(probe.sessionTable));
-      if (rows2) out.push(...collectRows(rows2, true));
+      if (rows2) appendRows(rows2, true, out);
     }
 
     return out;

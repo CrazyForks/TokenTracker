@@ -185,6 +185,30 @@ const skipTests = !sqlite
 // without throwing. node:test allows a conditional describe via function
 // evaluation, but the simplest approach is to guard the test() calls.
 
+test("readOpencodeDbMessages handles histories larger than the JavaScript argument limit", async () => {
+  await withTmp(async (tmp) => {
+    const dbPath = path.join(tmp, "opencode.db");
+    await fs.writeFile(dbPath, "", "utf8");
+    const data = JSON.stringify(v1AssistantMessage({ id: "msg", sessionID: "ses" }));
+    const largeHistory = Array.from({ length: 150_000 }, (_, index) => ({
+      id: `msg_${index}`,
+      session_id: "ses",
+      time_updated: index,
+      data,
+    }));
+    const sqliteOptions = {
+      execFileSync(_command, args) {
+        return JSON.stringify(args.at(-1).includes("sqlite_master")
+          ? [{ hasRows: 0, sessionTable: "session" }]
+          : largeHistory);
+      },
+    };
+
+    const rows = readOpencodeDbMessages(dbPath, sqliteOptions);
+    assert.equal(rows.length, largeHistory.length);
+  });
+});
+
 if (sqlite) {
   test("readOpencodeDbMessages reads the opencode2 session_message schema (type B: session_v2)", async () => {
     await withTmp(async (tmp) => {
