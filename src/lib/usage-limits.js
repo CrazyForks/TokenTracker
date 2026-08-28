@@ -22,8 +22,10 @@ const {
 } = require("./codex-token-refresh");
 const {
   isCursorInstalled,
-  extractCursorSessionToken,
+  extractCursorAuth,
   fetchCursorUsageSummary,
+  fetchCursorSandAccessStatus,
+  fetchCursorSandUsageStatus,
 } = require("./cursor-config");
 const { fetchGrokLimits } = require("./grok-limits");
 const { fetchZcodeLimits } = require("./zcode-limits");
@@ -678,20 +680,48 @@ function normalizeCursorUsageSummary(body) {
   };
 }
 
+function normalizeCursorSandUsageStatus(body, { eligible = true } = {}) {
+  if (!eligible || !body || body.includedLimitZero === true) return null;
+  const usedPercent = clampPercent(body.usagePercent);
+  const resetAt = typeof body.nextResetAt === "string" ? body.nextResetAt : null;
+  if (usedPercent === null || !resetAt || !Number.isFinite(Date.parse(resetAt))) return null;
+
+  const periodStart = typeof body.currentPeriodStart === "string" ? body.currentPeriodStart : null;
+  const periodStartMs = Date.parse(periodStart || "");
+  const resetAtMs = Date.parse(resetAt);
+  const windowSeconds = Number.isFinite(periodStartMs) && resetAtMs > periodStartMs
+    ? Math.round((resetAtMs - periodStartMs) / 1000)
+    : null;
+  return buildWindow({ usedPercent, resetAt, windowSeconds });
+}
+
 async function fetchCursorLimits({ home, fetchImpl = fetch } = {}) {
   if (!isCursorInstalled({ home })) {
     return { configured: false };
   }
-  const auth = extractCursorSessionToken({ home });
-  if (!auth?.cookie) {
+  const auth = extractCursorAuth({ home });
+  if (!auth?.cookie || !auth?.accessToken) {
     return { configured: false };
   }
   try {
-    const body = await fetchCursorUsageSummary({ cookie: auth.cookie, fetchImpl });
+    // The web summary and Grok Bot (internally "Sand") RPCs are independent.
+    // Fetch them concurrently so the fourth window does not add two network
+    // round-trips to every LIMITS refresh. Sand failures are intentionally
+    // isolated: older Cursor accounts/servers must keep their existing three
+    // monthly windows instead of turning the whole provider red.
+    const [body, sandAccessResult, sandUsageResult] = await Promise.all([
+      fetchCursorUsageSummary({ cookie: auth.cookie, fetchImpl }),
+      fetchCursorSandAccessStatus({ accessToken: auth.accessToken, fetchImpl }).catch(() => null),
+      fetchCursorSandUsageStatus({ accessToken: auth.accessToken, fetchImpl }).catch(() => null),
+    ]);
+    const grokBotWindow = normalizeCursorSandUsageStatus(sandUsageResult, {
+      eligible: sandAccessResult?.granted === true,
+    });
     return {
       configured: true,
       error: null,
       ...normalizeCursorUsageSummary(body),
+      quaternary_window: grokBotWindow,
     };
   } catch (error) {
     return {
@@ -3454,6 +3484,7 @@ module.exports = {
   extractGeminiOauthClientCredentials,
   loadKimiCredentials,
   normalizeCursorUsageSummary,
+  normalizeCursorSandUsageStatus,
   normalizeGeminiQuotaResponse,
   normalizeKimiUsageResponse,
   parseKiroUsageOutput,

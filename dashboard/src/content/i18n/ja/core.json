@@ -120,6 +120,7 @@
   "limits.panel.title": "使用制限",
   "limits.panel.mode_separator": " · ",
   "limits.label.cursor_plan": "プラン",
+  "limits.label.cursor_grok_bot": "Grokボット",
   "limits.label.cursor_auto": "自動",
   "limits.label.cursor_api": "API",
   "limits.label.kiro_month": "月間",

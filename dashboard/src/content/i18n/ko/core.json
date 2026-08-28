@@ -120,6 +120,7 @@
   "limits.panel.title": "사용 한도",
   "limits.panel.mode_separator": " · ",
   "limits.label.cursor_plan": "플랜",
+  "limits.label.cursor_grok_bot": "Grok 봇",
   "limits.label.cursor_auto": "자동",
   "limits.label.cursor_api": "API",
   "limits.label.kiro_month": "월간",

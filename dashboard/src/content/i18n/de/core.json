@@ -102,6 +102,7 @@
   "limits.panel.title": "Nutzungslimits",
   "limits.panel.mode_separator": " · ",
   "limits.label.cursor_plan": "Plan",
+  "limits.label.cursor_grok_bot": "Grok-Bot",
   "limits.label.cursor_auto": "Auto",
   "limits.label.cursor_api": "API",
   "limits.label.kiro_month": "Monatlich",

@@ -260,6 +260,11 @@ describe("UsageLimitsPanel", () => {
             reset_at: "2026-09-04T03:32:21.000Z",
             limit_window_seconds: 31 * 24 * 60 * 60,
           },
+          quaternary_window: {
+            used_percent: 0,
+            reset_at: "2026-08-31T10:37:44.547Z",
+            limit_window_seconds: 407741,
+          },
         }}
         order={["cursor"]}
       />,
@@ -267,6 +272,8 @@ describe("UsageLimitsPanel", () => {
 
     const group = screen.getByText("Cursor").closest("[role='button']");
     expect(group).not.toBeNull();
+    expect(within(group).getByText(copy("limits.label.cursor_grok_bot"))).toBeInTheDocument();
+    expect(within(group).getByText("0%")).toBeInTheDocument();
     expect(group.querySelectorAll("div.absolute.top-0.h-full")).toHaveLength(2);
     fireEvent.click(group);
     expect(within(group).getByText(copy("limits.explain.body"))).toBeInTheDocument();

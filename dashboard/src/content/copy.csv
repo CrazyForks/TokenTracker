@@ -731,6 +731,7 @@ limits.panel.mode_separator,ui,LimitsPage,UsageLimitsPanel,title_separator," · 
 limits.label.cursor_plan,ui,LimitsPage,UsageLimitsPanel,cursor_plan,"Plan",,active
 limits.label.cursor_auto,ui,LimitsPage,UsageLimitsPanel,cursor_auto,"Auto",,active
 limits.label.cursor_api,ui,LimitsPage,UsageLimitsPanel,cursor_api,"API",,active
+limits.label.cursor_grok_bot,ui,LimitsPage,UsageLimitsPanel,cursor_grok_bot,"Grok Bot",,active
 limits.label.kiro_month,ui,LimitsPage,UsageLimitsPanel,kiro_month,"Month",,active
 limits.label.kiro_bonus,ui,LimitsPage,UsageLimitsPanel,kiro_bonus,"Bonus",,active
 limits.label.kiro_tracked_credits,ui,LimitsPage,UsageLimitsPanel,kiro_tracked_credits,"Local usage: {{credits}} credits · {{count}} turns",,active

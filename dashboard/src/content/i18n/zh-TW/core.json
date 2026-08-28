@@ -120,6 +120,7 @@
   "limits.panel.title": "使用限制",
   "limits.panel.mode_separator": " · ",
   "limits.label.cursor_plan": "套餐",
+  "limits.label.cursor_grok_bot": "Grok 機器人",
   "limits.label.cursor_auto": "自動",
   "limits.label.cursor_api": "API",
   "limits.label.kiro_month": "月度",

@@ -12,6 +12,7 @@ const {
   normalizePlanLabel,
   loadKimiCredentials,
   normalizeCursorUsageSummary,
+  normalizeCursorSandUsageStatus,
   normalizeGeminiQuotaResponse,
   normalizeKimiUsageResponse,
   parseKiroUsageOutput,
@@ -2663,6 +2664,45 @@ describe("normalizeCursorUsageSummary", () => {
 
     assert.ok(result.primary_window.used_percent > 0);
     assert.ok(result.primary_window.used_percent < 1);
+  });
+});
+
+describe("normalizeCursorSandUsageStatus", () => {
+  it("maps the official Grok Bot period to an independent exact-duration window", () => {
+    const result = normalizeCursorSandUsageStatus({
+      currentPeriodStart: "2026-08-26T17:22:03.913Z",
+      nextResetAt: "2026-08-31T10:37:44.547Z",
+      usagePercent: 0,
+      includedLimitZero: false,
+      hasNonZeroIncludedLimit: true,
+    });
+
+    assert.deepEqual(result, {
+      used_percent: 0,
+      reset_at: "2026-08-31T10:37:44.547Z",
+      limit_window_seconds: 407741,
+    });
+  });
+
+  it("hides Grok Bot for ineligible accounts", () => {
+    assert.equal(normalizeCursorSandUsageStatus({
+      currentPeriodStart: "2026-08-25T00:00:00.000Z",
+      nextResetAt: "2026-09-01T00:00:00.000Z",
+      usagePercent: 10,
+    }, { eligible: false }), null);
+  });
+
+  it("hides zero-limit and malformed responses without fabricating a quota", () => {
+    assert.equal(normalizeCursorSandUsageStatus({
+      nextResetAt: "2026-09-01T00:00:00.000Z",
+      usagePercent: 10,
+      includedLimitZero: true,
+    }), null);
+    assert.equal(normalizeCursorSandUsageStatus({ usagePercent: 10 }), null);
+    assert.equal(normalizeCursorSandUsageStatus({
+      nextResetAt: "2026-09-01T00:00:00.000Z",
+      usagePercent: "unknown",
+    }), null);
   });
 });
 

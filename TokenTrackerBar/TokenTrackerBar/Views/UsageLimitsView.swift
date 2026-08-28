@@ -321,6 +321,14 @@ struct UsageLimitsView: View {
                 iso: w.resetAt
             ))
         }
+        if let w = c.quaternaryWindow {
+            s.append(makeSpec(
+                Strings.cursorGrokBotLabel,
+                w.usedPercent,
+                windowSeconds: w.limitWindowSeconds,
+                iso: w.resetAt
+            ))
+        }
         return s
     }
 
