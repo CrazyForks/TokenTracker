@@ -26,6 +26,7 @@ const {
   listGeminiSessionFiles,
   listOpencodeMessageFiles,
   readOpencodeDbMessages,
+  readOpencodeDbMessagesIncremental,
   readMimoDbMessages,
   readZcodeDbMessages,
   hasZcodeNativeUsageSchema,
@@ -1164,11 +1165,15 @@ async function cmdSync(argv, context = {}) {
         let dbResult = { messagesProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
         if (dbDir) {
           const dbPath = path.join(dbDir, "opencode.db");
-          const dbMessages = readOpencodeDbMessages(dbPath);
-          if (dbMessages.length > 0) {
+          const dbRead = readOpencodeDbMessagesIncremental(
+            dbPath,
+            cursors?.opencode?.dbCursor,
+          );
+          if (dbRead.messages.length > 0 || dbRead.cursor) {
             dbResult = await parseOpencodeDbIncremental({
               ...options,
-              dbMessages,
+              dbMessages: dbRead.messages,
+              dbCursor: dbRead.cursor,
               dbPath,
             });
           }

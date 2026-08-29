@@ -3285,6 +3285,7 @@ function normalizeOpencodeState(raw) {
   const messages = state.messages && typeof state.messages === "object" ? state.messages : {};
   return {
     messages,
+    dbCursor: state.dbCursor && typeof state.dbCursor === "object" ? state.dbCursor : null,
     updatedAt: typeof state.updatedAt === "string" ? state.updatedAt : null,
   };
 }
@@ -3362,13 +3363,20 @@ function deriveOpencodeMessageFingerprint({ msg, totals, source }) {
 // Rebuilt per parse run. Pre-#426 entries are fingerprinted as they are read;
 // the first claims ownership and later cross-session matches are retracted from
 // persisted buckets once. Tombstoned copies never claim ownership themselves.
-function buildOpencodeFingerprintIndex(messageIndex) {
+function buildOpencodeFingerprintIndex(messageIndex, wantedFingerprints = null) {
   const byFingerprint = new Map();
   if (!messageIndex || typeof messageIndex !== "object") return byFingerprint;
-  for (const [key, entry] of Object.entries(messageIndex)) {
+  for (const key in messageIndex) {
+    const entry = messageIndex[key];
     if (entry?.dedupedForkCopy === true) continue;
     const fingerprint = entry && typeof entry.fingerprint === "string" ? entry.fingerprint : null;
-    if (fingerprint && !byFingerprint.has(fingerprint)) byFingerprint.set(fingerprint, key);
+    if (
+      fingerprint &&
+      (!wantedFingerprints || wantedFingerprints.has(fingerprint)) &&
+      !byFingerprint.has(fingerprint)
+    ) {
+      byFingerprint.set(fingerprint, key);
+    }
   }
   return byFingerprint;
 }
@@ -3393,6 +3401,52 @@ function isOpencodeForkCopy(fingerprintIndex, fingerprint, messageKey) {
   return ownerSession !== session;
 }
 
+function normalizeOpencodeAttribution(raw) {
+  if (typeof raw === "string") {
+    const [bucketStart = "", model = "", projectKey = "", projectRef = ""] = raw.split("\t");
+    if (!bucketStart || !model) return null;
+    return {
+      bucketStart,
+      model,
+      projectKey: projectKey || null,
+      projectRef: projectRef || null,
+    };
+  }
+  if (!raw || typeof raw !== "object") return null;
+  const bucketStart = typeof raw.bucketStart === "string" ? raw.bucketStart : "";
+  const model = typeof raw.model === "string" ? raw.model : "";
+  if (!bucketStart || !model) return null;
+  return {
+    bucketStart,
+    model,
+    projectKey: typeof raw.projectKey === "string" ? raw.projectKey : null,
+    projectRef: typeof raw.projectRef === "string" ? raw.projectRef : null,
+  };
+}
+
+function encodeOpencodeAttribution(raw) {
+  const attribution = normalizeOpencodeAttribution(raw);
+  if (!attribution) return null;
+  return [
+    attribution.bucketStart,
+    attribution.model,
+    attribution.projectKey || "",
+    attribution.projectRef || "",
+  ].join("\t");
+}
+
+function sameOpencodeAttribution(a, b) {
+  const left = normalizeOpencodeAttribution(a);
+  const right = normalizeOpencodeAttribution(b);
+  if (!left || !right) return left === right;
+  return (
+    left.bucketStart === right.bucketStart &&
+    left.model === right.model &&
+    left.projectKey === right.projectKey &&
+    left.projectRef === right.projectRef
+  );
+}
+
 // Persist a message's snapshot + fingerprint and claim the fingerprint for it.
 // Writes only when something actually changed so a steady-state sync leaves the
 // cursor untouched. A falsy `fingerprint` means "unknown" and preserves whatever
@@ -3404,6 +3458,7 @@ function recordOpencodeMessage({
   messageKey,
   totals,
   fingerprint,
+  attribution,
   dedupedForkCopy = false,
 }) {
   if (!messageIndex || !messageKey) return;
@@ -3411,10 +3466,13 @@ function recordOpencodeMessage({
   const prevTotals = prev && typeof prev.lastTotals === "object" ? prev.lastTotals : null;
   const prevFingerprint = prev && typeof prev.fingerprint === "string" ? prev.fingerprint : null;
   const nextFingerprint = fingerprint || prevFingerprint;
+  const prevAttribution = normalizeOpencodeAttribution(prev?.attribution);
+  const nextAttribution = normalizeOpencodeAttribution(attribution) || prevAttribution;
   const prevDeduped = prev?.dedupedForkCopy === true;
   if (
     sameGeminiTotals(totals, prevTotals) &&
     prevFingerprint === nextFingerprint &&
+    sameOpencodeAttribution(prevAttribution, nextAttribution) &&
     prevDeduped === Boolean(dedupedForkCopy)
   ) return;
 
@@ -3425,6 +3483,7 @@ function recordOpencodeMessage({
   }
   const entry = { lastTotals: totals, updatedAt: new Date().toISOString() };
   if (nextFingerprint) entry.fingerprint = nextFingerprint;
+  if (nextAttribution) entry.attribution = encodeOpencodeAttribution(nextAttribution);
   if (dedupedForkCopy) entry.dedupedForkCopy = true;
   messageIndex[messageKey] = entry;
   if (
@@ -3437,8 +3496,45 @@ function recordOpencodeMessage({
   }
 }
 
+function subtractCountedOpencodeMessage({
+  attribution,
+  totals,
+  source,
+  hourlyState,
+  touchedBuckets,
+  projectState,
+  projectTouchedBuckets,
+}) {
+  const countedAt = normalizeOpencodeAttribution(attribution);
+  if (!countedAt) return false;
+  const counted = { ...totals, conversation_count: 1 };
+  const bucket = getHourlyBucket(
+    hourlyState,
+    source,
+    countedAt.model,
+    countedAt.bucketStart,
+  );
+  subtractTotals(bucket.totals, counted);
+  touchedBuckets.add(bucketKey(source, countedAt.model, countedAt.bucketStart));
+  if (countedAt.projectKey && projectState && projectTouchedBuckets) {
+    const projectBucket = getProjectBucket(
+      projectState,
+      countedAt.projectKey,
+      source,
+      countedAt.bucketStart,
+      countedAt.projectRef,
+    );
+    subtractTotals(projectBucket.totals, counted);
+    projectTouchedBuckets.add(
+      projectBucketKey(countedAt.projectKey, source, countedAt.bucketStart),
+    );
+  }
+  return true;
+}
+
 function repairCountedOpencodeForkCopy({
   msg,
+  attribution,
   totals,
   source,
   hourlyState,
@@ -3448,28 +3544,29 @@ function repairCountedOpencodeForkCopy({
   projectRef,
   projectKey,
 }) {
-  const timestampMs = coerceEpochMs(msg?.time?.completed) || coerceEpochMs(msg?.time?.created);
-  if (!timestampMs) return false;
-  const bucketStart = toUtcHalfHourStart(new Date(timestampMs).toISOString());
-  if (!bucketStart) return false;
-  const { modelId: repairModelId } = normalizeOpencodeModelFields(msg);
-  const model = repairModelId || DEFAULT_MODEL;
-  const counted = { ...totals, conversation_count: 1 };
-  const bucket = getHourlyBucket(hourlyState, source, model, bucketStart);
-  subtractTotals(bucket.totals, counted);
-  touchedBuckets.add(bucketKey(source, model, bucketStart));
-  if (projectKey && projectState && projectTouchedBuckets) {
-    const projectBucket = getProjectBucket(
-      projectState,
-      projectKey,
-      source,
+  let countedAt = normalizeOpencodeAttribution(attribution);
+  if (!countedAt) {
+    const timestampMs = coerceEpochMs(msg?.time?.completed) || coerceEpochMs(msg?.time?.created);
+    if (!timestampMs) return false;
+    const bucketStart = toUtcHalfHourStart(new Date(timestampMs).toISOString());
+    if (!bucketStart) return false;
+    const { modelId: repairModelId } = normalizeOpencodeModelFields(msg);
+    countedAt = {
       bucketStart,
+      model: repairModelId || DEFAULT_MODEL,
+      projectKey,
       projectRef,
-    );
-    subtractTotals(projectBucket.totals, counted);
-    projectTouchedBuckets.add(projectBucketKey(projectKey, source, bucketStart));
+    };
   }
-  return true;
+  return subtractCountedOpencodeMessage({
+    attribution: countedAt,
+    totals,
+    source,
+    hourlyState,
+    touchedBuckets,
+    projectState,
+    projectTouchedBuckets,
+  });
 }
 
 function getHourlyBucket(state, source, model, hourStart) {
@@ -4185,10 +4282,6 @@ function diffGeminiTotals(current, previous) {
   const totalReset = (current.total_tokens || 0) < (previous.total_tokens || 0);
   if (totalReset) return current;
 
-  // Must include cache_creation_input_tokens in both the equality check and
-  // the delta — OpenCode routes through this diff and its cache.write number
-  // would otherwise be permanently reported as zero. Gemini itself always
-  // emits cache_creation=0 so the extra field is a no-op for Gemini.
   const delta = {
     input_tokens: Math.max(0, (current.input_tokens || 0) - (previous.input_tokens || 0)),
     cached_input_tokens: Math.max(
@@ -4207,6 +4300,29 @@ function diffGeminiTotals(current, previous) {
     total_tokens: Math.max(0, (current.total_tokens || 0) - (previous.total_tokens || 0)),
   };
 
+  return isAllZeroUsage(delta) ? null : delta;
+}
+
+// OpenCode rows are authoritative snapshots of one message and can be
+// corrected downward or move tokens between cache/output columns. Signed
+// deltas replace the prior contribution instead of treating a correction as a
+// fresh cumulative reset. Gemini keeps its provider-specific reset behavior.
+function diffOpencodeTotals(current, previous) {
+  if (!current || typeof current !== "object") return null;
+  if (!previous || typeof previous !== "object") return current;
+  if (sameGeminiTotals(current, previous)) return null;
+
+  const delta = {};
+  for (const key of [
+    "input_tokens",
+    "cached_input_tokens",
+    "cache_creation_input_tokens",
+    "output_tokens",
+    "reasoning_output_tokens",
+    "total_tokens",
+  ]) {
+    delta[key] = Number(current[key] || 0) - Number(previous[key] || 0);
+  }
   return isAllZeroUsage(delta) ? null : delta;
 }
 
@@ -4391,15 +4507,73 @@ async function walkOpencodeMessages(dir, out) {
 // both "is there v2 data?" and "which session table exists?" in one round-trip.
 // ---------------------------------------------------------------------------
 
-const OPENCODE_DB_V1_MESSAGE_SQL =
-  `SELECT id, session_id, time_updated, data FROM message ` +
-  `WHERE json_extract(data, '$.role') = 'assistant' ORDER BY time_created ASC`;
+const OPENCODE_DB_CURSOR_VERSION = 1;
+
+function normalizeOpencodeDbWatermark(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const maxRowId = Math.max(0, Math.floor(Number(raw.maxRowId) || 0));
+  const maxUpdatedAt = Math.max(0, Math.floor(Number(raw.maxUpdatedAt) || 0));
+  const anchor = typeof raw.anchor === "string" && raw.anchor ? raw.anchor : null;
+  return maxRowId || maxUpdatedAt ? { maxRowId, maxUpdatedAt, anchor } : null;
+}
+
+function opencodeDbIdentity(dbPath) {
+  try {
+    const stat = fssync.statSync(dbPath);
+    const resolved = path.resolve(dbPath);
+    return {
+      pathHash: crypto.createHash("sha256").update(resolved).digest("hex"),
+      dev: String(stat.dev || 0),
+      ino: String(stat.ino || 0),
+    };
+  } catch (_e) {
+    return null;
+  }
+}
+
+function sameOpencodeDbIdentity(a, b) {
+  return Boolean(
+    a &&
+    b &&
+    a.pathHash === b.pathHash &&
+    a.dev === b.dev &&
+    a.ino === b.ino,
+  );
+}
+
+function opencodeDbRowAnchor(row) {
+  if (!row || typeof row !== "object") return null;
+  const rowId = Math.max(0, Math.floor(Number(row.row_id) || 0));
+  const id = typeof row.id === "string" ? row.id : "";
+  const created = Math.max(0, Math.floor(Number(row.time_created) || 0));
+  if (!rowId || !id) return null;
+  return crypto.createHash("sha256").update(`${rowId}\0${id}\0${created}`).digest("base64url");
+}
+
+function opencodeDbIncrementalPredicate(alias, watermark) {
+  const cursor = normalizeOpencodeDbWatermark(watermark);
+  if (!cursor) return "";
+  const clauses = [];
+  if (cursor.maxRowId) clauses.push(`${alias}rowid > ${cursor.maxRowId}`);
+  // Re-read the boundary timestamp so simultaneous updates cannot fall through
+  // a strict greater-than watermark. The duplicate is removed by messageIndex.
+  if (cursor.maxUpdatedAt) clauses.push(`${alias}time_updated >= ${cursor.maxUpdatedAt}`);
+  return clauses.length > 0 ? ` AND (${clauses.join(" OR ")})` : "";
+}
+
+function buildV1Sql(watermark = null) {
+  return (
+    `SELECT rowid AS row_id, id, session_id, time_updated, data FROM message ` +
+    `WHERE json_extract(data, '$.role') = 'assistant'` +
+    `${opencodeDbIncrementalPredicate("", watermark)} ORDER BY time_created ASC`
+  );
+}
 
 // Build the v2 query. When a session table exists the LEFT JOIN restores the
 // project directory for downstream attribution; when it does not (type B
 // without session_v2, or an exotic fork) the join and directory column are
 // omitted and tokens are counted as-is.
-function buildV2Sql(sessionTable) {
+function buildV2Sql(sessionTable, watermark = null) {
   const joinClause = sessionTable
     ? `LEFT JOIN ${sessionTable} s ON s.id = sm.session_id `
     : "";
@@ -4407,10 +4581,11 @@ function buildV2Sql(sessionTable) {
     ? `s.directory AS directory, `
     : "";
   return (
-    `SELECT sm.id AS id, sm.session_id AS session_id, sm.time_updated AS time_updated, ` +
+    `SELECT sm.rowid AS row_id, sm.id AS id, sm.session_id AS session_id, sm.time_updated AS time_updated, ` +
     `${directorySelect}sm.data AS data ` +
     `FROM session_message sm ${joinClause}` +
-    `WHERE sm.type = 'assistant' ORDER BY sm.time_created ASC`
+    `WHERE sm.type = 'assistant'` +
+    `${opencodeDbIncrementalPredicate("sm.", watermark)} ORDER BY sm.time_created ASC`
   );
 }
 
@@ -4447,8 +4622,13 @@ function opencodeMessageProvider(data) {
   return data?.providerID || data?.model?.providerID || "";
 }
 
-function readOpencodeDbMessages(dbPath, sqliteOptions = {}) {
-  if (!dbPath || !fssync.existsSync(dbPath)) return [];
+function readOpencodeDbMessagesIncremental(dbPath, previousCursor = null, sqliteOptions = {}) {
+  if (!dbPath || !fssync.existsSync(dbPath)) return { messages: [], cursor: null };
+
+  const identity = opencodeDbIdentity(dbPath);
+  const canResume =
+    previousCursor?.version === OPENCODE_DB_CURSOR_VERSION &&
+    sameOpencodeDbIdentity(previousCursor.identity, identity);
 
   let snapshot = null;
   let effectiveDbPath = dbPath;
@@ -4483,7 +4663,9 @@ function readOpencodeDbMessages(dbPath, sqliteOptions = {}) {
       const hasTokens =
         toNonNegativeInt(tokens.input) > 0 ||
         toNonNegativeInt(tokens.output) > 0 ||
-        toNonNegativeInt(tokens.reasoning) > 0;
+        toNonNegativeInt(tokens.reasoning) > 0 ||
+        toNonNegativeInt(tokens.cache?.read) > 0 ||
+        toNonNegativeInt(tokens.cache?.write) > 0;
       if (!hasTokens) continue;
       if (isV2 && typeof row.directory === "string" && row.directory.trim()) {
         data.path = { ...(typeof data.path === "object" && data.path ? data.path : {}), cwd: row.directory };
@@ -4512,6 +4694,74 @@ function readOpencodeDbMessages(dbPath, sqliteOptions = {}) {
     }
   };
 
+  const readMaxRowId = (table) => {
+    const rows = readGeneration(`SELECT MAX(rowid) AS max_row_id FROM ${table}`);
+    if (!rows) return null;
+    return Math.max(0, Math.floor(Number(rows[0]?.max_row_id) || 0));
+  };
+
+  const readRowAnchor = (table, rowId) => {
+    if (!rowId) return null;
+    const rows = readGeneration(
+      `SELECT rowid AS row_id, id, time_created FROM ${table} WHERE rowid = ${rowId}`,
+    );
+    return rows ? opencodeDbRowAnchor(rows[0]) : null;
+  };
+
+  const readCursorGeneration = ({ table, isV2, sql }) => {
+    const previous = canResume
+      ? normalizeOpencodeDbWatermark(previousCursor?.[isV2 ? "v2" : "v1"])
+      : null;
+    let forceReplay = false;
+    let lastRows = [];
+
+    // Each query uses a separate SQLite reader. Verify the same immutable head
+    // row before and after the data query so an in-place database replacement
+    // cannot make us persist a cursor from a generation we did not read.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const currentMaxRowId = readMaxRowId(table);
+      if (currentMaxRowId === null) return null;
+      const currentAnchor = readRowAnchor(table, currentMaxRowId);
+      const previousAnchor = previous
+        ? readRowAnchor(table, previous.maxRowId)
+        : null;
+      const watermark =
+        !forceReplay &&
+        previous?.anchor &&
+        currentMaxRowId >= previous.maxRowId &&
+        previousAnchor === previous.anchor
+          ? previous
+          : null;
+      const rows = readGeneration(sql(watermark));
+      if (!rows) return null;
+      lastRows = rows;
+
+      if (readRowAnchor(table, currentMaxRowId) !== currentAnchor) {
+        forceReplay = true;
+        continue;
+      }
+
+      let maxUpdatedAt = watermark?.maxUpdatedAt || 0;
+      for (const row of rows) {
+        maxUpdatedAt = Math.max(maxUpdatedAt, Math.floor(Number(row?.time_updated) || 0));
+      }
+      return {
+        rows,
+        // Advance only to the head whose anchor bracketed this query. Rows
+        // appended concurrently may be returned now and harmlessly reread on
+        // the next sync; advancing to them would require an unverified anchor.
+        cursor: {
+          maxRowId: currentMaxRowId,
+          maxUpdatedAt,
+          anchor: currentAnchor,
+        },
+      };
+    }
+
+    // Keep parsed usage but refuse to advance while the database is unstable.
+    return { rows: lastRows, cursor: null };
+  };
+
   try {
     // Combined probe drives the orchestration: v1 always runs (it is the
     // baseline every database carries or degrades to), v2 runs only when the
@@ -4519,19 +4769,46 @@ function readOpencodeDbMessages(dbPath, sqliteOptions = {}) {
     // against a non-existent session table on type-A databases.
     const probe = detectOpencodeMessageLayout(effectiveDbPath, sqliteOptions);
     const out = [];
+    const nextCursor = {
+      version: OPENCODE_DB_CURSOR_VERSION,
+      identity,
+      v1: null,
+      v2: null,
+    };
 
-    const rows1 = readGeneration(OPENCODE_DB_V1_MESSAGE_SQL);
-    if (rows1) appendRows(rows1, false, out);
-
-    if (probe?.hasRows) {
-      const rows2 = readGeneration(buildV2Sql(probe.sessionTable));
-      if (rows2) appendRows(rows2, true, out);
+    const v1 = readCursorGeneration({
+      table: "message",
+      isV2: false,
+      sql: buildV1Sql,
+    });
+    if (v1) {
+      appendRows(v1.rows, false, out);
+      nextCursor.v1 = v1.cursor;
     }
 
-    return out;
+    if (probe?.hasRows) {
+      const v2 = readCursorGeneration({
+        table: "session_message",
+        isV2: true,
+        sql: (watermark) => buildV2Sql(probe.sessionTable, watermark),
+      });
+      if (v2) {
+        appendRows(v2.rows, true, out);
+        nextCursor.v2 = v2.cursor;
+      }
+    }
+
+    return {
+      messages: out,
+      cursor: nextCursor.v1 || nextCursor.v2 ? nextCursor : null,
+    };
   } finally {
     if (snapshot) snapshot.cleanup();
   }
+}
+
+function readOpencodeDbMessages(dbPath, sqliteOptions = {}) {
+  return readOpencodeDbMessagesIncremental(dbPath, null, sqliteOptions).messages;
 }
 
 // mimocode mirrors the user's Claude Code + claude-mem history into its own
@@ -4791,6 +5068,7 @@ function readZcodeDbMessages(dbPath, sqliteOptions = {}) {
 async function parseOpencodeDbIncremental({
   dbMessages,
   dbPath,
+  dbCursor,
   cursors,
   queuePath,
   projectQueuePath,
@@ -4815,9 +5093,20 @@ async function parseOpencodeDbIncremental({
   const cursorNamespace = typeof cursorKey === "string" && cursorKey.length > 0 ? cursorKey : "opencode";
   const opencodeState = normalizeOpencodeState(cursors?.[cursorNamespace]);
   const messageIndex = opencodeState.messages;
-  const fingerprintIndex = buildOpencodeFingerprintIndex(messageIndex);
   const touchedBuckets = new Set();
   const defaultSource = normalizeSourceInput(source) || "opencode";
+  const candidateFingerprints = new Set();
+  for (const entry of messages) {
+    const totals = normalizeOpencodeTokens(entry?.data?.tokens);
+    const fingerprint = totals
+      ? deriveOpencodeMessageFingerprint({ msg: entry.data, totals, source: defaultSource })
+      : null;
+    if (fingerprint) candidateFingerprints.add(fingerprint);
+  }
+  // A hook-triggered sync normally carries one changed row. Restrict the
+  // historical fingerprint map to fingerprints that can actually match this
+  // batch instead of duplicating the whole long-lived message index in memory.
+  const fingerprintIndex = buildOpencodeFingerprintIndex(messageIndex, candidateFingerprints);
 
   for (let idx = 0; idx < messages.length; idx++) {
     const entry = messages[idx];
@@ -4867,6 +5156,7 @@ async function parseOpencodeDbIncremental({
       if (lastTotals && prev?.dedupedForkCopy !== true) {
         repairCountedOpencodeForkCopy({
           msg,
+          attribution: prev?.attribution,
           totals: lastTotals,
           source: defaultSource,
           hourlyState,
@@ -4890,33 +5180,7 @@ async function parseOpencodeDbIncremental({
     }
 
     const effectiveLastTotals = prev?.dedupedForkCopy === true ? null : lastTotals;
-    const delta = diffGeminiTotals(currentTotals, effectiveLastTotals);
-    if (!delta || isAllZeroUsage(delta)) {
-      // Refresh the index even without a delta: normalization may have changed,
-      // and pre-#426 entries need their fingerprint backfilled so a fork taken
-      // from an old session is still recognised.
-      recordOpencodeMessage({
-        messageIndex,
-        fingerprintIndex,
-        messageKey,
-        totals: currentTotals,
-        fingerprint,
-        dedupedForkCopy: false,
-      });
-      messagesProcessed += 1;
-      if (cb) {
-        cb({
-          index: idx + 1,
-          total: totalMessages,
-          messagesProcessed,
-          eventsAggregated,
-          bucketsQueued: touchedBuckets.size,
-        });
-      }
-      continue;
-    }
-    delta.conversation_count = 1;
-
+    const delta = diffOpencodeTotals(currentTotals, effectiveLastTotals);
     const timestampMs = coerceEpochMs(msg?.time?.completed) || coerceEpochMs(msg?.time?.created);
     if (!timestampMs) {
       messagesProcessed += 1;
@@ -4932,32 +5196,87 @@ async function parseOpencodeDbIncremental({
 
     const { modelId: dbModelId } = normalizeOpencodeModelFields(msg);
     const model = dbModelId || DEFAULT_MODEL;
+    const projectContext = projectEnabled
+      ? await resolveProjectContextForDb({
+          msg,
+          dbPath,
+          projectMetaCache,
+          publicRepoCache,
+          publicRepoResolver,
+          projectState,
+        })
+      : null;
+    const attribution = {
+      bucketStart,
+      model,
+      projectKey: projectContext?.projectKey || null,
+      projectRef: projectContext?.projectRef || null,
+    };
+
+    const previousAttribution = effectiveLastTotals
+      ? normalizeOpencodeAttribution(prev?.attribution)
+      : null;
+    const moved = Boolean(
+      effectiveLastTotals &&
+      previousAttribution &&
+      !sameOpencodeAttribution(previousAttribution, attribution),
+    );
+    if ((!delta || isAllZeroUsage(delta)) && !moved) {
+      // Refresh the index even without a delta: normalization may have changed,
+      // and pre-#426 entries need their fingerprint backfilled. Preserve an
+      // existing contribution location without bloating every legacy cursor.
+      recordOpencodeMessage({
+        messageIndex,
+        fingerprintIndex,
+        messageKey,
+        totals: currentTotals,
+        fingerprint,
+        attribution: prev?.attribution ? attribution : null,
+        dedupedForkCopy: false,
+      });
+      messagesProcessed += 1;
+      if (cb) {
+        cb({
+          index: idx + 1,
+          total: totalMessages,
+          messagesProcessed,
+          eventsAggregated,
+          bucketsQueued: touchedBuckets.size,
+        });
+      }
+      continue;
+    }
+
+    if (moved) {
+      subtractCountedOpencodeMessage({
+        attribution: previousAttribution,
+        totals: effectiveLastTotals,
+        source: defaultSource,
+        hourlyState,
+        touchedBuckets,
+        projectState,
+        projectTouchedBuckets,
+      });
+    }
+    const contribution = moved
+      ? { ...currentTotals, conversation_count: 1 }
+      : { ...delta, conversation_count: effectiveLastTotals ? 0 : 1 };
     const bucket = getHourlyBucket(hourlyState, defaultSource, model, bucketStart);
-    addTotals(bucket.totals, delta);
+    addTotals(bucket.totals, contribution);
     touchedBuckets.add(bucketKey(defaultSource, model, bucketStart));
 
-    if (projectEnabled) {
-      const projectContext = await resolveProjectContextForDb({
-        msg,
-        dbPath,
-        projectMetaCache,
-        publicRepoCache,
-        publicRepoResolver,
+    if (attribution.projectKey && projectState && projectTouchedBuckets) {
+      const projectBucket = getProjectBucket(
         projectState,
-      });
-      const projectRef = projectContext?.projectRef || null;
-      const projectKey = projectContext?.projectKey || null;
-      if (projectKey && projectState && projectTouchedBuckets) {
-        const projectBucket = getProjectBucket(
-          projectState,
-          projectKey,
-          defaultSource,
-          bucketStart,
-          projectRef,
-        );
-        addTotals(projectBucket.totals, delta);
-        projectTouchedBuckets.add(projectBucketKey(projectKey, defaultSource, bucketStart));
-      }
+        attribution.projectKey,
+        defaultSource,
+        bucketStart,
+        attribution.projectRef,
+      );
+      addTotals(projectBucket.totals, contribution);
+      projectTouchedBuckets.add(
+        projectBucketKey(attribution.projectKey, defaultSource, bucketStart),
+      );
     }
 
     recordOpencodeMessage({
@@ -4966,10 +5285,11 @@ async function parseOpencodeDbIncremental({
       messageKey,
       totals: currentTotals,
       fingerprint,
+      attribution,
       dedupedForkCopy: false,
     });
     messagesProcessed += 1;
-    eventsAggregated += 1;
+    if (delta && !isAllZeroUsage(delta)) eventsAggregated += 1;
 
     if (cb) {
       cb({
@@ -4988,6 +5308,7 @@ async function parseOpencodeDbIncremental({
     : 0;
   hourlyState.updatedAt = new Date().toISOString();
   cursors.hourly = hourlyState;
+  if (dbCursor && typeof dbCursor === "object") opencodeState.dbCursor = dbCursor;
   opencodeState.updatedAt = new Date().toISOString();
   cursors[cursorNamespace] = opencodeState;
   if (projectState) {
@@ -18281,6 +18602,7 @@ module.exports = {
   listGeminiSessionFiles,
   listOpencodeMessageFiles,
   readOpencodeDbMessages,
+  readOpencodeDbMessagesIncremental,
   readMimoDbMessages,
   readZcodeDbMessages,
   hasZcodeNativeUsageSchema,
