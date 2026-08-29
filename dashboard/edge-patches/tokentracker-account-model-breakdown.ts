@@ -4,6 +4,8 @@
  */
 import { createClient } from "npm:@insforge/sdk";
 
+const SOURCES_WITH_AUTHORITATIVE_COST = new Set(["grok"]);
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, OPTIONS",
@@ -419,6 +421,7 @@ interface GroupedRow {
   cached_input_tokens: number | null;
   cache_creation_input_tokens: number | null;
   reasoning_output_tokens: number | null;
+  total_cost_usd?: number | null;
   conversations: number | null;
   pricing_tier?: string;
 }
@@ -608,8 +611,13 @@ export default async function (req: Request): Promise<Response> {
     const p = getRowPricing({ ...row, model: modelForPricing });
     const subscriptionBacked = src === "pi-github-copilot" || src === "pi-copilot";
     const reasoningIncludedInOutput = src === "codex" || src === "every-code";
+    const reportedCost = Number(row.total_cost_usd);
     ma.totalCostUsd += subscriptionBacked
       ? 0
+      : SOURCES_WITH_AUTHORITATIVE_COST.has(src) &&
+          Number.isFinite(reportedCost) &&
+          reportedCost > 0
+        ? reportedCost
       : ((Number(row.input_tokens) || 0) * (p.input || 0) +
         (Number(row.output_tokens) || 0) * (p.output || 0) +
         (Number(row.cached_input_tokens) || 0) * (p.cache_read || 0) +

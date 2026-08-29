@@ -125,6 +125,24 @@ test("all cloud cost paths keep Pi Copilot subscription rows at zero cost", () =
   }
 });
 
+test("all cloud cost paths only prefer provider-reported costs for authoritative sources", () => {
+  for (const name of [CANONICAL, ...MIRRORS]) {
+    const source = readEdge(name);
+    assert.ok(source.includes("total_cost_usd"), `${name}: reported cost field missing`);
+    assert.ok(source.includes("reportedCost"), `${name}: reported cost branch missing`);
+    assert.match(
+      source,
+      /const SOURCES_WITH_AUTHORITATIVE_COST = new Set\(\["grok"\]\);/,
+      `${name}: authoritative cost sources must be explicitly allowlisted`,
+    );
+    assert.match(
+      source,
+      /SOURCES_WITH_AUTHORITATIVE_COST\.has\((?:row\.source|src)\)[\s\S]*?Number\.isFinite\(reportedCost\)[\s\S]*?reportedCost > 0/,
+      `${name}: positive reported cost must be gated by source`,
+    );
+  }
+});
+
 test("all cloud cost paths retain DeepSeek V4 peak/off-peak pricing tiers", () => {
   for (const name of [CANONICAL, ...MIRRORS]) {
     const source = readEdge(name);

@@ -5,6 +5,8 @@
  */
 import { createClient } from "npm:@insforge/sdk";
 
+const SOURCES_WITH_AUTHORITATIVE_COST = new Set(["grok"]);
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -419,6 +421,12 @@ function computeRowCost(row: HourlyRow): number {
   // Pi's GitHub Copilot provider is subscription-backed. Keep its token
   // counts, but do not reprice the recorded Claude model as Anthropic API use.
   if (row.source === "pi-github-copilot" || row.source === "pi-copilot") return 0;
+  const reportedCost = Number(row.total_cost_usd);
+  if (
+    SOURCES_WITH_AUTHORITATIVE_COST.has(row.source) &&
+    Number.isFinite(reportedCost) &&
+    reportedCost > 0
+  ) return reportedCost;
   // WorkBuddy's auto-router logs model="auto"; price it as its default Hunyuan
   // model (hy3-preview-agent) so it isn't billed as Cursor's composer-1. Mirrors
   // normalizeWorkbuddyModel in src/lib/pricing/matcher.js.
@@ -508,6 +516,7 @@ interface HourlyRow {
   cached_input_tokens: number;
   cache_creation_input_tokens: number;
   reasoning_output_tokens: number;
+  total_cost_usd?: number | null;
   pricing_tier?: string;
 }
 

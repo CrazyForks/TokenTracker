@@ -21,6 +21,7 @@ const PI_SUBSCRIPTION_SOURCES = new Set([
   "prime-agent-github-copilot",
   "prime-agent-copilot",
 ]);
+const SOURCES_WITH_AUTHORITATIVE_COST = new Set(["grok"]);
 const SEED_SNAPSHOT_PATH = path.resolve(__dirname, "seed-snapshot.json");
 const DEEPSEEK_TIME_PRICED_MODELS = [
   "deepseek-v4-flash",
@@ -172,6 +173,15 @@ function computeRowCost(row) {
   // usage record reports a zero marginal cost for those turns; do not
   // reinterpret the Claude model name as an Anthropic API bill.
   if (PI_SUBSCRIPTION_SOURCES.has(String(row?.source || "").toLowerCase())) return 0;
+  // Some providers (currently Grok) persist an exact server-reported cost on
+  // the usage bucket. Prefer it when positive; zero remains the legacy
+  // "unreported" sentinel and falls through to model pricing.
+  const reportedCost = Number(row?.total_cost_usd);
+  if (
+    SOURCES_WITH_AUTHORITATIVE_COST.has(row?.source) &&
+    Number.isFinite(reportedCost) &&
+    reportedCost > 0
+  ) return reportedCost;
   const pricing = getRowPricing(row);
   const reasoningIncludedInOutput = row.source === "codex" || row.source === "every-code";
   const reasoningCost = reasoningIncludedInOutput
