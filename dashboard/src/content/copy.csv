@@ -1418,6 +1418,14 @@ sessions.col.tokens,ui,SessionsPage,SessionsPage,col_tokens,"Tokens",,active
 sessions.col.cost,ui,SessionsPage,SessionsPage,col_cost,"Cost",,active
 sessions.col.edits,ui,SessionsPage,SessionsPage,col_edits,"Edits",,active
 sessions.badge.first_pass,ui,SessionsPage,SessionsPage,badge_first_pass,"First-pass",,active
+sessions.badge.subagent,ui,SessionsPage,SessionRow,badge_subagent,"Subagent",,active
+sessions.thread.expand,ui,SessionsPage,SessionRow,thread_expand,"Expand {{count}} subagents",,active
+sessions.thread.collapse,ui,SessionsPage,SessionRow,thread_collapse,"Collapse {{count}} subagents",,active
+sessions.thread.tokens_summary,ui,SessionsPage,SessionRow,tokens_summary,"Own {{own}} · Subagents {{subagents}} · Combined {{combined}}",,active
+sessions.thread.result_count,ui,SessionsPage,SessionsPage,thread_result_count,"{{roots}} root sessions · {{subagents}} subagents collapsed",,active
+sessions.thread.model_usage,ui,SessionsPage,ThreadModelUsage,model_usage,"Subagent model usage",,active
+sessions.thread.model_all,ui,SessionsPage,ThreadModelUsage,model_all,"All · {{count}} agents · {{tokens}}",,active
+sessions.thread.model_item,ui,SessionsPage,ThreadModelUsage,model_item,"{{model}} · {{count}} agents · {{tokens}}",,active
 sessions.duration.minutes,ui,SessionsPage,SessionsPage,duration_minutes,"{{minutes}}m",,active
 sessions.duration.hours,ui,SessionsPage,SessionsPage,duration_hours,"{{hours}}h {{minutes}}m",,active
 sessions.project.unknown,ui,SessionsPage,SessionsPage,project_unknown,"Untitled session",,active
