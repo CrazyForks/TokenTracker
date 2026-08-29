@@ -110,8 +110,17 @@ async function authorizeRefresh(req: Request): Promise<RefreshAuthorization | nu
 
 type Period = "week" | "month" | "total";
 const ALL_PERIODS: Period[] = ["week", "month", "total"];
+const RAW_BLOCKED_LEADERBOARD_USER_IDS = Deno.env.get("LEADERBOARD_BLOCKED_USER_IDS");
+/**
+ * Whether the block list was configured at all. An unset secret and a
+ * deliberately emptied one are the same empty Set here, but they mean opposite
+ * things to the quarantine audit: with no list, every quarantined account looks
+ * like an orphan and the audit would open a public issue claiming a mass
+ * false-ban. Keep the distinction so that failure reports as degraded instead.
+ */
+const BLOCKLIST_CONFIGURED = typeof RAW_BLOCKED_LEADERBOARD_USER_IDS === "string";
 const BLOCKED_LEADERBOARD_USER_IDS = new Set(
-  (Deno.env.get("LEADERBOARD_BLOCKED_USER_IDS") ?? "")
+  (RAW_BLOCKED_LEADERBOARD_USER_IDS ?? "")
     .split(",")
     .map((id) => id.trim())
     .filter(Boolean),
@@ -611,19 +620,99 @@ async function anomalyQueueSummary(
   }
 }
 
+/**
+ * GET ?quarantine_audit=1 — counts-only moderation self-audit.
+ *
+ * Answers the question the anomaly detector never asks: "does the data we
+ * withheld still match the accounts we actually banned?" On 2026-07-21 a batch
+ * quarantine moved rows for 40 users while only 8 reached the block list; the
+ * other 32 had 51.1B tokens withheld for five weeks and it surfaced only when
+ * one of them opened issue #534. A ban is a decision someone made on purpose,
+ * but data quarantined for an account nobody banned is a plain contradiction,
+ * so it can be detected without any judgement call.
+ *
+ * Returns COUNTS ONLY, never user_ids — same reason as the anomaly summary:
+ * the caller is a public CI log.
+ */
+async function quarantineAuditData(
+  client: ReturnType<typeof createClient>,
+): Promise<{
+  ok: true;
+  blocklist_configured: boolean;
+  orphan_users: number;
+  orphan_rows: number;
+  orphan_tokens: number;
+  oldest_orphan_quarantined_at: string | null;
+  blocked_total: number;
+  blocked_without_flags: number;
+}> {
+  // Without a block list every quarantined account is trivially an "orphan".
+  // Report the degraded state rather than a fabricated mass-false-ban.
+  if (!BLOCKLIST_CONFIGURED) {
+    return {
+      ok: true,
+      blocklist_configured: false,
+      orphan_users: 0,
+      orphan_rows: 0,
+      orphan_tokens: 0,
+      oldest_orphan_quarantined_at: null,
+      blocked_total: 0,
+      blocked_without_flags: 0,
+    };
+  }
+  const { data, error } = await client.database.rpc(
+    "leaderboard_quarantine_audit",
+    { p_blocked: [...BLOCKED_LEADERBOARD_USER_IDS] },
+  );
+  if (error) throw new Error(error.message);
+  const row = (Array.isArray(data) && data.length > 0
+    ? data[0]
+    : {}) as Record<string, unknown>;
+  const num = (value: unknown) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
+  };
+  return {
+    ok: true,
+    blocklist_configured: true,
+    orphan_users: num(row.orphan_users),
+    orphan_rows: num(row.orphan_rows),
+    orphan_tokens: num(row.orphan_tokens),
+    oldest_orphan_quarantined_at:
+      typeof row.oldest_orphan_quarantined_at === "string"
+        ? row.oldest_orphan_quarantined_at
+        : null,
+    blocked_total: num(row.blocked_total),
+    blocked_without_flags: num(row.blocked_without_flags),
+  };
+}
+
+async function quarantineAudit(
+  client: ReturnType<typeof createClient>,
+): Promise<Response> {
+  try {
+    return json(await quarantineAuditData(client));
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : String(error) }, 500);
+  }
+}
+
 export default async function (req: Request): Promise<Response> {
   if (req.method === "OPTIONS")
     return new Response(null, { status: 204, headers: corsHeaders });
 
+  const requestParams = new URL(req.url).searchParams;
   const wantsAnomalySummary =
-    req.method === "GET" &&
-    new URL(req.url).searchParams.get("anomalies") === "1";
-  if (req.method !== "POST" && !wantsAnomalySummary)
+    req.method === "GET" && requestParams.get("anomalies") === "1";
+  const wantsQuarantineAudit =
+    req.method === "GET" && requestParams.get("quarantine_audit") === "1";
+  const wantsPublicRead = wantsAnomalySummary || wantsQuarantineAudit;
+  if (req.method !== "POST" && !wantsPublicRead)
     return json({ error: "Method not allowed" }, 405);
 
-  // The read-only anomaly summary is unauthenticated (it exposes no identities);
+  // The read-only summaries are unauthenticated (they expose no identities);
   // everything else still requires the refresh secret / service role / sign-in.
-  const authorization = wantsAnomalySummary ? "public" : await authorizeRefresh(req);
+  const authorization = wantsPublicRead ? "public" : await authorizeRefresh(req);
   if (!authorization) return json({ error: "unauthorized" }, 401);
   const requestStartedAt = Date.now();
 
@@ -647,7 +736,11 @@ export default async function (req: Request): Promise<Response> {
     ...(anonKey ? { headers: { apikey: anonKey } } : {}),
   });
 
-  if (authorization === "public") return await anomalyQueueSummary(client);
+  if (authorization === "public") {
+    return wantsQuarantineAudit
+      ? await quarantineAudit(client)
+      : await anomalyQueueSummary(client);
+  }
 
   // Parse requested periods
   const body = await req.json().catch(() => ({})) as Record<string, unknown>;

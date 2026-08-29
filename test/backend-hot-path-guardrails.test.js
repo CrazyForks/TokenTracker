@@ -138,42 +138,63 @@ test("signed-in users cannot trigger expensive month, total, or all-period leade
   assert.match(clientSource, /body: JSON\.stringify\(\{ period: "week", source \}\)/u);
 });
 
-test("the unauthenticated anomaly summary cannot reach any refresh write path", () => {
+test("the unauthenticated public reads cannot reach any refresh write path", () => {
   const source = read("dashboard/edge-patches/tokentracker-leaderboard-refresh.ts");
 
   // "public" is granted without any credential, so it must be reachable only by
-  // a GET carrying ?anomalies=1 -- never by the POST that rebuilds snapshots.
+  // a GET carrying one of the read-only query flags -- never by the POST that
+  // rebuilds snapshots. Both flags are gated on the same `req.method === "GET"`.
   assert.match(
     source,
-    /req\.method === "GET" &&\s*new URL\(req\.url\)\.searchParams\.get\("anomalies"\) === "1"/u,
-    "the public role must be gated on GET + ?anomalies=1",
+    /const wantsAnomalySummary =\s*req\.method === "GET" && requestParams\.get\("anomalies"\) === "1";/u,
+    "the anomaly summary must be gated on GET + ?anomalies=1",
   );
   assert.match(
     source,
-    /const authorization = wantsAnomalySummary \? "public" : await authorizeRefresh\(req\);/u,
-    "any non-summary request must still go through authorizeRefresh",
+    /const wantsQuarantineAudit =\s*req\.method === "GET" && requestParams\.get\("quarantine_audit"\) === "1";/u,
+    "the quarantine audit must be gated on GET + ?quarantine_audit=1",
+  );
+  assert.match(
+    source,
+    /const wantsPublicRead = wantsAnomalySummary \|\| wantsQuarantineAudit;/u,
+    "the public role must be the union of exactly those two read-only flags",
+  );
+  assert.match(
+    source,
+    /const authorization = wantsPublicRead \? "public" : await authorizeRefresh\(req\);/u,
+    "any non-read request must still go through authorizeRefresh",
   );
 
-  // The summary must return before the period-refresh work begins.
-  const summaryReturn = source.indexOf('if (authorization === "public") return await anomalyQueueSummary(client);');
+  // The public reads must return before the period-refresh work begins.
+  const publicReturn = source.indexOf('if (authorization === "public") {');
   const periodLoop = source.indexOf("for (const period of periods)");
-  assert.ok(summaryReturn > 0, "public role must short-circuit to the summary");
+  assert.ok(publicReturn > 0, "public role must short-circuit to a read-only handler");
   assert.ok(
-    periodLoop > summaryReturn,
+    periodLoop > publicReturn,
     "the public short-circuit must precede the refresh loop",
   );
 
-  // The summary must not leak identities into the public GitHub issue the
-  // watchdog files from this payload.
-  const summaryBody = source.slice(
-    source.indexOf("async function anomalyQueueSummary"),
-    source.indexOf("export default async function"),
-  );
-  assert.doesNotMatch(
-    summaryBody,
-    /user_id/u,
-    "anomaly summary must expose counts only, never flagged user ids",
-  );
+  // Neither payload may leak identities into the public GitHub issue the
+  // watchdog files from them. Assert on the declared RESPONSE shapes rather
+  // than the whole function body: the audit legitimately *passes* the block
+  // list down to the RPC as an argument, so a body-wide substring match would
+  // either miss that distinction or forbid a safe input.
+  for (const fn of ["anomalyQueueSummaryData", "quarantineAuditData"]) {
+    const fnStart = source.indexOf(`async function ${fn}(`);
+    assert.ok(fnStart > 0, `${fn} must exist`);
+    const returnTypeStart = source.indexOf("): Promise<{", fnStart);
+    const returnTypeEnd = source.indexOf("}>", returnTypeStart);
+    assert.ok(
+      returnTypeStart > 0 && returnTypeEnd > returnTypeStart,
+      `${fn} must declare an inline response shape`,
+    );
+    const returnShape = source.slice(returnTypeStart, returnTypeEnd);
+    assert.doesNotMatch(
+      returnShape,
+      /user_id|machine|display_name|avatar|github/iu,
+      `${fn} must return counts only, never identities`,
+    );
+  }
 });
 
 test("leaderboard refresh reconciles stale rows after the replacement snapshot is durable", () => {
