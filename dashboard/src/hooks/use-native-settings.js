@@ -16,7 +16,7 @@ import {
  *
  * `available` is true only when running inside the native macOS app
  * AND the bridge handler is wired up. SettingsPage uses it to gate the
- * "Menu Bar App" section so it stays hidden in browser/cloud mode.
+ * "App & Updates" section so it stays hidden in browser/cloud mode.
  */
 export function useNativeSettings() {
   const [settings, setSettings] = useState(null);
