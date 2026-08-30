@@ -863,6 +863,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
             case UpdateChecker.UpdateState.UpdateAvailable:
                 _checkUpdatesItem.Text = string.Format(_updateStrings.UpdateNow, _updateChecker.LatestVersion);
                 _checkUpdatesItem.Enabled = true;
+                if (_updateChecker.AutoUpdateEnabled && _updateChecker.State == UpdateChecker.UpdateState.UpdateAvailable)
+                {
+                    // An enabled automatic check will immediately start the
+                    // background installer, so a "click the tray to update"
+                    // balloon would be both noisy and misleading.
+                    break;
+                }
                 if (!_updateBalloonShown)
                 {
                     _updateBalloonShown = true;
