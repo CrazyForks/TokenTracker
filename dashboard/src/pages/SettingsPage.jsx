@@ -58,6 +58,7 @@ export function SettingsPage() {
   const { available: proxySettingsAvailable } = proxySettings;
   const toastOnReset = nativeSettings?.toastOnReset !== false;
   const confettiOnReset = nativeSettings?.confettiOnReset !== false;
+  const windowsNativeSettings = nativeSettings?.platform === "windows";
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const requestedSection = searchParams.get("section");
@@ -129,30 +130,34 @@ export function SettingsPage() {
               label={copy("limits.settings.display_mode_label")}
               control={<LimitsDisplayModeControl prefs={limitsPrefs} />}
             />
-            <SettingsRow
-              label={copy("settings.menubar.toastOnReset")}
-              hint={copy("settings.menubar.toastOnResetHint")}
-              control={
-                <ToggleSwitch
-                  checked={toastOnReset}
-                  disabled={!nativeSettingsAvailable}
-                  onChange={() => setNativeSetting("toastOnReset", !toastOnReset)}
-                  ariaLabel={copy("settings.menubar.toastOnReset")}
+            {!windowsNativeSettings ? (
+              <>
+                <SettingsRow
+                  label={copy("settings.menubar.toastOnReset")}
+                  hint={copy("settings.menubar.toastOnResetHint")}
+                  control={
+                    <ToggleSwitch
+                      checked={toastOnReset}
+                      disabled={!nativeSettingsAvailable}
+                      onChange={() => setNativeSetting("toastOnReset", !toastOnReset)}
+                      ariaLabel={copy("settings.menubar.toastOnReset")}
+                    />
+                  }
                 />
-              }
-            />
-            <SettingsRow
-              label={copy("settings.menubar.confettiOnReset")}
-              hint={copy("settings.menubar.confettiOnResetHint")}
-              control={
-                <ToggleSwitch
-                  checked={confettiOnReset}
-                  disabled={!nativeSettingsAvailable}
-                  onChange={() => setNativeSetting("confettiOnReset", !confettiOnReset)}
-                  ariaLabel={copy("settings.menubar.confettiOnReset")}
+                <SettingsRow
+                  label={copy("settings.menubar.confettiOnReset")}
+                  hint={copy("settings.menubar.confettiOnResetHint")}
+                  control={
+                    <ToggleSwitch
+                      checked={confettiOnReset}
+                      disabled={!nativeSettingsAvailable}
+                      onChange={() => setNativeSetting("confettiOnReset", !confettiOnReset)}
+                      ariaLabel={copy("settings.menubar.confettiOnReset")}
+                    />
+                  }
                 />
-              }
-            />
+              </>
+            ) : null}
             <SettingsRow
               label={copy("settings.limits.showSubscriptions")}
               hint={copy("settings.limits.showSubscriptionsHint")}
