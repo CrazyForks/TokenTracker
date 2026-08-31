@@ -71,6 +71,8 @@ const {
   resolveZedDbPath,
   resolveQoderDbPaths,
   resolveQoderCnDbPaths,
+  resolveQoderProjectsDir,
+  listQoderNewSessionFiles,
   resolveClaudeScienceDbPaths,
   resolveAnythingllmDbPath,
   resolveGooseDbPath,
@@ -488,15 +490,28 @@ async function cmdStatus(argv = []) {
   const zcodeInstalled = zcodeActive.length > 0;
   const zcodeDbPath = zcodeActive.join(" | ");
 
-  // Qoder Desktop 1.18+ — token usage lives in SharedClientCache/local.db.
+  // Qoder Desktop 1.18+ — token usage lives in SharedClientCache/local.db (legacy)
+  // and since 2026-08 (app 0.1.2+) also in ~/.qoder/projects JSONL (credit-based).
   const qoderPaths = resolveQoderDbPaths({
     home,
     env: process.env,
     platform: process.platform,
   });
   const qoderActive = formatResolvedPaths(qoderPaths);
-  const qoderInstalled = qoderActive.length > 0;
+  // New JSONL location (com.qoder.app.stable + ~/.qoder/projects)
+  let qoderNewFiles = [];
+  try {
+    const qoderProjectsDir = resolveQoderProjectsDir({ home, env: process.env });
+    qoderNewFiles = await listQoderNewSessionFiles(qoderProjectsDir);
+  } catch (_e) {
+    qoderNewFiles = [];
+  }
+  const qoderNewInstalled = qoderNewFiles.length > 0;
+  const qoderInstalled = qoderActive.length > 0 || qoderNewInstalled;
   const qoderDbPath = qoderActive.join(" | ");
+  const qoderNewPath = qoderNewFiles.length > 0
+    ? `${resolveQoderProjectsDir({ home, env: process.env })} (${qoderNewFiles.length} sessions)`
+    : "";
 
   // Qoder CN (国内版) — same schema, separate Application Support/QoderCN dir.
   const qoderCnPaths = resolveQoderCnDbPaths({
@@ -1089,7 +1104,7 @@ async function cmdStatus(argv = []) {
         ? `- ZCode: passive reader (${zcodeDbPath})`
         : null,
       qoderInstalled
-        ? `- Qoder: passive reader (${qoderDbPath})`
+        ? `- Qoder: passive reader (${[qoderDbPath, qoderNewPath].filter(Boolean).join(" + ") || "not found"}${qoderNewInstalled && qoderActive.length > 0 ? " [legacy DB + new JSONL (both tracked)]" : ""}${qoderNewInstalled && qoderActive.length === 0 ? " [new JSONL only]" : ""})`
         : null,
       qoderCnInstalled
         ? `- Qoder CN: passive reader (${qoderCnDbPath})`

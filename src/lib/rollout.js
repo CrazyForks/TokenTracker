@@ -5718,6 +5718,370 @@ async function parseQoderDbIncremental({
   return { messagesProcessed, eventsAggregated, bucketsQueued, projectBucketsQueued };
 }
 
+// ── Qoder (new) — ~/.qoder/projects JSONL (com.qoder.app.stable, 2026-08+) ──
+//
+// Qoder 2026-08 (app 0.1.2+) migrated from SharedClientCache/cache/db/local.db
+// to Electron main.sqlite + ~/.qoder/projects/<slug>/<sessionId>.jsonl.
+// The new transcript's message.usage no longer carries prompt_tokens — it is a
+// credit-billed SDK: {input_tokens:0, output_tokens:0, credits:3.2, billable:true}.
+// Token breakdown is unavailable in the new format; we estimate tokens from
+// credits for dashboard continuity and mark the bucket usage_precision so the
+// estimate is distinguishable from exact DB rows.
+// Old local.db is kept as a legacy fallback; both sources share the "qoder"
+// cursor namespace via disjoint messageKey prefixes (row: vs jsonl:).
+function resolveQoderProjectsDir({ home = os.homedir(), env = process.env, platform = process.platform, deps = {} } = {}) {
+  const override = typeof env.QODER_PROJECTS_DIR === "string" && env.QODER_PROJECTS_DIR.trim()
+    ? path.resolve(env.QODER_PROJECTS_DIR.trim())
+    : null;
+  if (override) return override;
+  // QODER_HOME points at the app support dir for the legacy DB; the new
+  // projects dir is always ~/.qoder regardless of QODER_HOME.
+  // On Windows also probe WSL distro home (same pattern as other providers).
+  if (platform === "win32" && !env.QODER_PROJECTS_DIR) {
+    const discoverWslHome = deps.discoverWslHome || wsl.discoverWslHome;
+    const wslRoot = wsl.shouldProbeWsl(env) ? discoverWslHome(".qoder", { ...deps, env }) : null;
+    if (wslRoot) {
+      const wslProjects = path.join(wslRoot, "projects");
+      if ((deps.existsSync || fssync.existsSync)(wslProjects)) return wslProjects;
+    }
+  }
+  return path.join(home, ".qoder", "projects");
+}
+
+function resolveQoderCnProjectsDir({ home = os.homedir(), env = process.env, platform = process.platform, deps = {} } = {}) {
+  const override = typeof env.QODER_CN_PROJECTS_DIR === "string" && env.QODER_CN_PROJECTS_DIR.trim()
+    ? path.resolve(env.QODER_CN_PROJECTS_DIR.trim())
+    : null;
+  if (override) return override;
+  // CN and international currently share ~/.qoder; keep a distinct override for
+  // future split without double-counting by default.
+  if (platform === "win32" && !env.QODER_CN_PROJECTS_DIR) {
+    const discoverWslHome = deps.discoverWslHome || wsl.discoverWslHome;
+    const wslRoot = wsl.shouldProbeWsl(env) ? discoverWslHome(".qoder", { ...deps, env }) : null;
+    if (wslRoot) {
+      const wslProjects = path.join(wslRoot, "projects");
+      if ((deps.existsSync || fssync.existsSync)(wslProjects)) return wslProjects;
+    }
+  }
+  return path.join(home, ".qoder", "projects");
+}
+
+async function listQoderNewSessionFiles(projectsDir) {
+  const out = [];
+  if (!projectsDir || !fssync.existsSync(projectsDir)) return out;
+  async function walk(dir) {
+    const entries = await safeReadDir(dir);
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        await walk(p);
+      } else if (e.isFile() && e.name.endsWith(".jsonl")) {
+        out.push(p);
+      }
+    }
+  }
+  await walk(projectsDir);
+  out.sort((a, b) => a.localeCompare(b));
+  return out;
+}
+
+function qoderNewModelFromRecord(record) {
+  const msgModel = record?.message?.model;
+  const direct = typeof msgModel === "string" ? msgModel.trim() : "";
+  return normalizeModelInput(direct) || "qoder-agent";
+}
+
+function qoderNewMessageKey(record, filePath) {
+  const msgId = normalizeMessageKeyPart(record?.message?.id)
+    || normalizeMessageKeyPart(record?.uuid)
+    || normalizeMessageKeyPart(record?.message?.id)
+    || null;
+  const sessionId = normalizeMessageKeyPart(record?.sessionId || record?.session_id);
+  // Prefix to avoid collision with legacy row: keys
+  if (sessionId && msgId) return `jsonl:${sessionId}|${msgId}`;
+  if (msgId) return `jsonl:${msgId}`;
+  if (sessionId) return `jsonl:${sessionId}|${record?.uuid || filePath}`;
+  return `jsonl:${filePath}|${record?.uuid || ""}`;
+}
+
+function qoderNewTimestampMs(record) {
+  return coerceEpochMs(record?.timestamp)
+    || coerceEpochMs(record?.message?.timestamp)
+    || parseIsoTimestampMs(record?.timestamp)
+    || parseIsoTimestampMs(record?.message?.timestamp)
+    || 0;
+}
+
+function normalizeQoderNewTokens(usage) {
+  if (!usage || typeof usage !== "object") return null;
+  const credits = Number(usage.credits ?? usage.original_credits ?? 0);
+  const billable = usage.billable !== false;
+  const input = Number(usage.input_tokens ?? 0);
+  const cached = Number(usage.cache_read_input_tokens ?? usage.cached_tokens ?? 0);
+  const cacheCreation = Number(usage.cache_creation_input_tokens ?? 0);
+  const output = Number(usage.output_tokens ?? 0);
+  // New SDK reports 0 tokens but non-zero credits — estimate tokens from credits
+  // so the dashboard still shows activity. Keep estimate conservative and mark
+  // precision so it is distinguishable from exact local.db rows.
+  if (input > 0 || cached > 0 || output > 0) {
+    const inp = Math.max(0, Math.trunc(input));
+    const cach = Math.max(0, Math.trunc(cached));
+    const out = Math.max(0, Math.trunc(output));
+    const cc = Math.max(0, Math.trunc(cacheCreation));
+    return {
+      input_tokens: inp,
+      cached_input_tokens: cach,
+      cache_creation_input_tokens: cc,
+      output_tokens: out,
+      reasoning_output_tokens: 0,
+      total_tokens: inp + cach + cc + out,
+      billable_total_tokens: inp + cach + cc + out,
+      credits: Number.isFinite(credits) && credits > 0 ? credits : 0,
+      usage_precision: null,
+    };
+  }
+  if (Number.isFinite(credits) && credits > 0 && billable) {
+    // Heuristic: 1 credit ≈ 1500 tokens (calibrated against legacy prompt_tokens
+    // vs credit samples from DSH003). Token split is unknown, so attribute to
+    // input for cost continuity; dashboard cost will be derived via pricing if
+    // available, otherwise authoritative cost below covers it.
+    const estimated = Math.max(1, Math.round(credits * 1500));
+    return {
+      input_tokens: estimated,
+      cached_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+      output_tokens: 0,
+      reasoning_output_tokens: 0,
+      total_tokens: estimated,
+      billable_total_tokens: estimated,
+      credits,
+      usage_precision: "qoder_credits_estimate",
+    };
+  }
+  // Billable but zero tokens/credits — still count conversation, no token delta
+  if (billable && (input === 0 && output === 0 && credits === 0)) {
+    return null;
+  }
+  return null;
+}
+
+async function parseQoderNewIncremental({
+  sessionFiles,
+  cursors,
+  queuePath,
+  projectQueuePath,
+  onProgress,
+  sourceKey = "qoder",
+  cursorKey = "qoder",
+  publicRepoResolver,
+} = {}) {
+  await ensureDir(path.dirname(queuePath));
+  const files = Array.isArray(sessionFiles) ? sessionFiles : [];
+  const hourlyState = normalizeHourlyState(cursors?.hourly);
+  const qoderState = normalizeQoderState(cursors?.[cursorKey]);
+  const projectEnabled = typeof projectQueuePath === "string" && projectQueuePath.length > 0;
+  const projectState = projectEnabled ? normalizeProjectState(cursors?.projectHourly) : null;
+  const projectTouchedBuckets = projectEnabled ? new Set() : null;
+  const projectMetaCache = projectEnabled ? new Map() : null;
+  const publicRepoCache = projectEnabled ? new Map() : null;
+  const touchedBuckets = new Set();
+  const cb = typeof onProgress === "function" ? onProgress : null;
+
+  // Build current snapshot from all JSONL files
+  const currentByKey = new Map();
+  const fileCount = files.length;
+  for (let fileIdx = 0; fileIdx < files.length; fileIdx++) {
+    const filePath = files[fileIdx];
+    let raw;
+    try {
+      raw = await fs.readFile(filePath, "utf8");
+    } catch (_e) {
+      continue;
+    }
+    const lines = raw.split("\n");
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let record;
+      try {
+        record = JSON.parse(line);
+      } catch (_e) {
+        continue;
+      }
+      if (record?.type !== "assistant") continue;
+      const msg = record?.message;
+      if (!msg || msg.role !== "assistant") continue;
+      // Skip synthetic sub-agent streaming chunks that carry no usage
+      const usage = msg.usage;
+      if (!usage || typeof usage !== "object") continue;
+      const base = normalizeQoderNewTokens(usage);
+      // Allow billable zero-token messages to still count conversation (no token delta)
+      const isBillable = usage.billable !== false;
+      if (!base && !isBillable) continue;
+      const timestampMs = qoderNewTimestampMs(record);
+      if (!timestampMs) continue;
+      const bucketStart = toUtcHalfHourStart(new Date(timestampMs).toISOString());
+      if (!bucketStart) continue;
+      const messageKey = qoderNewMessageKey(record, filePath);
+      if (!messageKey) continue;
+      const model = qoderNewModelFromRecord(record);
+      const totals = base ? {
+        input_tokens: base.input_tokens,
+        cached_input_tokens: base.cached_input_tokens,
+        cache_creation_input_tokens: base.cache_creation_input_tokens,
+        output_tokens: base.output_tokens,
+        reasoning_output_tokens: 0,
+        total_tokens: base.total_tokens,
+        billable_total_tokens: base.billable_total_tokens,
+        total_cost_usd: Number.isFinite(base.credits) && base.credits > 0 ? base.credits * 0.02 : 0,
+        usage_precision: base.usage_precision || undefined,
+        conversation_count: 1,
+      } : {
+        input_tokens: 0,
+        cached_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        output_tokens: 0,
+        reasoning_output_tokens: 0,
+        total_tokens: 0,
+        billable_total_tokens: 0,
+        total_cost_usd: 0,
+        conversation_count: 1,
+      };
+      let projectKey = null;
+      let projectRef = null;
+      if (projectEnabled) {
+        const cwd = typeof record?.cwd === "string" ? record.cwd.trim() : "";
+        if (cwd) {
+          const context = await resolveProjectContextForPath({
+            startDir: cwd,
+            projectMetaCache,
+            publicRepoCache,
+            publicRepoResolver,
+            projectState,
+          });
+          projectKey = context?.projectKey || null;
+          projectRef = context?.projectRef || null;
+        }
+      }
+      currentByKey.set(messageKey, {
+        totals,
+        bucketStart,
+        model,
+        projectKey,
+        projectRef,
+        filePath,
+      });
+    }
+    if (cb && (fileIdx % 50 === 0 || fileIdx === files.length - 1)) {
+      cb({
+        index: fileIdx + 1,
+        total: fileCount,
+        messagesProcessed: currentByKey.size,
+        eventsAggregated: 0,
+        bucketsQueued: 0,
+      });
+    }
+  }
+
+  let messagesProcessed = currentByKey.size;
+  let eventsAggregated = 0;
+
+  // Subtract contributions that disappeared or changed
+  for (const [key, prev] of Object.entries(qoderState.messages)) {
+    if (!key.startsWith("jsonl:")) continue;
+    const cur = currentByKey.get(key);
+    const unchanged = cur
+      && totalsKey(prev.totals) === totalsKey(cur.totals)
+      && prev.bucketStart === cur.bucketStart
+      && prev.model === cur.model
+      && (prev.projectKey || null) === (cur.projectKey || null)
+      && (prev.total_cost_usd || 0) === (cur.totals.total_cost_usd || 0);
+    if (unchanged) continue;
+    if (prev.totals && prev.bucketStart && prev.model) {
+      const oldBucket = getHourlyBucket(hourlyState, sourceKey, prev.model, prev.bucketStart);
+      subtractTotals(oldBucket.totals, prev.totals);
+      // subtractTotals does not handle total_cost_usd tick rounding for authoritative cost; apply manually
+      if (prev.totals.total_cost_usd) {
+        oldBucket.totals.total_cost_usd = Math.max(0, Number((oldBucket.totals.total_cost_usd - prev.totals.total_cost_usd).toFixed(4)));
+      }
+      touchedBuckets.add(bucketKey(sourceKey, prev.model, prev.bucketStart));
+      if (projectEnabled && prev.projectKey) {
+        const oldProjectBucket = getProjectBucket(projectState, prev.projectKey, sourceKey, prev.bucketStart, prev.projectRef || null);
+        subtractTotals(oldProjectBucket.totals, prev.totals);
+        if (prev.totals.total_cost_usd) {
+          oldProjectBucket.totals.total_cost_usd = Math.max(0, Number((oldProjectBucket.totals.total_cost_usd - prev.totals.total_cost_usd).toFixed(4)));
+        }
+        projectTouchedBuckets.add(projectBucketKey(prev.projectKey, sourceKey, prev.bucketStart));
+      }
+    }
+    if (cur) {
+      const bucket = getHourlyBucket(hourlyState, sourceKey, cur.model, cur.bucketStart);
+      addTotals(bucket.totals, cur.totals);
+      if (cur.totals.usage_precision) bucket.usage_precision = cur.totals.usage_precision;
+      // addTotals handles total_cost_usd via USD_TICKS, but credits cost is small; ensure it accumulates
+      touchedBuckets.add(bucketKey(sourceKey, cur.model, cur.bucketStart));
+      if (projectEnabled && cur.projectKey) {
+        const projectBucket = getProjectBucket(projectState, cur.projectKey, sourceKey, cur.bucketStart, cur.projectRef);
+        addTotals(projectBucket.totals, cur.totals);
+        if (cur.totals.usage_precision) projectBucket.usage_precision = cur.totals.usage_precision;
+        projectTouchedBuckets.add(projectBucketKey(cur.projectKey, sourceKey, cur.bucketStart));
+      }
+      qoderState.messages[key] = {
+        totals: cur.totals,
+        conversationCount: cur.totals.conversation_count,
+        bucketStart: cur.bucketStart,
+        model: cur.model,
+        projectKey: cur.projectKey,
+        projectRef: cur.projectRef,
+        updatedAt: new Date().toISOString(),
+      };
+      eventsAggregated += 1;
+    } else {
+      delete qoderState.messages[key];
+      eventsAggregated += 1;
+    }
+  }
+
+  // Add brand-new keys
+  for (const [key, cur] of currentByKey.entries()) {
+    if (qoderState.messages[key]) continue;
+    const bucket = getHourlyBucket(hourlyState, sourceKey, cur.model, cur.bucketStart);
+    addTotals(bucket.totals, cur.totals);
+    if (cur.totals.usage_precision) bucket.usage_precision = cur.totals.usage_precision;
+    touchedBuckets.add(bucketKey(sourceKey, cur.model, cur.bucketStart));
+    if (projectEnabled && cur.projectKey) {
+      const projectBucket = getProjectBucket(projectState, cur.projectKey, sourceKey, cur.bucketStart, cur.projectRef);
+      addTotals(projectBucket.totals, cur.totals);
+      if (cur.totals.usage_precision) projectBucket.usage_precision = cur.totals.usage_precision;
+      projectTouchedBuckets.add(projectBucketKey(cur.projectKey, sourceKey, cur.bucketStart));
+    }
+    qoderState.messages[key] = {
+      totals: cur.totals,
+      conversationCount: cur.totals.conversation_count,
+      bucketStart: cur.bucketStart,
+      model: cur.model,
+      projectKey: cur.projectKey,
+      projectRef: cur.projectRef,
+      updatedAt: new Date().toISOString(),
+    };
+    eventsAggregated += 1;
+  }
+
+  const bucketsQueued = await enqueueTouchedBuckets({ queuePath, hourlyState, touchedBuckets });
+  const projectBucketsQueued = projectEnabled
+    ? await enqueueTouchedProjectBuckets({ projectQueuePath, projectState, projectTouchedBuckets })
+    : 0;
+  const updatedAt = new Date().toISOString();
+  hourlyState.updatedAt = updatedAt;
+  qoderState.updatedAt = updatedAt;
+  cursors.hourly = hourlyState;
+  cursors[cursorKey] = qoderState;
+  if (projectState) {
+    projectState.updatedAt = updatedAt;
+    cursors.projectHourly = projectState;
+  }
+  return { messagesProcessed, eventsAggregated, bucketsQueued, projectBucketsQueued };
+}
+
 // ── Claude Science (Anthropic's local research workbench, issue #246) ──
 //
 // Claude Science keeps all of its state in a SQLite database named
@@ -18866,6 +19230,10 @@ module.exports = {
   resolveQoderDbPaths,
   resolveQoderCnDbPaths,
   readQoderDbMessages,
+  resolveQoderProjectsDir,
+  resolveQoderCnProjectsDir,
+  listQoderNewSessionFiles,
+  parseQoderNewIncremental,
   resolveKiroBasePath,
   resolveKiroDbPath,
   resolveKiroJsonlPath,
@@ -19000,6 +19368,7 @@ module.exports = {
   normalizeGeminiTokens,
   normalizeOpencodeTokens,
   normalizeQoderTokens,
+  normalizeQoderNewTokens,
   sameGeminiTotals,
   diffGeminiTotals,
   // Exposed so the queue-repair migration can mutate cursors state in the
