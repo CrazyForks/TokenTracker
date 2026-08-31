@@ -32,7 +32,10 @@ struct DashboardView: View {
                                 totalCost: viewModel.totalCost
                             )
                             UsageLimitsView(limits: viewModel.usageLimits, subscriptions: viewModel.subscriptions)
-                            ActivityHeatmapView(heatmap: viewModel.heatmap)
+                            ActivityHeatmapView(
+                                heatmap: viewModel.heatmap,
+                                showsTransientLocalData: viewModel.activityShowsTransientLocalData
+                            )
                             UsageTrendChartWrapper(
                                 daily: viewModel.daily,
                                 monthly: viewModel.monthly,

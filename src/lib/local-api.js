@@ -1399,14 +1399,39 @@ function createLocalApiHandler({ queuePath }) {
     }
   }
 
-  // Returns "served" when the cross-device aggregate was written to `res`, or
-  // "fallthrough" when the caller should serve the local single-machine data.
-  // Any failure (not signed in, cloud sync off, network/auth error) falls
-  // through so the popover always renders something.
+  // Why a *classified* fallback: the native popover keeps the last successful
+  // account (cross-device) snapshot on screen when a cloud read fails
+  // transiently, but must switch to this-machine data the moment the user signs
+  // out or turns cloud sync off. Both used to look identical from the outside
+  // (HTTP 200 + local payload + `X-TokenTracker-Account-View: 0`), so a single
+  // timed-out read silently shrank Activity to one device until the next
+  // manual sync. See ACCOUNT_FALLBACK_* below for the vocabulary.
+  const ACCOUNT_FALLBACK_CLOUD_SYNC_OFF = "cloud-sync-off";
+  const ACCOUNT_FALLBACK_SIGNED_OUT = "signed-out";
+
+  // Every transient reason is prefixed "transient-"; clients only need the
+  // prefix, so new reasons can be added without a client change.
+  function classifyAccountFallback(err) {
+    if (!err) return "transient-error";
+    if (err.name === "AbortError" || err.name === "TimeoutError" || err.code === "auth_timeout") {
+      return "transient-timeout";
+    }
+    if (err.code === "auth_rejected" || err.code === "auth_invalid" || err.status === 401 || err.status === 403) {
+      return "transient-auth";
+    }
+    if (err.code === "auth_network") return "transient-network";
+    if (Number.isFinite(err.status) && err.status > 0) return "transient-upstream";
+    return "transient-network";
+  }
+
+  // Returns "served" when the cross-device aggregate was written to `res`,
+  // otherwise a fallback reason (see above) telling the caller — and, through
+  // the `X-TokenTracker-Account-Fallback` header, the popover — why the local
+  // single-machine data is being served instead.
   async function tryServeAccountView(usageSlug, url, res) {
-    if (!getCloudSyncPref()) return "fallthrough";
+    if (!getCloudSyncPref()) return ACCOUNT_FALLBACK_CLOUD_SYNC_OFF;
     const refreshToken = getRefreshTokenForCloud();
-    if (!refreshToken) return "fallthrough";
+    if (!refreshToken) return ACCOUNT_FALLBACK_SIGNED_OUT;
     const runtime = resolveRuntimeConfig();
     const envTimeout = process.env.TOKENTRACKER_HTTP_TIMEOUT_MS
       ? parseInt(process.env.TOKENTRACKER_HTTP_TIMEOUT_MS, 10)
@@ -1421,7 +1446,10 @@ function createLocalApiHandler({ queuePath }) {
         refreshToken,
         timeoutMs,
       });
-      if (!out || out.data == null) return "fallthrough";
+      // `null` here means the slug has no cloud equivalent, or the session
+      // vanished mid-request — a routing/session fact, not an outage.
+      if (!out) return ACCOUNT_FALLBACK_SIGNED_OUT;
+      if (out.data == null) return "transient-upstream";
       if (out.rotatedRefreshToken) setRelayRefreshToken(out.rotatedRefreshToken);
       if (out.rotatedCsrfToken) setRelayCsrfToken(out.rotatedCsrfToken);
       res.writeHead(200, {
@@ -1433,11 +1461,14 @@ function createLocalApiHandler({ queuePath }) {
       return "served";
     } catch (e) {
       // Signed in + cloud sync on, but the cloud read failed (offline, token
-      // rejected, edge error, or timeout). Fall back to local data rather than erroring.
+      // rejected, edge error, or timeout). Serve local data rather than
+      // erroring, but say so: this is a *temporary* downgrade and the client
+      // must not treat it as the user's real data scope.
+      const reason = classifyAccountFallback(e);
       if (resolveRuntimeConfig().debug) {
-        console.warn(`[LocalAPI] account view fallback for ${usageSlug}:`, e?.message || e);
+        console.warn(`[LocalAPI] account view fallback (${reason}) for ${usageSlug}:`, e?.message || e);
       }
-      return "fallthrough";
+      return reason;
     }
   }
 
@@ -2006,14 +2037,17 @@ function createLocalApiHandler({ queuePath }) {
     // --- account (cross-device) view proxy for the native popover ---
     // When ?account=1 and the user is signed in with cloud sync on, serve the
     // same cross-device aggregate the dashboard shows; otherwise tag the
-    // response (X-TokenTracker-Account-View: 0) so the popover knows it got
-    // local single-machine data, and fall through to the local handler below.
+    // response (X-TokenTracker-Account-View: 0 plus an
+    // X-TokenTracker-Account-Fallback reason) so the popover knows it got local
+    // single-machine data and whether that is permanent (signed out / cloud
+    // sync off) or transient, and fall through to the local handler below.
     if (url.searchParams.get("account") === "1") {
       const usageSlug = p.startsWith("/functions/") ? p.slice("/functions/".length) : "";
       if (accountSlugFor(usageSlug)) {
         const result = await tryServeAccountView(usageSlug, url, res);
         if (result === "served") return true;
         res.setHeader("X-TokenTracker-Account-View", "0");
+        res.setHeader("X-TokenTracker-Account-Fallback", result);
       }
     }
 
