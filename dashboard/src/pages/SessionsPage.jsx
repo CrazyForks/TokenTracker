@@ -65,6 +65,25 @@ function overlapsRange(session, startMs) {
   return Number.isFinite(ended) ? ended >= startMs : true;
 }
 
+function modelUsageRows(session) {
+  const observed = Array.isArray(session?.model_usage)
+    ? session.model_usage.filter((row) => row && typeof row.model === "string" && row.model)
+    : [];
+  if (observed.length) return observed;
+  return [{
+    model: session?.model || copy("sessions.model.unknown"),
+    total_tokens: Number(session?.own_total_tokens || session?.total_tokens || 0),
+  }];
+}
+
+function modelUsageLabel(session) {
+  const rows = modelUsageRows(session);
+  if (rows.length === 1) return rows[0].model;
+  return rows
+    .map((row) => `${row.model} ${formatCompactNumber(Number(row.total_tokens || 0))}`)
+    .join(" · ");
+}
+
 function formatWhen(value, locale) {
   if (!value) return "—";
   const ms = Date.parse(value);
@@ -276,7 +295,7 @@ const SessionRow = React.memo(function SessionRow({
                 <span aria-hidden>·</span>
               </>
             ) : null}
-            <span className="truncate">{session.model || copy("sessions.model.unknown")}</span>
+            <span className="truncate">{modelUsageLabel(session)}</span>
             <span aria-hidden>·</span>
             <span className="tabular-nums">{formatWhen(session.started_at, locale)}</span>
             {duration ? (
@@ -329,7 +348,9 @@ const SessionRow = React.memo(function SessionRow({
           </div>
           <div className="flex w-16 flex-col-reverse">
             <dt className="text-[11px] text-oai-gray-400 dark:text-oai-gray-500">{copy("sessions.col.cost")}</dt>
-            <dd className="tabular-nums text-sm font-medium text-oai-black dark:text-white">{formatUsdCurrency(session.cost_usd, { currency, rate })}</dd>
+            <dd className="tabular-nums text-sm font-medium text-oai-black dark:text-white">
+              {session.cost_is_partial ? "≥" : ""}{formatUsdCurrency(session.cost_usd, { currency, rate })}
+            </dd>
           </div>
           <div className="hidden w-10 flex-col-reverse sm:flex">
             <dt className="text-[11px] text-oai-gray-400 dark:text-oai-gray-500">{copy("sessions.col.turns")}</dt>
@@ -367,13 +388,15 @@ function ThreadModelUsage({ sessions, selectedModel, onSelect }) {
     const byModel = new Map();
     let total = 0;
     for (const session of sessions) {
-      const model = session.model || copy("sessions.model.unknown");
-      const tokens = Number(session.own_total_tokens || session.total_tokens || 0);
-      const current = byModel.get(model) || { model, count: 0, tokens: 0 };
-      current.count += 1;
-      current.tokens += tokens;
-      total += tokens;
-      byModel.set(model, current);
+      for (const usage of modelUsageRows(session)) {
+        const model = usage.model || copy("sessions.model.unknown");
+        const tokens = Number(usage.total_tokens || 0);
+        const current = byModel.get(model) || { model, count: 0, tokens: 0 };
+        current.count += 1;
+        current.tokens += tokens;
+        total += tokens;
+        byModel.set(model, current);
+      }
     }
     return {
       groups: [...byModel.values()].sort((a, b) => b.tokens - a.tokens),
@@ -499,7 +522,8 @@ export function SessionsPage() {
       if (projectFilter !== "all" && row.project_key !== projectFilter) return false;
       if (!overlapsRange(row, startMs)) return false;
       if (!q) return true;
-      const haystack = `${row.title || ""} ${row.project_key || ""} ${row.model || ""} ${row.agent_nickname || ""} ${row.agent_role || ""} ${row.project_ref || ""} ${row.session_id || ""}`.toLowerCase();
+      const models = modelUsageRows(row).map((usage) => usage.model).join(" ");
+      const haystack = `${row.title || ""} ${row.project_key || ""} ${models} ${row.agent_nickname || ""} ${row.agent_role || ""} ${row.project_ref || ""} ${row.session_id || ""}`.toLowerCase();
       return haystack.includes(q);
     });
   }, [allSessions, sourceFilter, projectFilter, rangeFilter, deferredQuery]);
@@ -738,7 +762,7 @@ export function SessionsPage() {
                   const visibleChildren = selectedModel === "all"
                     ? children
                     : children.filter(function matchesSelectedModel(child) {
-                        return (child.model || copy("sessions.model.unknown")) === selectedModel;
+                        return modelUsageRows(child).some((usage) => usage.model === selectedModel);
                       });
 
                   return (

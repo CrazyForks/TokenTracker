@@ -173,6 +173,104 @@ test("Codex session analytics does not report model providers as models", async 
   assert.notEqual(summarizeSessions([session]).by_model[0].model, "openai");
 });
 
+test("Codex session analytics marks unpriced internal model usage as a partial cost", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-session-codex-unpriced-"));
+  const filePath = path.join(dir, "rollout-2026-07-18T07-30-00-00000000-0000-4000-8000-000000000005.jsonl");
+  const usage = {
+    input_tokens: 100,
+    cached_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+    output_tokens: 20,
+    reasoning_output_tokens: 0,
+    total_tokens: 120,
+  };
+  fs.writeFileSync(filePath, `${[
+    { timestamp: "2026-07-18T07:30:00Z", type: "session_meta", payload: { id: "codex-unpriced", cwd: dir, model_provider: "openai" } },
+    { timestamp: "2026-07-18T07:30:01Z", type: "turn_context", payload: { turn_id: "turn-1", cwd: dir, model: "codex-auto-review" } },
+    { timestamp: "2026-07-18T07:30:02Z", type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage, total_token_usage: usage } } },
+  ].map(JSON.stringify).join("\n")}\n`);
+
+  const session = await scanCodexSession(filePath);
+  assert.equal(session.model, "codex-auto-review");
+  assert.equal(session.total_tokens, 120);
+  assert.equal(session.cost_usd, 0);
+  assert.equal(session.cost_is_partial, true);
+});
+
+test("Codex session analytics attributes one session across selected and rerouted effective models", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-session-codex-models-"));
+  const filePath = path.join(dir, "rollout-2026-07-18T08-00-00-00000000-0000-4000-8000-000000000003.jsonl");
+  const usage = (input, output) => ({
+    input_tokens: input,
+    cached_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+    output_tokens: output,
+    reasoning_output_tokens: 0,
+    total_tokens: input + output,
+  });
+  const rows = [
+    { timestamp: "2026-07-18T08:00:00Z", type: "session_meta", payload: { id: "codex-models", cwd: dir, model_provider: "openai" } },
+    { timestamp: "2026-07-18T08:00:01Z", type: "turn_context", payload: { turn_id: "turn-1", cwd: dir, model: "gpt-5.6-sol" } },
+    { timestamp: "2026-07-18T08:00:02Z", type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage(100, 20), total_token_usage: usage(100, 20) } } },
+    { timestamp: "2026-07-18T08:01:00Z", type: "turn_context", payload: { turn_id: "turn-2", cwd: dir, model: "gpt-5.6-luna" } },
+    { timestamp: "2026-07-18T08:01:01Z", type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage(50, 10), total_token_usage: usage(150, 30) } } },
+    { timestamp: "2026-07-18T08:02:00Z", type: "turn_context", payload: { turn_id: "turn-3", cwd: dir, model: "gpt-5.6-sol" } },
+    { timestamp: "2026-07-18T08:02:01Z", method: "model/rerouted", params: { threadId: "codex-models", turnId: "turn-3", fromModel: "gpt-5.6-sol", toModel: "gpt-5.6-terra", reason: "capacity" } },
+    { timestamp: "2026-07-18T08:02:02Z", type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage(30, 6), total_token_usage: usage(180, 36) } } },
+  ];
+  fs.writeFileSync(filePath, `${rows.map(JSON.stringify).join("\n")}\n`);
+
+  const session = await scanCodexSession(filePath);
+  assert.equal(session.model, "mixed");
+  assert.equal(session.total_tokens, 216);
+  assert.deepEqual(session.model_usage.map((row) => [row.model, row.total_tokens]), [
+    ["gpt-5.6-sol", 120],
+    ["gpt-5.6-luna", 60],
+    ["gpt-5.6-terra", 36],
+  ]);
+  const terra = session.model_usage.find((row) => row.model === "gpt-5.6-terra");
+  assert.equal(terra.model_attribution, "effective");
+  assert.equal(terra.rerouted_usage_events, 1);
+  assert.deepEqual(terra.selected_models, ["gpt-5.6-sol"]);
+  assert.deepEqual(terra.reroute_reasons, ["capacity"]);
+  assert.ok(Math.abs(session.cost_usd - 0.000954) < 1e-12);
+
+  const summary = summarizeSessions([session]);
+  assert.equal(summary.summary.sessions, 1);
+  assert.equal(summary.summary.total_tokens, 216);
+  assert.equal(summary.by_model.length, 3);
+  assert.equal(summary.by_model.reduce((sum, row) => sum + row.total_tokens, 0), 216);
+  assert.match(sessionsToCsv(summary.sessions), /gpt-5\.6-terra/);
+});
+
+test("Codex session analytics preserves the exact GPT-5.6 Sol long-context request subset", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-session-codex-long-"));
+  const filePath = path.join(dir, "rollout-2026-07-18T09-00-00-00000000-0000-4000-8000-000000000004.jsonl");
+  const usage = {
+    input_tokens: 300_000,
+    cached_input_tokens: 250_000,
+    cache_creation_input_tokens: 0,
+    output_tokens: 10_000,
+    reasoning_output_tokens: 2_000,
+    total_tokens: 310_000,
+  };
+  fs.writeFileSync(filePath, `${[
+    { timestamp: "2026-07-18T09:00:00Z", type: "session_meta", payload: { id: "codex-long", cwd: dir, model_provider: "openai" } },
+    { timestamp: "2026-07-18T09:00:01Z", type: "turn_context", payload: { turn_id: "turn-1", cwd: dir, model: "gpt-5.6-sol" } },
+    { timestamp: "2026-07-18T09:00:02Z", type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage, total_token_usage: usage } } },
+  ].map(JSON.stringify).join("\n")}\n`);
+
+  const session = await scanCodexSession(filePath);
+  const modelUsage = session.model_usage[0];
+  assert.equal(modelUsage.input_tokens, 50_000);
+  assert.equal(modelUsage.cached_input_tokens, 250_000);
+  assert.equal(modelUsage.long_context_input_tokens, 50_000);
+  assert.equal(modelUsage.long_context_cached_input_tokens, 250_000);
+  assert.equal(modelUsage.long_context_output_tokens, 10_000);
+  assert.equal(modelUsage.long_context_usage_events, 1);
+  assert.ok(Math.abs(session.cost_usd - 0.9) < 1e-12);
+});
+
 test("efficiency denominators only use sessions that contain edits", () => {
   const summary = summarizeSessions([
     {

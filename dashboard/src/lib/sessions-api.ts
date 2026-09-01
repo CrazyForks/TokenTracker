@@ -7,6 +7,28 @@ const SLUG = "tokentracker-sessions";
 
 export type SessionSource = "claude" | "codex" | "grok";
 
+export interface SessionModelUsage {
+  model: string;
+  input_tokens: number;
+  cached_input_tokens: number;
+  cache_creation_input_tokens: number;
+  output_tokens: number;
+  reasoning_output_tokens: number;
+  total_tokens: number;
+  long_context_input_tokens: number;
+  long_context_cached_input_tokens: number;
+  long_context_cache_creation_input_tokens: number;
+  long_context_output_tokens: number;
+  long_context_reasoning_output_tokens: number;
+  usage_events: number;
+  rerouted_usage_events: number;
+  long_context_usage_events: number;
+  selected_models: string[];
+  reroute_reasons: string[];
+  model_attribution: "selected" | "effective";
+  cost_usd: number;
+}
+
 export interface SessionRow {
   session_hash: string;
   session_id: string | null;
@@ -23,6 +45,7 @@ export interface SessionRow {
   project_key: string;
   project_ref: string | null;
   model: string;
+  model_usage: SessionModelUsage[];
   started_at: string | null;
   ended_at: string | null;
   duration_ms: number;
