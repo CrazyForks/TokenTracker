@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { motion, useReducedMotion } from "motion/react";
-import { Info, Loader2, SquareArrowOutUpRight } from "lucide-react";
+import { Info, Loader2, RefreshCw, SquareArrowOutUpRight } from "lucide-react";
 
 // Solid (fill-based) monochrome all-tools mark — matches the fill-based
 // mono provider icons, unlike lucide's stroke-only Layers3. Drawn bold and
@@ -157,9 +157,12 @@ function RefreshButton({ loading, onClick }) {
             ? { duration: 1, repeat: Infinity, ease: "linear" }
             : { duration: 0.3 }
         }
-        style={{ display: "inline-block" }}
+        style={{ display: "inline-flex" }}
       >
-        ↻
+        {/* Real arc geometry: the previous "↻" text glyph is a non-circular,
+            font-dependent shape whose glyph-box center sits off the arc's
+            visual center, so the spin wobbled instead of reading as a circle. */}
+        <RefreshCw className="h-3.5 w-3.5" strokeWidth={2} />
       </motion.span>
     </Button>
   );
