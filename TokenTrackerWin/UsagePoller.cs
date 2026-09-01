@@ -45,6 +45,12 @@ internal sealed class UsagePoller : IDisposable
     private const string AccountQuery = "account=1";
     private readonly Func<string> _baseUrl;
     private CancellationTokenSource? _cts;
+    /// <summary>
+    /// Whether the figures currently on the tray/pet came from the cross-device
+    /// account aggregate. Guards against a temporary cloud failure replacing them
+    /// with this-machine data; see <see cref="ReadAccountSource"/>.
+    /// </summary>
+    private volatile bool _showingAccountData;
 
     /// <summary>
     /// When true, each poll also gathers the heatmap + model-breakdown stats the pet's
@@ -52,14 +58,6 @@ internal sealed class UsagePoller : IDisposable
     /// the extra work only happens while the pet is on screen.
     /// </summary>
     public volatile bool IncludeRichStats;
-
-    /// <summary>
-    /// Whether the most recent summary fetch returned cross-device ("account view")
-    /// data rather than local single-machine data. Mirrors the macOS APIClient's
-    /// <c>accountViewActive</c>; driven by the <c>X-TokenTracker-Account-View</c>
-    /// response header the local server sets.
-    /// </summary>
-    public volatile bool AccountViewActive;
 
     /// <summary>
     /// Fetch the provider quota snapshot while the desktop pet is visible. Keeping
@@ -113,6 +111,37 @@ internal sealed class UsagePoller : IDisposable
         }, token);
     }
 
+    /// <summary>Why the local server served what it served on an <c>account=1</c> request.</summary>
+    private enum AccountSource
+    {
+        /// <summary>Cross-device account aggregate.</summary>
+        Account,
+        /// <summary>This-machine data, and that is the correct scope (signed out / cloud sync off).</summary>
+        LocalAuthoritative,
+        /// <summary>This-machine data only because the cloud read failed.</summary>
+        LocalTransient,
+    }
+
+    /// <summary>
+    /// Read the pair of account-view headers. A server too old to send the reason
+    /// header reports no reason, which stays <see cref="AccountSource.LocalAuthoritative"/>
+    /// — i.e. the behaviour this client had before the header existed.
+    /// </summary>
+    private static AccountSource ReadAccountSource(HttpResponseMessage resp)
+    {
+        if (resp.Headers.TryGetValues("X-TokenTracker-Account-View", out var view)
+            && view.FirstOrDefault() == "1")
+            return AccountSource.Account;
+
+        var reason = resp.Headers.TryGetValues("X-TokenTracker-Account-Fallback", out var fallback)
+            ? fallback.FirstOrDefault() ?? string.Empty
+            : string.Empty;
+        // Every transient reason is prefixed "transient-", so new ones need no client change.
+        return reason.StartsWith("transient", StringComparison.Ordinal)
+            ? AccountSource.LocalTransient
+            : AccountSource.LocalAuthoritative;
+    }
+
     private async Task<string?> FetchLimitsAsync()
     {
         try
@@ -144,10 +173,13 @@ internal sealed class UsagePoller : IDisposable
             using var resp = await Http.GetAsync(summaryUrl);
             if (!resp.IsSuccessStatusCode) return null;
 
-            // Track whether the server served the cross-device aggregate or fell
-            // back to local data, mirroring the macOS client.
-            if (resp.Headers.TryGetValues("X-TokenTracker-Account-View", out var accountViewValues))
-                AccountViewActive = accountViewValues.FirstOrDefault() == "1";
+            // The server serves this-machine data both when that is the user's real
+            // scope and when a cloud read merely failed. Publishing the latter would
+            // silently drop the tray/pet from cross-device totals to one machine
+            // until the next lucky poll, so skip the publish instead: the tray keeps
+            // the last stats it rendered (TrayApplicationContext._lastStats).
+            var summarySource = ReadAccountSource(resp);
+            if (summarySource == AccountSource.LocalTransient && _showingAccountData) return null;
 
             await using var stream = await resp.Content.ReadAsStreamAsync();
             using var doc = await JsonDocument.ParseAsync(stream);
@@ -183,10 +215,17 @@ internal sealed class UsagePoller : IDisposable
             IReadOnlyList<TopModelStat> models = NoModels;
             if (IncludeRichStats)
             {
-                (streak, activeAll) = await FetchHeatmapAsync(tzQuery);
-                models = await FetchTopModelsAsync(today, tzQuery);
+                var heatmap = await FetchHeatmapAsync(tzQuery);
+                var topModels = await FetchTopModelsAsync(today, tzQuery);
+                // null = this dataset came back as a transient local fallback while
+                // the tray is showing account data. One UsageStats is published
+                // atomically, so mixing authorities inside it is not an option.
+                if (heatmap is null || topModels is null) return null;
+                (streak, activeAll) = heatmap.Value;
+                models = topModels;
             }
 
+            _showingAccountData = summarySource == AccountSource.Account;
             return new UsageStats(
                 tokens, cost, convos,
                 l7Tokens, l7Active,
@@ -202,13 +241,14 @@ internal sealed class UsagePoller : IDisposable
 
     /// <summary>Heatmap: all-time active days + current streak (streak is server-computed; the
     /// local server returns 0, matching how the macOS pet reads it against the same backend).</summary>
-    private async Task<(int Streak, int ActiveDays)> FetchHeatmapAsync(string tzQuery)
+    private async Task<(int Streak, int ActiveDays)?> FetchHeatmapAsync(string tzQuery)
     {
         try
         {
             var url = $"{_baseUrl()}/functions/tokentracker-usage-heatmap?weeks=52{tzQuery}&{AccountQuery}";
             using var resp = await Http.GetAsync(url);
             if (!resp.IsSuccessStatusCode) return (0, 0);
+            if (ReadAccountSource(resp) == AccountSource.LocalTransient && _showingAccountData) return null;
             await using var stream = await resp.Content.ReadAsStreamAsync();
             using var doc = await JsonDocument.ParseAsync(stream);
             var root = doc.RootElement;
@@ -223,7 +263,7 @@ internal sealed class UsagePoller : IDisposable
     /// provider from the highest-token row for that name, percent = tokens / total billable
     /// (one decimal), sort by tokens desc then name asc, top 5.
     /// </summary>
-    private async Task<IReadOnlyList<TopModelStat>> FetchTopModelsAsync(string today, string tzQuery)
+    private async Task<IReadOnlyList<TopModelStat>?> FetchTopModelsAsync(string today, string tzQuery)
     {
         try
         {
@@ -232,6 +272,7 @@ internal sealed class UsagePoller : IDisposable
                       + $"?from={from}&to={today}{tzQuery}&{AccountQuery}";
             using var resp = await Http.GetAsync(url);
             if (!resp.IsSuccessStatusCode) return NoModels;
+            if (ReadAccountSource(resp) == AccountSource.LocalTransient && _showingAccountData) return null;
             await using var stream = await resp.Content.ReadAsStreamAsync();
             using var doc = await JsonDocument.ParseAsync(stream);
             if (!doc.RootElement.TryGetProperty("sources", out var sources)
