@@ -1,8 +1,18 @@
 "use strict";
 
-// Codex token_count events do not carry a model id. Attribute them to the
-// latest turn selection, upgraded to the effective model when an app-server
-// model/rerouted notification is present in the persisted event stream.
+// Codex token_count events do not carry a model id. Every usage event is
+// therefore attributed to the model named by the most recent turn_context,
+// which Codex emits at the start of each turn and which tracks mid-session
+// model switches exactly. That per-turn path is what actually runs today.
+//
+// The model/rerouted upgrade below is forward-looking: it promotes usage to
+// the effective model when the app server reports a server-side reroute.
+//
+// Deliberately NOT used for attribution: event_msg/thread_settings_applied.
+// It carries thread_settings.model, but it fires when the user picks a model
+// in the UI - seconds to minutes before the switch takes effect - so usage
+// still streaming from the in-flight turn belongs to the previous model.
+// turn_context is the only signal that marks where a turn actually begins.
 
 function cleanString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -26,6 +36,11 @@ function eventEnvelope(obj) {
   return candidates.find(({ name }) => normalizeEventName(name) === "model/rerouted") || null;
 }
 
+// Forward-looking: no model/rerouted event has been observed in any real
+// rollout (verified against 5832 local files, codex-cli 0.151.0), so the
+// envelope shapes and the fromModel/toModel field names below are inferred
+// from the app-server protocol rather than confirmed against logged data.
+// Re-verify against a real sample before relying on rerouted attribution.
 function extractModelReroute(obj) {
   const envelope = eventEnvelope(obj);
   if (!envelope) return null;

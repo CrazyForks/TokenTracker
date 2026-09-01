@@ -36,6 +36,8 @@ const MAX_DISCOVERY_INVENTORIES = 32;
 const DISCOVERY_INVENTORIES = new Map();
 const ZONED_DAY_FORMATTERS = new Map();
 const CODEX_RESUME_INVALIDATED = "TOKENTRACKER_CODEX_RESUME_INVALIDATED";
+// See src/lib/pricing/index.js: no observed Codex request reaches this
+// threshold yet (context window 258400), so long_context_* stays at zero.
 const OPENAI_LONG_CONTEXT_INPUT_THRESHOLD = 272_000;
 
 // ---------------------------------------------------------------------------

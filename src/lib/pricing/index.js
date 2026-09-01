@@ -25,6 +25,10 @@ const PI_SUBSCRIPTION_SOURCES = new Set([
 // server (including LM Link). Secure Cloud usage has a separate billing path
 // and is not present in these logs.
 const LOCAL_INFERENCE_SOURCES = new Set(["lmstudio"]);
+// Forward-looking: unreachable for Codex today. Every observed token_count
+// reports model_context_window = 258400, below this threshold, so no request
+// can exceed it (max raw input seen locally: 238853). The long-context
+// repricing stays in place for when OpenAI ships a larger Codex window.
 const OPENAI_LONG_CONTEXT_INPUT_THRESHOLD = 272_000;
 const SOURCES_WITH_AUTHORITATIVE_COST = new Set(["grok"]);
 const SEED_SNAPSHOT_PATH = path.resolve(__dirname, "seed-snapshot.json");
