@@ -890,3 +890,99 @@ test("Grok does not invent billable tokens from context window occupancy", async
   assert.equal(session.total_tokens, 0);
   assert.equal(listSessionsForBrowser([session]).sessions.length, 0);
 });
+
+test("by_model sums tokens and cost exactly while session headcount overlaps by design", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-session-bymodel-sum-"));
+  const usage = (input, output) => ({
+    input_tokens: input,
+    cached_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+    output_tokens: output,
+    reasoning_output_tokens: 0,
+    total_tokens: input + output,
+  });
+  const writeSession = (id, turns) => {
+    const filePath = path.join(dir, `rollout-2026-07-19T08-00-00-00000000-0000-4000-8000-00000000000${id}.jsonl`);
+    const rows = [
+      { timestamp: "2026-07-19T08:00:00Z", type: "session_meta", payload: { id: `codex-sum-${id}`, cwd: dir, model_provider: "openai" } },
+    ];
+    let running = 0;
+    turns.forEach(([model, input, output], index) => {
+      running += input + output;
+      rows.push({ timestamp: `2026-07-19T08:0${index}:01Z`, type: "turn_context", payload: { turn_id: `turn-${index}`, cwd: dir, model } });
+      rows.push({ timestamp: `2026-07-19T08:0${index}:02Z`, type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage(input, output), total_token_usage: usage(running, 0) } } });
+    });
+    fs.writeFileSync(filePath, `${rows.map(JSON.stringify).join("\n")}\n`);
+    return filePath;
+  };
+
+  // One session switches models mid-thread, one stays on a single model.
+  const mixed = await scanCodexSession(writeSession(1, [["gpt-5.6-sol", 100, 20], ["gpt-5.6-terra", 50, 10]]));
+  const single = await scanCodexSession(writeSession(2, [["gpt-5.6-sol", 40, 8]]));
+  const summary = summarizeSessions([mixed, single]);
+
+  // Token, cost and edit-turn columns are fully observed per model, so they
+  // reconcile with the session totals to the last unit.
+  const sum = (key) => summary.by_model.reduce((acc, row) => acc + row[key], 0);
+  assert.equal(sum("total_tokens"), summary.summary.total_tokens);
+  assert.equal(sum("edit_turns"), summary.summary.edit_turns);
+  assert.ok(Math.abs(sum("cost_usd") - summary.summary.cost_usd) < 1e-12);
+
+  // The session headcount deliberately overlaps: the mixed session is counted
+  // under both models, so summing this column overstates the real total.
+  assert.equal(summary.summary.sessions, 2);
+  assert.equal(sum("sessions"), 3);
+  assert.equal(summary.session_count, 2);
+});
+
+test("sidecar omits reconstructible model_usage fields without losing information", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "tt-session-sidecar-trim-"));
+  const codexDir = path.join(home, ".codex", "sessions", "2026", "07", "20");
+  fs.mkdirSync(codexDir, { recursive: true });
+  const usage = (input, output) => ({
+    input_tokens: input,
+    cached_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+    output_tokens: output,
+    reasoning_output_tokens: 0,
+    total_tokens: input + output,
+  });
+  const rows = [
+    { timestamp: "2026-07-20T08:00:00Z", type: "session_meta", payload: { id: "codex-trim", cwd: home, model_provider: "openai" } },
+    { timestamp: "2026-07-20T08:00:01Z", type: "turn_context", payload: { turn_id: "turn-1", cwd: home, model: "gpt-5.6-sol" } },
+    { timestamp: "2026-07-20T08:00:02Z", type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage(100, 20), total_token_usage: usage(100, 20) } } },
+    { timestamp: "2026-07-20T08:01:01Z", type: "turn_context", payload: { turn_id: "turn-2", cwd: home, model: "gpt-5.6-terra" } },
+    { timestamp: "2026-07-20T08:01:02Z", type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage(50, 10), total_token_usage: usage(150, 30) } } },
+  ];
+  fs.writeFileSync(
+    path.join(codexDir, "rollout-2026-07-20T08-00-00-00000000-0000-4000-8000-000000000004.jsonl"),
+    `${rows.map(JSON.stringify).join("\n")}\n`,
+  );
+
+  const cold = await buildSessionAnalytics({ home, force: true });
+  const sidecar = fs.readFileSync(path.join(home, ".tokentracker", "tracker", "session.queue.jsonl"), "utf8");
+  const persisted = JSON.parse(sidecar.split("\n").filter(Boolean)[0]).model_usage[0];
+
+  // Zero counters, a selected_models that only repeats the model, the default
+  // attribution and the recomputed cost are all dropped on write.
+  assert.equal(persisted.long_context_input_tokens, undefined);
+  assert.equal(persisted.long_context_usage_events, undefined);
+  assert.equal(persisted.rerouted_usage_events, undefined);
+  assert.equal(persisted.selected_models, undefined);
+  assert.equal(persisted.reroute_reasons, undefined);
+  assert.equal(persisted.model_attribution, undefined);
+  assert.equal(persisted.cost_usd, undefined);
+  assert.ok(persisted.total_tokens > 0);
+
+  // Re-reading the trimmed sidecar rebuilds every dropped field.
+  const warm = await buildSessionAnalytics({ home });
+  assert.deepEqual(
+    warm.map((row) => row.model_usage),
+    cold.map((row) => row.model_usage),
+  );
+  assert.deepEqual(warm.map((row) => row.cost_usd), cold.map((row) => row.cost_usd));
+  const restored = warm[0].model_usage.find((row) => row.model === "gpt-5.6-sol");
+  assert.deepEqual(restored.selected_models, ["gpt-5.6-sol"]);
+  assert.equal(restored.model_attribution, "selected");
+  assert.equal(restored.long_context_input_tokens, 0);
+});

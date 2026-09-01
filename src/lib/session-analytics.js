@@ -152,9 +152,16 @@ function normalizeModelUsageRows(rows) {
       byModel.set(model, row);
     }
     for (const field of MODEL_USAGE_SUM_FIELDS) row[field] += finite(value?.[field]);
-    for (const selected of Array.isArray(value?.selected_models) ? value.selected_models : []) {
-      const normalized = normalizeSessionModel(selected);
-      if (normalized) row.selected_models.add(normalized);
+    if (Array.isArray(value?.selected_models)) {
+      for (const selected of value.selected_models) {
+        const normalized = normalizeSessionModel(selected);
+        if (normalized) row.selected_models.add(normalized);
+      }
+    } else if (model !== "unknown") {
+      // serializeModelUsageRow() omits selected_models when it is just the
+      // effective model repeated. An absent field therefore means "selected
+      // == effective", which is the case for every non-rerouted row.
+      row.selected_models.add(model);
     }
     for (const reason of Array.isArray(value?.reroute_reasons) ? value.reroute_reasons : []) {
       if (typeof reason === "string" && reason.trim()) row.reroute_reasons.add(reason.trim());
@@ -170,6 +177,36 @@ function normalizeModelUsageRows(rows) {
       reroute_reasons: [...row.reroute_reasons].sort(),
     }))
     .sort((a, b) => b.total_tokens - a.total_tokens || a.model.localeCompare(b.model));
+}
+
+// The sidecar is re-read on every dashboard request, so keep it small: omit
+// the model_usage fields that normalizeModelUsageRows() reconstructs on read.
+// All four omissions are lossless - zero counters default to 0, an absent
+// selected_models re-seeds from `model`, model_attribution is derived from
+// rerouted_usage_events, and cost_usd is always recomputed by
+// repriceSessionRecord(). Worth ~19% of the file on a 6.8k-session history,
+// most of it the long_context_* counters that stay at zero (see
+// OPENAI_LONG_CONTEXT_INPUT_THRESHOLD in src/lib/pricing/index.js).
+function serializeModelUsageRow(row) {
+  const out = { model: row.model };
+  for (const field of MODEL_USAGE_SUM_FIELDS) {
+    const value = finite(row[field]);
+    if (value !== 0) out[field] = value;
+  }
+  const selected = Array.isArray(row.selected_models) ? row.selected_models : [];
+  if (!(selected.length === 1 && selected[0] === row.model)) out.selected_models = selected;
+  if (Array.isArray(row.reroute_reasons) && row.reroute_reasons.length > 0) {
+    out.reroute_reasons = row.reroute_reasons;
+  }
+  if (row.model_attribution === "effective") out.model_attribution = "effective";
+  return out;
+}
+
+function serializeSessionRecord(row) {
+  if (!Array.isArray(row?.model_usage) || row.model_usage.length === 0) {
+    return JSON.stringify(row);
+  }
+  return JSON.stringify({ ...row, model_usage: row.model_usage.map(serializeModelUsageRow) });
 }
 
 function repriceSessionRecord(record) {
@@ -1327,7 +1364,7 @@ async function buildSessionAnalyticsInternal({ home = os.homedir(), force = fals
     nextFiles[cacheKey] = { stat_key: statKey };
   }
   sessions.sort((a, b) => String(b.ended_at || "").localeCompare(String(a.ended_at || "")));
-  const content = sessions.map((row) => JSON.stringify(row)).join("\n") + (sessions.length ? "\n" : "");
+  const content = sessions.map(serializeSessionRecord).join("\n") + (sessions.length ? "\n" : "");
   await writeAtomic(sidecarPath, content);
   const generatedAt = new Date().toISOString();
   await writeAtomic(metaPath, `${JSON.stringify({
@@ -1415,6 +1452,13 @@ function summarizeSessions(sessions, { from = "", to = "", includeSessions = tru
       totals.edit_cost_usd += finite(row.cost_usd);
     }
 
+    // One session contributes a row to EVERY model it used, so per-model
+    // `sessions` counts "sessions that touched this model" and the column does
+    // NOT sum to summary.sessions (a session that switched models mid-thread
+    // is counted once per model). Token, cost and edit_turn columns DO sum
+    // exactly - only the session headcount overlaps. Read the session total
+    // from summary.sessions / session_count, never by summing this column;
+    // test/session-analytics.test.js locks both halves of that contract.
     const usageRows = modelUsageForAggregation(row);
     const primaryModel = usageRows[0]?.model || "unknown";
     for (const usage of usageRows) {

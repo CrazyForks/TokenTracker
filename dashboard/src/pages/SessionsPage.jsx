@@ -257,18 +257,23 @@ const SessionRow = React.memo(function SessionRow({
                 {copy("sessions.badge.first_pass")}
               </span>
             ) : null}
-            {isGrok && session.usage_precision ? (
+            {(isGrok && session.usage_precision) || session.cost_is_partial ? (
               <span className={cn(
                 "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium",
                 session.usage_is_incomplete || session.cost_is_partial
                   ? "bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300"
                   : "bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300",
               )}>
-                {session.usage_is_incomplete || session.cost_is_partial
+                {session.usage_is_incomplete
                   ? copy("sessions.badge.partial_usage")
-                  : session.cost_source === "provider_reported"
-                    ? copy("sessions.badge.reported_cost")
-                    : copy("sessions.badge.reported_usage")}
+                  : session.cost_is_partial
+                    // Distinct from partial usage: every token is observed,
+                    // but a model in the session has no public rate, so the
+                    // cost below is a lower bound rather than an estimate.
+                    ? copy("sessions.badge.partial_cost")
+                    : session.cost_source === "provider_reported"
+                      ? copy("sessions.badge.reported_cost")
+                      : copy("sessions.badge.reported_usage")}
               </span>
             ) : null}
             {childCount ? (
@@ -348,7 +353,10 @@ const SessionRow = React.memo(function SessionRow({
           </div>
           <div className="flex w-16 flex-col-reverse">
             <dt className="text-[11px] text-oai-gray-400 dark:text-oai-gray-500">{copy("sessions.col.cost")}</dt>
-            <dd className="tabular-nums text-sm font-medium text-oai-black dark:text-white">
+            <dd
+              className="tabular-nums text-sm font-medium text-oai-black dark:text-white"
+              title={session.cost_is_partial ? copy("sessions.cost.partial_title") : undefined}
+            >
               {session.cost_is_partial ? "≥" : ""}{formatUsdCurrency(session.cost_usd, { currency, rate })}
             </dd>
           </div>

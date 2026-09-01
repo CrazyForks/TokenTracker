@@ -210,7 +210,12 @@ describe("SessionsPage", () => {
     render(<SessionsPage />);
     expect(await screen.findByText("Mixed model work")).toBeInTheDocument();
     expect(screen.getByText(/gpt-5\.6-sol 6K.*gpt-5\.6-terra 2K/)).toBeInTheDocument();
-    expect(screen.getByText(/^≥\$/)).toBeInTheDocument();
+    // A Codex session priced from an unrated model must explain itself: the
+    // marker alone used to be the only signal and carried no label at all.
+    const partialCost = screen.getByText(/^≥\$/);
+    expect(partialCost).toBeInTheDocument();
+    expect(partialCost).toHaveAttribute("title", expect.stringContaining("Lower bound"));
+    expect(screen.getByText("Partial cost")).toBeInTheDocument();
 
     fireEvent.change(screen.getByRole("searchbox", { name: "Search sessions" }), {
       target: { value: "terra" },
