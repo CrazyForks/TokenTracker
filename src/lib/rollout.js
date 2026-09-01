@@ -5085,12 +5085,30 @@ function readZcodeNativeUsageMessages(dbPath, sqliteOptions = {}) {
 
 // Read only genuine ZCode assistant messages (its own GLM models via Z.ai /
 // BigModel), dropping any bundled sub-agent turns. See isZcodeNativeMessage.
+//
+// ZCode started writing model_usage after many installations had already
+// accumulated months of history in the OpenCode message tables. The native
+// table is authoritative from its first completed row onward, but it is not a
+// historical backfill. Keep legacy rows before that boundary so merely adding
+// the new table cannot make older usage disappear from TokenTracker.
 function readZcodeDbMessages(dbPath, sqliteOptions = {}) {
   if (!dbPath || !fssync.existsSync(dbPath)) return [];
   const nativeMessages = readZcodeNativeUsageMessages(dbPath, sqliteOptions);
-  if (nativeMessages !== null) return nativeMessages;
-  const all = readOpencodeDbMessages(dbPath, sqliteOptions);
-  return all.filter((m) => isZcodeNativeMessage(m.data));
+  const legacyMessages = readOpencodeDbMessages(dbPath, sqliteOptions)
+    .filter((message) => isZcodeNativeMessage(message.data));
+  if (nativeMessages === null) return legacyMessages;
+
+  const nativeStartMs = nativeMessages.reduce((earliest, message) => {
+    const timestampMs = coerceEpochMs(message?.timeUpdated);
+    return timestampMs > 0 ? Math.min(earliest, timestampMs) : earliest;
+  }, Number.POSITIVE_INFINITY);
+  if (!Number.isFinite(nativeStartMs)) return legacyMessages;
+
+  const historicalMessages = legacyMessages.filter((message) => {
+    const timestampMs = coerceEpochMs(message?.timeUpdated);
+    return timestampMs > 0 && timestampMs < nativeStartMs;
+  });
+  return [...historicalMessages, ...nativeMessages];
 }
 
 async function parseOpencodeDbIncremental({

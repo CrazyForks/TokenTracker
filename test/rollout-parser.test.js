@@ -3363,6 +3363,68 @@ test("readZcodeDbMessages queries a real native schema and ignores unfinished re
   }
 });
 
+test("readZcodeDbMessages preserves legacy history before native model_usage begins", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-zcode-native-history-"));
+  try {
+    const dbPath = path.join(tmp, "db.sqlite");
+    const legacyBeforeNative = {
+      id: "legacy-before-native",
+      sessionID: "session-real",
+      role: "assistant",
+      providerID: "builtin:zai-start-plan",
+      modelID: "GLM-5.2",
+      time: { created: 1781514000000, completed: 1781514060000 },
+      tokens: { input: 70, output: 10, reasoning: 0, cache: { read: 20, write: 0 } },
+    };
+    const legacyCoveredByNative = {
+      ...legacyBeforeNative,
+      id: "legacy-covered-by-native",
+      time: { created: 1787105605912, completed: 1787105665912 },
+    };
+    const beforeJson = JSON.stringify(legacyBeforeNative).replace(/'/g, "''");
+    const coveredJson = JSON.stringify(legacyCoveredByNative).replace(/'/g, "''");
+    runSqliteWrite(dbPath, `
+      CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT NOT NULL);
+      CREATE TABLE message (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        time_created INTEGER NOT NULL,
+        time_updated INTEGER NOT NULL,
+        data TEXT NOT NULL
+      );
+      CREATE TABLE model_usage (
+        id TEXT PRIMARY KEY,
+        logical_request_id TEXT NOT NULL,
+        attempt_index INTEGER NOT NULL DEFAULT 0,
+        session_id TEXT NOT NULL,
+        provider_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_input_tokens INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO session VALUES ('session-real', '/real/project');
+      INSERT INTO message VALUES
+        ('legacy-before-native', 'session-real', 1781514000000, 1781514060000, '${beforeJson}'),
+        ('legacy-covered-by-native', 'session-real', 1787105605912, 1787105665912, '${coveredJson}');
+      INSERT INTO model_usage VALUES
+        ('native', 'logical-native', 0, 'session-real', 'builtin:zai-start-plan', 'GLM-5.3',
+         'completed', 1787105605912, 101, 21, 6, 11, 31);
+    `);
+
+    const rows = readZcodeDbMessages(dbPath);
+    assert.deepEqual(rows.map((row) => row.id), ["legacy-before-native", "native"]);
+    assert.equal(rows[0].data.modelID, "GLM-5.2");
+    assert.equal(rows[1].data.modelID, "GLM-5.3");
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("readZcodeDbMessages snapshots native model_usage DBs on UNC paths", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-zcode-native-unc-"));
   try {
