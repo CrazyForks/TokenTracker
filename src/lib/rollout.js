@@ -5824,10 +5824,16 @@ function normalizeQoderNewTokens(usage) {
   if (!usage || typeof usage !== "object") return null;
   const credits = Number(usage.credits ?? usage.original_credits ?? 0);
   const billable = usage.billable !== false;
-  const input = Number(usage.input_tokens ?? 0);
-  const cached = Number(usage.cache_read_input_tokens ?? usage.cached_tokens ?? 0);
-  const cacheCreation = Number(usage.cache_creation_input_tokens ?? 0);
-  const output = Number(usage.output_tokens ?? 0);
+  let input = Number(usage.input_tokens ?? 0);
+  let cached = Number(usage.cache_read_input_tokens ?? usage.cached_tokens ?? 0);
+  let cacheCreation = Number(usage.cache_creation_input_tokens ?? 0);
+  let output = Number(usage.output_tokens ?? 0);
+  // Guard against malformed numbers (NaN/Infinity/negative) — align with
+  // legacy normalizeQoderTokens which returns null on such input.
+  if (!Number.isFinite(input) || input < 0) input = 0;
+  if (!Number.isFinite(cached) || cached < 0) cached = 0;
+  if (!Number.isFinite(cacheCreation) || cacheCreation < 0) cacheCreation = 0;
+  if (!Number.isFinite(output) || output < 0) output = 0;
   // New SDK reports 0 tokens but non-zero credits — estimate tokens from credits
   // so the dashboard still shows activity. Keep estimate conservative and mark
   // precision so it is distinguishable from exact local.db rows.
