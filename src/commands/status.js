@@ -499,10 +499,10 @@ async function cmdStatus(argv = []) {
   });
   const qoderActive = formatResolvedPaths(qoderPaths);
   // New JSONL location (com.qoder.app.stable + ~/.qoder/projects)
+  const qoderProjectsDirResolved = resolveQoderProjectsDir({ home, env: process.env });
   let qoderNewFiles = [];
   try {
-    const qoderProjectsDir = resolveQoderProjectsDir({ home, env: process.env });
-    qoderNewFiles = await listQoderNewSessionFiles(qoderProjectsDir);
+    qoderNewFiles = await listQoderNewSessionFiles(qoderProjectsDirResolved);
   } catch (_e) {
     qoderNewFiles = [];
   }
@@ -510,7 +510,7 @@ async function cmdStatus(argv = []) {
   const qoderInstalled = qoderActive.length > 0 || qoderNewInstalled;
   const qoderDbPath = qoderActive.join(" | ");
   const qoderNewPath = qoderNewFiles.length > 0
-    ? `${resolveQoderProjectsDir({ home, env: process.env })} (${qoderNewFiles.length} sessions)`
+    ? `${qoderProjectsDirResolved} (${qoderNewFiles.length} sessions)`
     : "";
 
   // Qoder CN (国内版) — same schema, separate Application Support/QoderCN dir.

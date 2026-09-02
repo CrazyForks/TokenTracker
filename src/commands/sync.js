@@ -1283,7 +1283,7 @@ async function cmdSync(argv, context = {}) {
             projectQueuePath,
             onProgress: makeProviderProgress("Qoder (new)"),
             sourceKey: "qoder",
-            cursorKey: "qoder",
+            cursorKey: "qoderNew",
           });
           qoderResult = {
             recordsProcessed: qoderResult.recordsProcessed + (parsed.messagesProcessed || 0),
@@ -1354,7 +1354,11 @@ async function cmdSync(argv, context = {}) {
       try {
         const cnProjectsDir = resolveQoderCnProjectsDir({ home, env: process.env });
         const intlProjectsDir = resolveQoderProjectsDir({ home, env: process.env });
-        if (cnProjectsDir !== intlProjectsDir) {
+        const projectsDirKey = (p) => {
+          const normalized = path.normalize(p);
+          return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+        };
+        if (projectsDirKey(cnProjectsDir) !== projectsDirKey(intlProjectsDir)) {
           const sessionFiles = await listQoderNewSessionFiles(cnProjectsDir);
           if (sessionFiles.length > 0) {
             if (progress?.enabled) {
@@ -1367,7 +1371,7 @@ async function cmdSync(argv, context = {}) {
               projectQueuePath,
               onProgress: makeProviderProgress("Qoder CN (new)"),
               sourceKey: "qoder-cn",
-              cursorKey: "qoder-cn",
+              cursorKey: "qoderCnNew",
             });
             qoderCnResult = {
               recordsProcessed: qoderCnResult.recordsProcessed + (parsed.messagesProcessed || 0),

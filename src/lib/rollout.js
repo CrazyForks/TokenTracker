@@ -5726,9 +5726,15 @@ async function parseQoderDbIncremental({
 // credit-billed SDK: {input_tokens:0, output_tokens:0, credits:3.2, billable:true}.
 // Token breakdown is unavailable in the new format; we estimate tokens from
 // credits for dashboard continuity and mark the bucket usage_precision so the
-// estimate is distinguishable from exact DB rows.
-// Old local.db is kept as a legacy fallback; both sources share the "qoder"
-// cursor namespace via disjoint messageKey prefixes (row: vs jsonl:).
+// estimate is distinguishable from exact DB rows. Cost remains unknown — no
+// authoritative credit→USD rate is published, so total_cost_usd stays 0 and
+// dashboard falls back to token pricing (which will be 0 for unpriced qoder
+// models, intentionally not a pseudo-precise $ value).
+// Old local.db is kept as a legacy fallback; both sources now use distinct
+// cursor namespaces (qoder vs qoderNew) via disjoint messageKey prefixes
+// (row: vs jsonl:) but upload under the same source="qoder".
+const QODER_CREDITS_ESTIMATE_TOKENS_PER_CREDIT = 1500;
+
 function resolveQoderProjectsDir({ home = os.homedir(), env = process.env, platform = process.platform, deps = {} } = {}) {
   const override = typeof env.QODER_PROJECTS_DIR === "string" && env.QODER_PROJECTS_DIR.trim()
     ? path.resolve(env.QODER_PROJECTS_DIR.trim())
@@ -5791,17 +5797,19 @@ function qoderNewModelFromRecord(record) {
   return normalizeModelInput(direct) || "qoder-agent";
 }
 
-function qoderNewMessageKey(record, filePath) {
+function qoderNewMessageKey(record, filePath, lineIndex = 0) {
   const msgId = normalizeMessageKeyPart(record?.message?.id)
     || normalizeMessageKeyPart(record?.uuid)
-    || normalizeMessageKeyPart(record?.message?.id)
+    || normalizeMessageKeyPart(record?.id)
     || null;
   const sessionId = normalizeMessageKeyPart(record?.sessionId || record?.session_id);
-  // Prefix to avoid collision with legacy row: keys
+  // Prefix to avoid collision with legacy row: keys; fallback includes line index
+  // so multiple no-id records in the same file remain distinct.
+  const fallbackSuffix = Number.isFinite(lineIndex) ? `${filePath}:${lineIndex}` : filePath;
   if (sessionId && msgId) return `jsonl:${sessionId}|${msgId}`;
   if (msgId) return `jsonl:${msgId}`;
-  if (sessionId) return `jsonl:${sessionId}|${record?.uuid || filePath}`;
-  return `jsonl:${filePath}|${record?.uuid || ""}`;
+  if (sessionId) return `jsonl:${sessionId}|${record?.uuid || fallbackSuffix}`;
+  return `jsonl:${fallbackSuffix}|${record?.uuid || ""}`;
 }
 
 function qoderNewTimestampMs(record) {
@@ -5841,11 +5849,11 @@ function normalizeQoderNewTokens(usage) {
     };
   }
   if (Number.isFinite(credits) && credits > 0 && billable) {
-    // Heuristic: 1 credit ≈ 1500 tokens (calibrated against legacy prompt_tokens
-    // vs credit samples from DSH003). Token split is unknown, so attribute to
-    // input for cost continuity; dashboard cost will be derived via pricing if
-    // available, otherwise authoritative cost below covers it.
-    const estimated = Math.max(1, Math.round(credits * 1500));
+    // No authoritative credit→USD rate is published. Preserve token continuity
+    // via a documented heuristic; cost stays unknown (0) so dashboard does not
+    // render a pseudo-precise $ value. Token split is unknown, so attribute to
+    // input.
+    const estimated = Math.max(1, Math.round(credits * QODER_CREDITS_ESTIMATE_TOKENS_PER_CREDIT));
     return {
       input_tokens: estimated,
       cached_input_tokens: 0,
@@ -5872,11 +5880,38 @@ async function parseQoderNewIncremental({
   projectQueuePath,
   onProgress,
   sourceKey = "qoder",
-  cursorKey = "qoder",
+  cursorKey = "qoderNew",
   publicRepoResolver,
 } = {}) {
   await ensureDir(path.dirname(queuePath));
   const files = Array.isArray(sessionFiles) ? sessionFiles : [];
+  // One-time migration: pre-#549 stored JSONL keys under the legacy "qoder"
+  // cursor (same namespace as SQLite). Move them to the new isolated namespace
+  // so history is not double-counted and legacy multi-install state is preserved.
+  if (cursorKey === "qoderNew" && cursors?.qoder && !cursors?.qoderNew) {
+    const legacy = normalizeQoderState(cursors.qoder);
+    const jsonlEntries = Object.entries(legacy.messages).filter(([k]) => k.startsWith("jsonl:"));
+    if (jsonlEntries.length > 0) {
+      const migrated = {};
+      for (const [k, v] of jsonlEntries) {
+        migrated[k] = v;
+        delete legacy.messages[k];
+      }
+      cursors.qoderNew = { messages: migrated, updatedAt: legacy.updatedAt || new Date().toISOString() };
+    }
+  }
+  if (cursorKey === "qoderCnNew" && cursors?.["qoder-cn"] && !cursors?.["qoderCnNew"]) {
+    const legacy = normalizeQoderState(cursors["qoder-cn"]);
+    const jsonlEntries = Object.entries(legacy.messages).filter(([k]) => k.startsWith("jsonl:"));
+    if (jsonlEntries.length > 0) {
+      const migrated = {};
+      for (const [k, v] of jsonlEntries) {
+        migrated[k] = v;
+        delete legacy.messages[k];
+      }
+      cursors["qoderCnNew"] = { messages: migrated, updatedAt: legacy.updatedAt || new Date().toISOString() };
+    }
+  }
   const hourlyState = normalizeHourlyState(cursors?.hourly);
   const qoderState = normalizeQoderState(cursors?.[cursorKey]);
   const projectEnabled = typeof projectQueuePath === "string" && projectQueuePath.length > 0;
@@ -5899,7 +5934,8 @@ async function parseQoderNewIncremental({
       continue;
     }
     const lines = raw.split("\n");
-    for (const line of lines) {
+    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+      const line = lines[lineIdx];
       if (!line.trim()) continue;
       let record;
       try {
@@ -5921,7 +5957,7 @@ async function parseQoderNewIncremental({
       if (!timestampMs) continue;
       const bucketStart = toUtcHalfHourStart(new Date(timestampMs).toISOString());
       if (!bucketStart) continue;
-      const messageKey = qoderNewMessageKey(record, filePath);
+      const messageKey = qoderNewMessageKey(record, filePath, lineIdx);
       if (!messageKey) continue;
       const model = qoderNewModelFromRecord(record);
       const totals = base ? {
@@ -5932,7 +5968,7 @@ async function parseQoderNewIncremental({
         reasoning_output_tokens: 0,
         total_tokens: base.total_tokens,
         billable_total_tokens: base.billable_total_tokens,
-        total_cost_usd: Number.isFinite(base.credits) && base.credits > 0 ? base.credits * 0.02 : 0,
+        total_cost_usd: 0,
         usage_precision: base.usage_precision || undefined,
         conversation_count: 1,
       } : {
@@ -5949,10 +5985,11 @@ async function parseQoderNewIncremental({
       let projectKey = null;
       let projectRef = null;
       if (projectEnabled) {
-        const cwd = typeof record?.cwd === "string" ? record.cwd.trim() : "";
-        if (cwd) {
+        const rawCwd = typeof record?.cwd === "string" ? record.cwd.trim() : "";
+        if (rawCwd) {
+          const startDir = wsl.mapWslCwdToUnc(rawCwd, filePath);
           const context = await resolveProjectContextForPath({
-            startDir: cwd,
+            startDir,
             projectMetaCache,
             publicRepoCache,
             publicRepoResolver,
@@ -5994,22 +6031,15 @@ async function parseQoderNewIncremental({
       && prev.bucketStart === cur.bucketStart
       && prev.model === cur.model
       && (prev.projectKey || null) === (cur.projectKey || null)
-      && (prev.total_cost_usd || 0) === (cur.totals.total_cost_usd || 0);
+      && (prev.totals?.total_cost_usd || 0) === (cur.totals.total_cost_usd || 0);
     if (unchanged) continue;
     if (prev.totals && prev.bucketStart && prev.model) {
       const oldBucket = getHourlyBucket(hourlyState, sourceKey, prev.model, prev.bucketStart);
       subtractTotals(oldBucket.totals, prev.totals);
-      // subtractTotals does not handle total_cost_usd tick rounding for authoritative cost; apply manually
-      if (prev.totals.total_cost_usd) {
-        oldBucket.totals.total_cost_usd = Math.max(0, Number((oldBucket.totals.total_cost_usd - prev.totals.total_cost_usd).toFixed(4)));
-      }
       touchedBuckets.add(bucketKey(sourceKey, prev.model, prev.bucketStart));
       if (projectEnabled && prev.projectKey) {
         const oldProjectBucket = getProjectBucket(projectState, prev.projectKey, sourceKey, prev.bucketStart, prev.projectRef || null);
         subtractTotals(oldProjectBucket.totals, prev.totals);
-        if (prev.totals.total_cost_usd) {
-          oldProjectBucket.totals.total_cost_usd = Math.max(0, Number((oldProjectBucket.totals.total_cost_usd - prev.totals.total_cost_usd).toFixed(4)));
-        }
         projectTouchedBuckets.add(projectBucketKey(prev.projectKey, sourceKey, prev.bucketStart));
       }
     }
