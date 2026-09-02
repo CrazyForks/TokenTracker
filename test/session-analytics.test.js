@@ -1024,6 +1024,71 @@ test("a sidecar without per-model edit turns still sums to the session's edit tu
   assert.equal(byModel["gpt-5.6-terra"].edit_turns, 0);
 });
 
+test("model_usage reaches the browser dense whatever the sidecar stored", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-session-dense-usage-"));
+  const usage = (input, output) => ({
+    input_tokens: input,
+    cached_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+    output_tokens: output,
+    reasoning_output_tokens: 0,
+    total_tokens: input + output,
+  });
+  const codexPath = path.join(dir, "rollout-2026-07-23T08-00-00-00000000-0000-4000-8000-00000000000c.jsonl");
+  fs.writeFileSync(codexPath, `${[
+    { timestamp: "2026-07-23T08:00:00Z", type: "session_meta", payload: { id: "codex-dense", cwd: dir, model_provider: "openai" } },
+    { timestamp: "2026-07-23T08:00:01Z", type: "turn_context", payload: { turn_id: "turn-0", cwd: dir, model: "gpt-5.6-sol" } },
+    { timestamp: "2026-07-23T08:00:02Z", type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage(100, 20), total_token_usage: usage(120, 0) } } },
+  ].map(JSON.stringify).join("\n")}\n`);
+
+  // Claude records never carry model_usage at all, so they exercise the
+  // fallback branch that used to emit a six-field row.
+  const claudePath = path.join(dir, "claude.jsonl");
+  fs.writeFileSync(claudePath, `${[
+    { type: "user", sessionId: "dense-1", cwd: dir, timestamp: "2026-07-23T09:00:00Z", message: { content: "do the thing" } },
+    { type: "assistant", sessionId: "dense-1", cwd: dir, timestamp: "2026-07-23T09:00:01Z", message: { id: "m1", model: "claude-opus-4-8", usage: { input_tokens: 100, output_tokens: 20 }, content: [] } },
+  ].map(JSON.stringify).join("\n")}\n`);
+
+  const codex = await scanCodexSession(codexPath);
+  const claude = await scanClaudeSession(claudePath);
+  assert.equal(Array.isArray(claude.model_usage), false);
+
+  const listed = listSessionsForBrowser([codex, claude]).sessions;
+  assert.equal(listed.length, 2);
+  const keySets = listed.map((row) => {
+    assert.ok(Array.isArray(row.model_usage) && row.model_usage.length > 0);
+    return Object.keys(row.model_usage[0]).sort();
+  });
+
+  // Both producer paths must emit the identical key set, or dashboard/src/lib/
+  // sessions-api.ts is describing a row shape that only one of them sends.
+  assert.deepEqual(keySets[0], keySets[1]);
+  for (const field of [
+    "model",
+    "input_tokens",
+    "cached_input_tokens",
+    "cache_creation_input_tokens",
+    "output_tokens",
+    "reasoning_output_tokens",
+    "total_tokens",
+    "long_context_input_tokens",
+    "long_context_cached_input_tokens",
+    "long_context_cache_creation_input_tokens",
+    "long_context_output_tokens",
+    "long_context_reasoning_output_tokens",
+    "usage_events",
+    "rerouted_usage_events",
+    "long_context_usage_events",
+    "edit_turns",
+    "selected_models",
+    "reroute_reasons",
+    "model_attribution",
+    "cost_usd",
+  ]) {
+    assert.ok(keySets[0].includes(field), `model_usage row is missing ${field}`);
+  }
+});
+
 test("sidecar omits reconstructible model_usage fields without losing information", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "tt-session-sidecar-trim-"));
   const codexDir = path.join(home, ".codex", "sessions", "2026", "07", "20");

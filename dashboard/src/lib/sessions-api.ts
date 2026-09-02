@@ -7,6 +7,11 @@ const SLUG = "tokentracker-sessions";
 
 export type SessionSource = "claude" | "codex" | "grok";
 
+// Every field here is always present: the server densifies model_usage rows at
+// the response boundary (modelUsageForAggregation in src/lib/session-analytics.js),
+// so the sparse on-disk sidecar shape never reaches this client. Adding a field
+// here means adding it to MODEL_USAGE_SUM_FIELDS there; test/session-analytics
+// .test.js asserts the emitted key set matches for both producer paths.
 export interface SessionModelUsage {
   model: string;
   input_tokens: number;
@@ -23,6 +28,7 @@ export interface SessionModelUsage {
   usage_events: number;
   rerouted_usage_events: number;
   long_context_usage_events: number;
+  edit_turns: number;
   selected_models: string[];
   reroute_reasons: string[];
   model_attribution: "selected" | "effective";
@@ -45,7 +51,10 @@ export interface SessionRow {
   project_key: string;
   project_ref: string | null;
   model: string;
-  model_usage: SessionModelUsage[];
+  // Optional for version skew only: a desktop app whose bundled EmbeddedServer
+  // predates model_usage omits the field entirely (same skew the 404 branch in
+  // fetchSessions handles). A current server always sends a dense array.
+  model_usage?: SessionModelUsage[];
   started_at: string | null;
   ended_at: string | null;
   duration_ms: number;

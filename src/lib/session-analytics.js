@@ -248,21 +248,38 @@ function repriceSessionRecord(record) {
   return record;
 }
 
+// The model_usage wire contract is DENSE: every field dashboard/src/lib/
+// sessions-api.ts declares is present on every row. Storage is free to be
+// sparse - serializeModelUsageRow() drops zero counters, and a record with no
+// model_usage at all (every claude/grok session, plus codex sessions written
+// by an older sidecar) has nothing to trim in the first place - but neither
+// shape may leak into an API response, or the declared type describes a row
+// that does not exist. Densify here, the one point both the by_model
+// aggregation and toSessionBrowserRow() pass through.
+function denseModelUsageRow(overrides = {}) {
+  return {
+    model: "unknown",
+    ...Object.fromEntries(MODEL_USAGE_SUM_FIELDS.map((field) => [field, 0])),
+    selected_models: [],
+    reroute_reasons: [],
+    model_attribution: "selected",
+    cost_usd: 0,
+    ...overrides,
+  };
+}
+
 function modelUsageForAggregation(record) {
   const editTurns = finite(record?.edit_turns);
   const rows = normalizeModelUsageRows(record?.model_usage);
   if (rows.length === 0) {
-    return [{
+    return [denseModelUsageRow({
       model: normalizeSessionModel(record?.model) || "unknown",
       total_tokens: finite(record?.total_tokens || record?.tokens?.total_tokens),
       cost_usd: finite(record?.cost_usd),
       edit_turns: editTurns,
-      selected_models: [],
-      reroute_reasons: [],
-      model_attribution: "selected",
-    }];
+    })];
   }
-  const priced = rows.map((row) => ({
+  const priced = rows.map((row) => denseModelUsageRow({
     ...row,
     cost_usd: Number.isFinite(Number(row.cost_usd))
       ? Number(row.cost_usd)
