@@ -910,6 +910,9 @@ test("by_model sums tokens and cost exactly while session headcount overlaps by 
     turns.forEach(([model, input, output], index) => {
       running += input + output;
       rows.push({ timestamp: `2026-07-19T08:0${index}:01Z`, type: "turn_context", payload: { turn_id: `turn-${index}`, cwd: dir, model } });
+      // Every turn edits, so edit_turns is non-zero and the edit_* columns below
+      // are actually exercised rather than reconciling 0 against 0.
+      rows.push({ timestamp: `2026-07-19T08:0${index}:01.5Z`, type: "response_item", payload: { type: "function_call", name: "apply_patch", arguments: "{}" } });
       rows.push({ timestamp: `2026-07-19T08:0${index}:02Z`, type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage(input, output), total_token_usage: usage(running, 0) } } });
     });
     fs.writeFileSync(filePath, `${rows.map(JSON.stringify).join("\n")}\n`);
@@ -921,18 +924,104 @@ test("by_model sums tokens and cost exactly while session headcount overlaps by 
   const single = await scanCodexSession(writeSession(2, [["gpt-5.6-sol", 40, 8]]));
   const summary = summarizeSessions([mixed, single]);
 
-  // Token, cost and edit-turn columns are fully observed per model, so they
+  // Token, cost and edit columns are fully observed per model, so they
   // reconcile with the session totals to the last unit.
   const sum = (key) => summary.by_model.reduce((acc, row) => acc + row[key], 0);
   assert.equal(sum("total_tokens"), summary.summary.total_tokens);
   assert.equal(sum("edit_turns"), summary.summary.edit_turns);
+  assert.equal(sum("edit_tokens"), summary.summary.edit_tokens);
+  assert.equal(sum("retries"), summary.summary.retries);
   assert.ok(Math.abs(sum("cost_usd") - summary.summary.cost_usd) < 1e-12);
+  assert.ok(Math.abs(sum("edit_cost_usd") - summary.summary.edit_cost_usd) < 1e-12);
+  assert.ok(summary.summary.edit_turns > 0);
+  assert.ok(summary.summary.edit_tokens > 0);
 
   // The session headcount deliberately overlaps: the mixed session is counted
   // under both models, so summing this column overstates the real total.
   assert.equal(summary.summary.sessions, 2);
   assert.equal(sum("sessions"), 3);
   assert.equal(summary.session_count, 2);
+});
+
+test("per-model tokens_per_edit divides one model's tokens by that model's own edit turns", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-session-tokens-per-edit-"));
+  const usage = (input, output) => ({
+    input_tokens: input,
+    cached_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+    output_tokens: output,
+    reasoning_output_tokens: 0,
+    total_tokens: input + output,
+  });
+  const filePath = path.join(dir, "rollout-2026-07-21T08-00-00-00000000-0000-4000-8000-00000000000a.jsonl");
+  const rows = [
+    { timestamp: "2026-07-21T08:00:00Z", type: "session_meta", payload: { id: "codex-tpe", cwd: dir, model_provider: "openai" } },
+  ];
+  let running = 0;
+  // One edit turn per model, but the models spend very different amounts.
+  [["gpt-5.6-sol", 1000, 200], ["gpt-5.6-terra", 500, 100]].forEach(([model, input, output], index) => {
+    running += input + output;
+    rows.push({ timestamp: `2026-07-21T08:0${index}:01Z`, type: "turn_context", payload: { turn_id: `turn-${index}`, cwd: dir, model } });
+    rows.push({ timestamp: `2026-07-21T08:0${index}:01.5Z`, type: "response_item", payload: { type: "function_call", name: "apply_patch", arguments: "{}" } });
+    rows.push({ timestamp: `2026-07-21T08:0${index}:02Z`, type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage(input, output), total_token_usage: usage(running, 0) } } });
+  });
+  fs.writeFileSync(filePath, `${rows.map(JSON.stringify).join("\n")}\n`);
+
+  const session = await scanCodexSession(filePath);
+  assert.equal(session.edit_turns, 2);
+  const summary = summarizeSessions([session]);
+  const byModel = Object.fromEntries(summary.by_model.map((row) => [row.model, row]));
+
+  // Each turn belongs to exactly one model, so each model owns one edit turn
+  // and its own tokens. Before per-model edit turns the busiest model divided
+  // its 1200 tokens by the whole session's 2 edit turns and reported 600.
+  assert.equal(byModel["gpt-5.6-sol"].edit_turns, 1);
+  assert.equal(byModel["gpt-5.6-terra"].edit_turns, 1);
+  assert.equal(byModel["gpt-5.6-sol"].tokens_per_edit, 1200);
+  assert.equal(byModel["gpt-5.6-terra"].tokens_per_edit, 600);
+  assert.equal(summary.summary.tokens_per_edit, 900);
+});
+
+test("a sidecar without per-model edit turns still sums to the session's edit turns", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-session-editturn-skew-"));
+  const usage = (input, output) => ({
+    input_tokens: input,
+    cached_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+    output_tokens: output,
+    reasoning_output_tokens: 0,
+    total_tokens: input + output,
+  });
+  const filePath = path.join(dir, "rollout-2026-07-22T08-00-00-00000000-0000-4000-8000-00000000000b.jsonl");
+  const rows = [
+    { timestamp: "2026-07-22T08:00:00Z", type: "session_meta", payload: { id: "codex-skew", cwd: dir, model_provider: "openai" } },
+  ];
+  let running = 0;
+  [["gpt-5.6-sol", 1000, 200], ["gpt-5.6-terra", 500, 100]].forEach(([model, input, output], index) => {
+    running += input + output;
+    rows.push({ timestamp: `2026-07-22T08:0${index}:01Z`, type: "turn_context", payload: { turn_id: `turn-${index}`, cwd: dir, model } });
+    rows.push({ timestamp: `2026-07-22T08:0${index}:01.5Z`, type: "response_item", payload: { type: "function_call", name: "apply_patch", arguments: "{}" } });
+    rows.push({ timestamp: `2026-07-22T08:0${index}:02Z`, type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage(input, output), total_token_usage: usage(running, 0) } } });
+  });
+  fs.writeFileSync(filePath, `${rows.map(JSON.stringify).join("\n")}\n`);
+
+  // A sidecar written before model_usage carried edit_turns: the rows are
+  // otherwise intact, they just have no per-model turn counts to read.
+  const session = await scanCodexSession(filePath);
+  const stale = {
+    ...session,
+    model_usage: session.model_usage.map(({ edit_turns: _editTurns, ...row }) => row),
+  };
+  const summary = summarizeSessions([stale]);
+  const sum = (key) => summary.by_model.reduce((acc, row) => acc + row[key], 0);
+
+  // The whole residual lands on the busiest model rather than being dropped,
+  // so the column still reconciles and no edit turn goes missing.
+  assert.equal(sum("edit_turns"), summary.summary.edit_turns);
+  assert.equal(sum("edit_tokens"), summary.summary.edit_tokens);
+  const byModel = Object.fromEntries(summary.by_model.map((row) => [row.model, row]));
+  assert.equal(byModel["gpt-5.6-sol"].edit_turns, 2);
+  assert.equal(byModel["gpt-5.6-terra"].edit_turns, 0);
 });
 
 test("sidecar omits reconstructible model_usage fields without losing information", async () => {
@@ -950,6 +1039,9 @@ test("sidecar omits reconstructible model_usage fields without losing informatio
   const rows = [
     { timestamp: "2026-07-20T08:00:00Z", type: "session_meta", payload: { id: "codex-trim", cwd: home, model_provider: "openai" } },
     { timestamp: "2026-07-20T08:00:01Z", type: "turn_context", payload: { turn_id: "turn-1", cwd: home, model: "gpt-5.6-sol" } },
+    // Only the first turn edits, so edit_turns is 1 on one row and 0 on the
+    // other - the non-zero value must survive the trim, the zero must not.
+    { timestamp: "2026-07-20T08:00:01.5Z", type: "response_item", payload: { type: "function_call", name: "apply_patch", arguments: "{}" } },
     { timestamp: "2026-07-20T08:00:02Z", type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage(100, 20), total_token_usage: usage(100, 20) } } },
     { timestamp: "2026-07-20T08:01:01Z", type: "turn_context", payload: { turn_id: "turn-2", cwd: home, model: "gpt-5.6-terra" } },
     { timestamp: "2026-07-20T08:01:02Z", type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage(50, 10), total_token_usage: usage(150, 30) } } },
@@ -961,7 +1053,8 @@ test("sidecar omits reconstructible model_usage fields without losing informatio
 
   const cold = await buildSessionAnalytics({ home, force: true });
   const sidecar = fs.readFileSync(path.join(home, ".tokentracker", "tracker", "session.queue.jsonl"), "utf8");
-  const persisted = JSON.parse(sidecar.split("\n").filter(Boolean)[0]).model_usage[0];
+  const persistedRows = JSON.parse(sidecar.split("\n").filter(Boolean)[0]).model_usage;
+  const persisted = persistedRows[0];
 
   // Zero counters, a selected_models that only repeats the model, the default
   // attribution and the recomputed cost are all dropped on write.
@@ -985,4 +1078,13 @@ test("sidecar omits reconstructible model_usage fields without losing informatio
   assert.deepEqual(restored.selected_models, ["gpt-5.6-sol"]);
   assert.equal(restored.model_attribution, "selected");
   assert.equal(restored.long_context_input_tokens, 0);
+
+  // Per-model edit turns follow the same rule: written only when non-zero,
+  // rebuilt as 0 otherwise, and unchanged across the trim.
+  const persistedSol = persistedRows.find((row) => row.model === "gpt-5.6-sol");
+  const persistedTerra = persistedRows.find((row) => row.model === "gpt-5.6-terra");
+  assert.equal(persistedSol.edit_turns, 1);
+  assert.equal(persistedTerra.edit_turns, undefined);
+  assert.equal(restored.edit_turns, 1);
+  assert.equal(warm[0].model_usage.find((row) => row.model === "gpt-5.6-terra").edit_turns, 0);
 });

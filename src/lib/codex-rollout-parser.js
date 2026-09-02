@@ -902,9 +902,16 @@ async function parseCodexRolloutFile(filePath, {
     contentHasher,
     sourceHandle,
   })) {
-    if (typeof onObject === "function") onObject(obj);
     const modelEvent = applyCodexModelEvent(modelAttributionState, obj);
-    model = currentCodexModel(modelAttributionState) || model;
+    const attributedModel = currentCodexModel(modelAttributionState);
+    model = attributedModel || model;
+    // onObject runs AFTER the attribution state machine, and is handed the
+    // model it just decided. A consumer sharing this pass (the delivery-signal
+    // collector, which attributes edit turns) therefore sees exactly the model
+    // recordModelUsage() bills the turn's tokens to. Letting it re-read
+    // turn_context.payload.model itself would make codex-model-attribution.js
+    // one of two authorities on the same question.
+    if (typeof onObject === "function") onObject(obj, attributedModel);
     const ts = typeof obj?.timestamp === "string" ? obj.timestamp : null;
     if (!ts) continue;
     const inRequestedRange = isTimestampInRequestedDayRange(ts, { from, to, timeZoneContext });

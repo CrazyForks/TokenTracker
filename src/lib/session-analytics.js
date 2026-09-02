@@ -134,6 +134,11 @@ const MODEL_USAGE_SUM_FIELDS = [
   "usage_events",
   "rerouted_usage_events",
   "long_context_usage_events",
+  // Not a token counter: an edit turn is a turn, and turn_context both marks
+  // where a turn begins and names its model, so an edit turn has exactly one
+  // owner. Splitting it here keeps by_model.tokens_per_edit a ratio over one
+  // population instead of this model's tokens over the whole session's turns.
+  "edit_turns",
 ];
 
 function normalizeModelUsageRows(rows) {
@@ -244,23 +249,35 @@ function repriceSessionRecord(record) {
 }
 
 function modelUsageForAggregation(record) {
+  const editTurns = finite(record?.edit_turns);
   const rows = normalizeModelUsageRows(record?.model_usage);
-  if (rows.length > 0) {
-    return rows.map((row) => ({
-      ...row,
-      cost_usd: Number.isFinite(Number(row.cost_usd))
-        ? Number(row.cost_usd)
-        : computeRowCost({ source: record.source, ...row }),
-    }));
+  if (rows.length === 0) {
+    return [{
+      model: normalizeSessionModel(record?.model) || "unknown",
+      total_tokens: finite(record?.total_tokens || record?.tokens?.total_tokens),
+      cost_usd: finite(record?.cost_usd),
+      edit_turns: editTurns,
+      selected_models: [],
+      reroute_reasons: [],
+      model_attribution: "selected",
+    }];
   }
-  return [{
-    model: normalizeSessionModel(record?.model) || "unknown",
-    total_tokens: finite(record?.total_tokens || record?.tokens?.total_tokens),
-    cost_usd: finite(record?.cost_usd),
-    selected_models: [],
-    reroute_reasons: [],
-    model_attribution: "selected",
-  }];
+  const priced = rows.map((row) => ({
+    ...row,
+    cost_usd: Number.isFinite(Number(row.cost_usd))
+      ? Number(row.cost_usd)
+      : computeRowCost({ source: record.source, ...row }),
+  }));
+  // Sum(rows.edit_turns) has to equal record.edit_turns or the by_model column
+  // stops summing to summary.edit_turns. It can fall short two ways: a sidecar
+  // written before model_usage carried edit_turns, and an edit turn whose model
+  // produced no billable delta, leaving no usage row to attach to. Fold the
+  // residual into the busiest model - normalizeModelUsageRows() sorts by
+  // total_tokens - which is the same approximation `retries` uses.
+  const assigned = priced.reduce((sum, row) => sum + finite(row.edit_turns), 0);
+  const residual = editTurns - assigned;
+  if (residual > 0) priced[0].edit_turns = finite(priced[0].edit_turns) + residual;
+  return priced;
 }
 
 function safeTimestamp(value) {
@@ -561,25 +578,36 @@ function createCodexDeliverySignalCollector() {
   let lastPromptFingerprint = null;
   let subagentCalls = 0;
   const subagentTypes = new Map();
+  // The model the open turn belongs to, as decided by codex-model-attribution.
+  // The parser hands it in rather than this collector re-reading
+  // turn_context.payload.model, so there stays exactly one authority on which
+  // model owns a turn - the same one that bills the turn's tokens.
+  let currentTurnModel = null;
+  const editTurnsByModel = new Map();
 
   function closeTurn() {
-    if (currentTurnOpen && currentHadEdit) editTurns += 1;
+    if (currentTurnOpen && currentHadEdit) {
+      editTurns += 1;
+      const key = currentTurnModel || "unknown";
+      editTurnsByModel.set(key, (editTurnsByModel.get(key) || 0) + 1);
+    }
     currentHadEdit = false;
   }
 
-  function beginTurn(key) {
+  function beginTurn(key, model) {
     if (currentTurnOpen && key && currentTurnKey === key) return;
     if (currentTurnOpen) closeTurn();
     currentTurnOpen = true;
     currentTurnKey = key || null;
+    currentTurnModel = model || null;
     turns += 1;
   }
 
-  function consume(obj) {
+  function consume(obj, model = null) {
     updateBounds(bounds, obj?.timestamp);
     if (obj?.type === "turn_context") {
       hasTurnContext = true;
-      beginTurn(String(obj.payload?.turn_id || obj.timestamp || turns + 1));
+      beginTurn(String(obj.payload?.turn_id || obj.timestamp || turns + 1), model);
       return;
     }
     const prompt = extractCodexPrompt(obj);
@@ -587,13 +615,13 @@ function createCodexDeliverySignalCollector() {
       const fingerprint = promptFingerprint(prompt);
       if (lastPromptFingerprint && fingerprint === lastPromptFingerprint) retryTurns += 1;
       lastPromptFingerprint = fingerprint;
-      if (!hasTurnContext) beginTurn(String(obj.timestamp || turns + 1));
+      if (!hasTurnContext) beginTurn(String(obj.timestamp || turns + 1), model);
       return;
     }
     if (obj?.type !== "response_item") return;
     const toolNames = extractCodexSignalTools(obj.payload);
     if (!toolNames.length) return;
-    if (!currentTurnOpen) beginTurn(String(obj.timestamp || turns + 1));
+    if (!currentTurnOpen) beginTurn(String(obj.timestamp || turns + 1), model);
     if (toolNames.some((name) => EDIT_TOOLS.has(name))) currentHadEdit = true;
     for (const name of toolNames) {
       if (!CODEX_SUBAGENT_TOOLS.has(name)) continue;
@@ -609,6 +637,7 @@ function createCodexDeliverySignalCollector() {
       bounds,
       turns,
       editTurns,
+      editTurnsByModel: Object.fromEntries(editTurnsByModel),
       retryTurns,
       subagentCalls,
       subagentTypes: Object.fromEntries([...subagentTypes.entries()].sort()),
@@ -629,6 +658,16 @@ async function scanCodexSession(filePath) {
     onObject: signalCollector.consume,
   });
   const signals = signalCollector.finish();
+  // The collector keyed edit turns by the model the parser handed it, so the
+  // keys are the same raw model ids parsed.modelUsage rows carry. A model whose
+  // edit turns produced no billable delta has no row to land on;
+  // modelUsageForAggregation() folds that residual into the busiest model so
+  // the by_model column still sums to edit_turns.
+  const editTurnsByModel = signals.editTurnsByModel || {};
+  const modelUsage = (parsed.modelUsage || []).map((row) => ({
+    ...row,
+    edit_turns: finite(editTurnsByModel[row.model]),
+  }));
   const parsedModel = normalizeSessionModel(parsed.model);
   const provider = normalizeSessionModel(parsed.provider);
   // Older Codex rollouts can omit turn_context.model. The shared parser then
@@ -672,7 +711,7 @@ async function scanCodexSession(filePath) {
     project_key: projectKey(parsed.cwd, primaryFilePath),
     project_ref: parsed.cwd || null,
     model,
-    model_usage: parsed.modelUsage || [],
+    model_usage: modelUsage,
     ...signals.bounds,
     turns: signals.turns || finite(parsed.turnCount),
     edit_turns: signals.editTurns,
@@ -1455,9 +1494,9 @@ function summarizeSessions(sessions, { from = "", to = "", includeSessions = tru
     // One session contributes a row to EVERY model it used, so per-model
     // `sessions` counts "sessions that touched this model" and the column does
     // NOT sum to summary.sessions (a session that switched models mid-thread
-    // is counted once per model). Token, cost and edit_turn columns DO sum
-    // exactly - only the session headcount overlaps. Read the session total
-    // from summary.sessions / session_count, never by summing this column;
+    // is counted once per model). Token, cost, edit_turn and edit_token columns
+    // DO sum exactly - only the session headcount overlaps. Read the session
+    // total from summary.sessions / session_count, never by summing this column;
     // test/session-analytics.test.js locks both halves of that contract.
     const usageRows = modelUsageForAggregation(row);
     const primaryModel = usageRows[0]?.model || "unknown";
@@ -1488,17 +1527,23 @@ function summarizeSessions(sessions, { from = "", to = "", includeSessions = tru
       agg.rerouted_usage_events += finite(usage.rerouted_usage_events);
       agg.long_context_usage_events += finite(usage.long_context_usage_events);
       if (usage.model_attribution === "effective") agg.model_attribution = "effective";
-      // Edit/retry events do not carry a model id. Keep global metrics exact
-      // and attribute those session-level counters only to its busiest model;
-      // token and cost totals above remain fully observed for every model.
-      if (key === primaryModel) {
-        agg.edit_turns += finite(row.edit_turns);
-        agg.retries += finite(row.retry_turns);
-        if (row.productive) {
-          agg.edit_tokens += finite(usage.total_tokens);
-          agg.edit_cost_usd += finite(usage.cost_usd);
-        }
+      // Numerator and denominator of tokens_per_edit / cost_per_edit must come
+      // from the same population, so both are per model: an edit turn is a
+      // turn, and turn_context names the model that owns it. Giving one model
+      // the whole session's edit_turns but only its own slice of the tokens
+      // understated the ratio and broke sum(edit_tokens) == summary.edit_tokens.
+      agg.edit_turns += finite(usage.edit_turns);
+      if (row.productive) {
+        agg.edit_tokens += finite(usage.total_tokens);
+        agg.edit_cost_usd += finite(usage.cost_usd);
       }
+      // Retries are deliberately NOT split. A retry is detected from the user
+      // prompt, and user_message / turn_context ordering is not stable in Codex
+      // rollouts (1332 one way vs 1139 the other across 400 local files), so a
+      // per-model retry would name the wrong turn about as often as the right
+      // one. Attributing them to the busiest model keeps the column summing to
+      // summary.retries without claiming a precision the log cannot support.
+      if (key === primaryModel) agg.retries += finite(row.retry_turns);
       byModel.set(key, agg);
     }
     if (row.source === "codex" && row.parent_session_hash) {
