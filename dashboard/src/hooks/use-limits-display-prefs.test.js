@@ -110,6 +110,7 @@ describe("useLimitsDisplayPrefs", () => {
   it("matches the provider list used for visibility/order keys", () => {
     expect([...LIMIT_PROVIDER_IDS].sort()).toEqual(
       [
+        "agentPlan",
         "antigravity",
         "claude",
         "codex",

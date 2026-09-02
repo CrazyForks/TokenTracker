@@ -43,6 +43,7 @@ const existingLimits = {
   opencodeGo: { configured: false },
   qoder: { configured: false },
   codingPlan: { configured: false },
+  agentPlan: { configured: false },
 };
 
 const freshLimits = {

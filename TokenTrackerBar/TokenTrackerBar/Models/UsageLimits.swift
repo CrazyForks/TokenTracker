@@ -16,10 +16,11 @@ struct UsageLimitsResponse: Codable, Equatable {
     let qoder: QoderLimits?
     let qoderCn: QoderLimits?
     let codingPlan: CodingPlanLimits?
+    let agentPlan: AgentPlanLimits?
 
     enum CodingKeys: String, CodingKey {
         case fetchedAt = "fetched_at"
-        case claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot, zcode, qoder, qoderCn, codingPlan
+        case claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot, zcode, qoder, qoderCn, codingPlan, agentPlan
         case opencodeGo = "opencodeGo"
     }
 }
@@ -522,6 +523,8 @@ struct CodingPlanLimits: Codable, Equatable {
     }
 }
 
+typealias AgentPlanLimits = CodingPlanLimits
+
 struct AntigravityLimits: Codable, Equatable {
     let configured: Bool
     let error: String?
@@ -566,6 +569,7 @@ extension UsageLimitsResponse {
             (qoder?.configured ?? false, qoder?.error),
             (qoderCn?.configured ?? false, qoderCn?.error),
             (codingPlan?.configured ?? false, codingPlan?.error),
+            (agentPlan?.configured ?? false, agentPlan?.error),
         ]
         return providers.contains { $0.0 && $0.1 == nil }
     }
