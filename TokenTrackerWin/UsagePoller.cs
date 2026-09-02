@@ -215,8 +215,16 @@ internal sealed class UsagePoller : IDisposable
             IReadOnlyList<TopModelStat> models = NoModels;
             if (IncludeRichStats)
             {
-                var heatmap = await FetchHeatmapAsync(tzQuery);
-                var topModels = await FetchTopModelsAsync(today, tzQuery);
+                // What this poll is about to render as. `_showingAccountData` alone
+                // describes the *previous* publish — it is not assigned until the
+                // bottom of this method — so during a local-to-account transition
+                // (cold start included, since the field starts false) it would let a
+                // transient rich-stat response ride along inside an account snapshot,
+                // and the guard below would then pin that mixed snapshot in place
+                // until the failing dataset recovered.
+                var retainAccount = summarySource == AccountSource.Account || _showingAccountData;
+                var heatmap = await FetchHeatmapAsync(tzQuery, retainAccount);
+                var topModels = await FetchTopModelsAsync(today, tzQuery, retainAccount);
                 // null = this dataset came back as a transient local fallback while
                 // the tray is showing account data. One UsageStats is published
                 // atomically, so mixing authorities inside it is not an option.
@@ -241,14 +249,14 @@ internal sealed class UsagePoller : IDisposable
 
     /// <summary>Heatmap: all-time active days + current streak (streak is server-computed; the
     /// local server returns 0, matching how the macOS pet reads it against the same backend).</summary>
-    private async Task<(int Streak, int ActiveDays)?> FetchHeatmapAsync(string tzQuery)
+    private async Task<(int Streak, int ActiveDays)?> FetchHeatmapAsync(string tzQuery, bool retainAccount)
     {
         try
         {
             var url = $"{_baseUrl()}/functions/tokentracker-usage-heatmap?weeks=52{tzQuery}&{AccountQuery}";
             using var resp = await Http.GetAsync(url);
             if (!resp.IsSuccessStatusCode) return (0, 0);
-            if (ReadAccountSource(resp) == AccountSource.LocalTransient && _showingAccountData) return null;
+            if (ReadAccountSource(resp) == AccountSource.LocalTransient && retainAccount) return null;
             await using var stream = await resp.Content.ReadAsStreamAsync();
             using var doc = await JsonDocument.ParseAsync(stream);
             var root = doc.RootElement;
@@ -263,7 +271,7 @@ internal sealed class UsagePoller : IDisposable
     /// provider from the highest-token row for that name, percent = tokens / total billable
     /// (one decimal), sort by tokens desc then name asc, top 5.
     /// </summary>
-    private async Task<IReadOnlyList<TopModelStat>?> FetchTopModelsAsync(string today, string tzQuery)
+    private async Task<IReadOnlyList<TopModelStat>?> FetchTopModelsAsync(string today, string tzQuery, bool retainAccount)
     {
         try
         {
@@ -272,7 +280,7 @@ internal sealed class UsagePoller : IDisposable
                       + $"?from={from}&to={today}{tzQuery}&{AccountQuery}";
             using var resp = await Http.GetAsync(url);
             if (!resp.IsSuccessStatusCode) return NoModels;
-            if (ReadAccountSource(resp) == AccountSource.LocalTransient && _showingAccountData) return null;
+            if (ReadAccountSource(resp) == AccountSource.LocalTransient && retainAccount) return null;
             await using var stream = await resp.Content.ReadAsStreamAsync();
             using var doc = await JsonDocument.ParseAsync(stream);
             if (!doc.RootElement.TryGetProperty("sources", out var sources)

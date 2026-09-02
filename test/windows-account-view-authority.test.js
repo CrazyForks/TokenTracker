@@ -7,7 +7,11 @@
 // flag nobody consumed, and published the payload regardless — so a transient
 // cloud failure dropped the tray from cross-device totals to this machine.
 //
-// There is no C# test project, so the invariants are asserted against the source.
+// The behaviour itself is covered end-to-end against a loopback server in
+// TokenTrackerWin.Tests/UsagePollerAccountAuthorityTests.cs, which CI runs on a
+// Windows runner. These assertions are the cheap cross-platform half: they hold
+// the *shape* of the code (no write-only flags, both headers read, the guards
+// wired to this poll's authority) on runners with no .NET toolchain.
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -62,8 +66,8 @@ test("rich pet stats cannot mix authorities into one published snapshot", () => 
     "FetchTopModelsAsync must be able to signal a would-be downgrade.",
   );
   for (const guard of [
-    /FetchHeatmapAsync[\s\S]*?if \(ReadAccountSource\(resp\) == AccountSource\.LocalTransient && _showingAccountData\) return null;/,
-    /FetchTopModelsAsync[\s\S]*?if \(ReadAccountSource\(resp\) == AccountSource\.LocalTransient && _showingAccountData\) return null;/,
+    /FetchHeatmapAsync\(string tzQuery, bool retainAccount\)[\s\S]*?if \(ReadAccountSource\(resp\) == AccountSource\.LocalTransient && retainAccount\) return null;/,
+    /FetchTopModelsAsync\(string today, string tzQuery, bool retainAccount\)[\s\S]*?if \(ReadAccountSource\(resp\) == AccountSource\.LocalTransient && retainAccount\) return null;/,
   ]) {
     assert.match(usagePoller, guard, "each rich sub-fetch must apply the same rule");
   }
@@ -71,6 +75,35 @@ test("rich pet stats cannot mix authorities into one published snapshot", () => 
     usagePoller,
     /if \(heatmap is null \|\| topModels is null\) return null;/,
     "UsageStats is published atomically, so one degraded dataset skips the whole poll.",
+  );
+});
+
+test("the rich-stat guards read this poll's authority, not the last publish's", () => {
+  // `_showingAccountData` is assigned at the very end of FetchAsync, so it
+  // describes the *previous* published snapshot. It starts false, so on a cold
+  // start — and on any local-to-account transition — a summary that came back
+  // as Account paired with a transient heatmap/model response would pass a
+  // guard written against the old flag alone, mixing this machine's streak and
+  // top models into an account-authoritative UsageStats. Worse, the next poll
+  // then sees the flag as true, returns null, and leaves that mixed snapshot
+  // rendering in the tray until the failing dataset recovers.
+  assert.match(
+    usagePoller,
+    /var retainAccount = summarySource == AccountSource\.Account \|\| _showingAccountData;/,
+    "The retention decision must include what THIS poll is about to render as.",
+  );
+  for (const call of [
+    /var heatmap = await FetchHeatmapAsync\(tzQuery, retainAccount\);/,
+    /var topModels = await FetchTopModelsAsync\(today, tzQuery, retainAccount\);/,
+  ]) {
+    assert.match(usagePoller, call, "both rich sub-fetches must be told the current authority");
+  }
+  // The flag must not be consulted directly inside the helpers any more.
+  const heatmapBody = usagePoller.slice(usagePoller.indexOf("FetchHeatmapAsync(string tzQuery"));
+  assert.doesNotMatch(
+    heatmapBody,
+    /_showingAccountData/,
+    "A helper reading the previous-publish flag reintroduces the transition gap.",
   );
 });
 
