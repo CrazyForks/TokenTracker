@@ -203,3 +203,38 @@ test("parseQoderNewIncremental uses isolated cursor namespace", async (t) => {
   assert.equal(Object.keys(cursors.qoderNew.messages).length, 1);
   assert.equal(cursors.qoderNew.messages["jsonl:sess-1|m1"]?.model, "qmodel_38max");
 });
+
+test("parseQoderNewIncremental handles zero credit with only cache-creation tokens (precise, not estimated)", async (t) => {
+  const tmp = tempDir();
+  const { dir, queuePath } = tempQueue();
+  t.after(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const sessionFile = path.join(tmp, "sess.jsonl");
+  writeJsonl(sessionFile, [{
+    type: "assistant",
+    timestamp: "2026-08-30T11:00:00.000Z",
+    uuid: "u1",
+    sessionId: "sess-cache",
+    cwd: "/tmp/proj",
+    message: {
+      id: "m-cache",
+      role: "assistant",
+      model: "qmodel_38max",
+      content: [{ type: "tool_use", name: "Read" }],
+      usage: { credits: 0, billable: true, input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 123, output_tokens: 0 },
+    },
+  }]);
+  const cursors = {};
+  const res = await parseQoderNewIncremental({ sessionFiles: [sessionFile], cursors, queuePath, sourceKey: "qoder", cursorKey: "qoderNew" });
+  assert.equal(res.messagesProcessed, 1);
+  assert.equal(res.eventsAggregated, 1);
+  const row = queueRows(queuePath).find((r) => r.source === "qoder");
+  assert.equal(row.cache_creation_input_tokens, 123);
+  assert.equal(row.total_tokens, 123);
+  assert.equal(row.input_tokens, 0);
+  // Precise cache-creation should not be marked as credits estimate
+  assert.equal(row.usage_precision, undefined);
+  assert.equal(row.conversation_count, 1);
+});

@@ -5837,7 +5837,7 @@ function normalizeQoderNewTokens(usage) {
   // New SDK reports 0 tokens but non-zero credits — estimate tokens from credits
   // so the dashboard still shows activity. Keep estimate conservative and mark
   // precision so it is distinguishable from exact local.db rows.
-  if (input > 0 || cached > 0 || output > 0) {
+  if (input > 0 || cached > 0 || cacheCreation > 0 || output > 0) {
     const inp = Math.max(0, Math.trunc(input));
     const cach = Math.max(0, Math.trunc(cached));
     const out = Math.max(0, Math.trunc(output));
