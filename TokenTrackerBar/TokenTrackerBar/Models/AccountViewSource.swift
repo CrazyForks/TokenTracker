@@ -81,7 +81,34 @@ struct AccountViewStateStore {
         case modelBreakdown
     }
 
-    private var sourceByDataset: [Dataset: AccountViewSource] = [:]
+    /// Identifies the query a dataset's authority was recorded for.
+    ///
+    /// Authority is only meaningful for the exact scope it was observed on.
+    /// `.periodSummary` / `.modelBreakdown` / `.monthly` follow the selected
+    /// period, and the day-scoped views follow the calendar day. Without this,
+    /// a retained account snapshot from the previous period outranks a fresh
+    /// response for the new one, and the panel keeps last period's numbers
+    /// under this period's label.
+    ///
+    /// Windows that merely slide (rolling 30d, all-time, the year heatmap) use
+    /// a constant scope on purpose: there the one-day shift is a rounding
+    /// difference, and rekeying them at midnight would hand a transient cloud
+    /// failure a fresh chance to downgrade an account view to this machine.
+    enum Scope {
+        static let rolling30 = "rolling30"
+        static let total = "total"
+        static let daily30 = "daily30"
+        static let heatmap = "heatmap"
+        static func day(_ day: String) -> String { "day:\(day)" }
+        static func range(_ from: String, _ to: String) -> String { "range:\(from)..\(to)" }
+    }
+
+    private struct Record {
+        let source: AccountViewSource
+        let scope: String
+    }
+
+    private var recordByDataset: [Dataset: Record] = [:]
     private(set) var degradedDatasets: Set<Dataset> = []
 
     /// True while at least one dataset is running on (or holding onto data
@@ -92,32 +119,42 @@ struct AccountViewStateStore {
     /// because the cloud is unreachable — i.e. cold start with no account
     /// snapshot to fall back on.
     func showsTransientLocalData(_ dataset: Dataset) -> Bool {
-        sourceByDataset[dataset]?.isTransientFallback ?? false
+        recordByDataset[dataset]?.source.isTransientFallback ?? false
     }
 
     /// Decide whether an incoming payload should replace what is on screen.
+    /// - Parameter scope: identifies the query this response answers. A record
+    ///   held for a different scope describes data the view no longer asks for.
     /// - Parameter hasExistingValue: whether the view model already holds a
     ///   rendered payload for this dataset.
     /// - Returns: true to publish the new payload, false to keep the old one.
     mutating func shouldAdopt(
         _ source: AccountViewSource,
         for dataset: Dataset,
+        scope: String,
         hasExistingValue: Bool
     ) -> Bool {
+        // Drop authority recorded for a scope the view has since left, so the
+        // retained-snapshot rule below can never answer for the wrong period.
+        if let record = recordByDataset[dataset], record.scope != scope {
+            recordByDataset.removeValue(forKey: dataset)
+            degradedDatasets.remove(dataset)
+        }
         guard source.isTransientFallback else {
             degradedDatasets.remove(dataset)
-            sourceByDataset[dataset] = source
+            recordByDataset[dataset] = Record(source: source, scope: scope)
             return true
         }
         degradedDatasets.insert(dataset)
-        if hasExistingValue, sourceByDataset[dataset]?.isAccount == true {
+        if hasExistingValue, recordByDataset[dataset]?.source.isAccount == true {
             // Keep the account snapshot and its authority; this failure is
             // temporary and a retry is scheduled.
             return false
         }
-        // Nothing better to show (cold start, or we were already local):
-        // this-machine data beats an empty panel, but stays marked degraded.
-        sourceByDataset[dataset] = source
+        // Nothing better to show (cold start, a scope we have no account
+        // snapshot for, or we were already local): this-machine data beats an
+        // empty panel, but stays marked degraded.
+        recordByDataset[dataset] = Record(source: source, scope: scope)
         return true
     }
 
@@ -125,7 +162,7 @@ struct AccountViewStateStore {
     /// a non-day period is selected). Without this its degraded flag would
     /// linger forever, because nothing ever fetches it again to clear it.
     mutating func clear(_ dataset: Dataset) {
-        sourceByDataset.removeValue(forKey: dataset)
+        recordByDataset.removeValue(forKey: dataset)
         degradedDatasets.remove(dataset)
     }
 }

@@ -183,6 +183,7 @@ class DashboardViewModel: ObservableObject {
                     guard self.shouldPublish(
                         result.accountSource,
                         for: .todaySummary,
+                        scope: AccountViewStateStore.Scope.day(rollingTo),
                         hasExistingValue: self.todaySummary != nil
                     ) else { return }
                     self.todaySummary = result.summary
@@ -206,6 +207,7 @@ class DashboardViewModel: ObservableObject {
                     if self.shouldPublish(
                         result.accountSource,
                         for: .periodSummary,
+                        scope: AccountViewStateStore.Scope.range(range.from, range.to),
                         hasExistingValue: self.summary != nil
                     ) {
                         self.summary = result.summary
@@ -225,6 +227,7 @@ class DashboardViewModel: ObservableObject {
                     guard self.shouldPublish(
                         result.accountSource,
                         for: .rollingSummary,
+                        scope: AccountViewStateStore.Scope.rolling30,
                         hasExistingValue: self.rollingSummary != nil
                     ) else { return }
                     self.rollingSummary = result.summary
@@ -248,6 +251,7 @@ class DashboardViewModel: ObservableObject {
                     guard self.shouldPublish(
                         result.accountSource,
                         for: .totalSummary,
+                        scope: AccountViewStateStore.Scope.total,
                         hasExistingValue: self.totalSummary != nil
                     ) else { return }
                     self.totalSummary = result.summary
@@ -269,6 +273,7 @@ class DashboardViewModel: ObservableObject {
                     if self.shouldPublish(
                         result.source,
                         for: .daily,
+                        scope: AccountViewStateStore.Scope.daily30,
                         hasExistingValue: !self.daily.isEmpty
                     ) {
                         self.daily = result.value.data
@@ -285,6 +290,7 @@ class DashboardViewModel: ObservableObject {
                         if self.shouldPublish(
                             result.source,
                             for: .hourly,
+                            scope: AccountViewStateStore.Scope.day(rollingTo),
                             hasExistingValue: !self.hourly.isEmpty
                         ) {
                             self.hourly = result.value.data
@@ -296,6 +302,7 @@ class DashboardViewModel: ObservableObject {
                         if self.shouldPublish(
                             result.source,
                             for: .monthly,
+                            scope: AccountViewStateStore.Scope.range(range.from, range.to),
                             hasExistingValue: !self.monthly.isEmpty
                         ) {
                             self.monthly = result.value.data
@@ -320,6 +327,7 @@ class DashboardViewModel: ObservableObject {
                     if self.shouldPublish(
                         result.source,
                         for: .heatmap,
+                        scope: AccountViewStateStore.Scope.heatmap,
                         hasExistingValue: self.heatmap != nil
                     ) {
                         self.heatmap = result.value
@@ -336,6 +344,7 @@ class DashboardViewModel: ObservableObject {
                     if self.shouldPublish(
                         result.source,
                         for: .modelBreakdown,
+                        scope: AccountViewStateStore.Scope.range(range.from, range.to),
                         hasExistingValue: self.modelBreakdown != nil
                     ) {
                         self.modelBreakdown = result.value
@@ -418,11 +427,13 @@ class DashboardViewModel: ObservableObject {
     private func shouldPublish(
         _ source: AccountViewSource,
         for dataset: AccountViewStateStore.Dataset,
+        scope: String,
         hasExistingValue: Bool
     ) -> Bool {
         let adopt = accountViewState.shouldAdopt(
             source,
             for: dataset,
+            scope: scope,
             hasExistingValue: hasExistingValue
         )
         if source.isTransientFallback {
@@ -594,6 +605,7 @@ class DashboardViewModel: ObservableObject {
                         if summaries.contains(.today), self.shouldPublish(
                             result.accountSource,
                             for: .todaySummary,
+                            scope: AccountViewStateStore.Scope.day(today),
                             hasExistingValue: self.todaySummary != nil
                         ) {
                             self.todaySummary = result.summary
@@ -604,6 +616,7 @@ class DashboardViewModel: ObservableObject {
                         if summaries.contains(.rolling), self.shouldPublish(
                             result.accountSource,
                             for: .rollingSummary,
+                            scope: AccountViewStateStore.Scope.rolling30,
                             hasExistingValue: self.rollingSummary != nil
                         ) {
                             self.rollingSummary = result.summary
@@ -632,6 +645,7 @@ class DashboardViewModel: ObservableObject {
                         if self.shouldPublish(
                             result.accountSource,
                             for: .totalSummary,
+                            scope: AccountViewStateStore.Scope.total,
                             hasExistingValue: self.totalSummary != nil
                         ) {
                             self.totalSummary = result.summary
