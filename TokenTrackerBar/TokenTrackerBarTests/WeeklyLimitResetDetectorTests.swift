@@ -58,6 +58,20 @@ final class WeeklyLimitResetDetectorTests: XCTestCase {
         XCTAssertTrue(events.isEmpty)
     }
 
+    func testIdleReadingWithoutResetTimeKeepsBaseline() {
+        // Claude 5h after rollover with no active session reports 0% and no reset_at.
+        // That reading must not overwrite the baseline, otherwise the next real reading
+        // (new reset_at, low usage) sees prevPercent == 0 and never celebrates.
+        let (_, baseline) = detector.evaluate(readings: reading(60, resetAt: 5000), snapshot: .init(), now: 1000)
+        let (idleEvents, idle) = detector.evaluate(readings: reading(0, resetAt: nil), snapshot: baseline, now: 1500)
+        XCTAssertTrue(idleEvents.isEmpty)
+        XCTAssertEqual(idle.lastPercent["codex.primary"], 60, "nil reset_at must not clobber the percent baseline")
+
+        let (events, _) = detector.evaluate(readings: reading(3, resetAt: 9000), snapshot: idle, now: 2000)
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.previousPercent, 60)
+    }
+
     func testSlidingResetWithoutUsageDropDoesNotFire() {
         // Kiro-style: reset_at slides forward every poll, but usage stayed high.
         // The minDrop guard prevents a false celebration.

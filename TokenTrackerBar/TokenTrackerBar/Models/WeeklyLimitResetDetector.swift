@@ -93,15 +93,19 @@ struct WeeklyLimitResetDetector {
 
         for reading in readings {
             let key = reading.windowKey
+            // A reading without a reset timestamp (e.g. Claude's 5h window sitting idle
+            // after rollover reports 0% / null) carries no window identity, so it must
+            // not touch the baseline: overwriting the percent with 0 here would make the
+            // next real reading fail the minDrop check and silently lose the celebration.
+            guard let curReset = reading.resetAt else { continue }
             let prevPercent = snapshot.lastPercent[key]
             let prevReset = snapshot.lastResetAt[key]
             updated.lastPercent[key] = reading.usedPercent
-            if let resetAt = reading.resetAt { updated.lastResetAt[key] = resetAt }   // keep last value when missing
+            updated.lastResetAt[key] = curReset
 
-            // Need a full prior baseline (percent + reset time) and a current reset
-            // time. First observation, or a window without a reset timestamp, only
+            // Need a full prior baseline (percent + reset time). First observation only
             // records a baseline — never celebrates.
-            guard let prevPercent, let prevReset, let curReset = reading.resetAt else { continue }
+            guard let prevPercent, let prevReset else { continue }
             // The window must have actually rolled over: its reset_at advanced to a
             // new period, not merely a percentage that dipped.
             guard curReset > prevReset + resetAdvanceTolerance else { continue }
