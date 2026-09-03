@@ -4900,6 +4900,42 @@ function isZcodeNativeMessage(data) {
   );
 }
 
+// ZCode persists inclusive parent counters in both its legacy OpenCode tables
+// and the newer model_usage table: cache read/write are already included in
+// input, and reasoning is already included in output. The shared OpenCode
+// parser expects disjoint columns, so split the subsets before it computes
+// queue totals and cost (issue #554).
+function normalizeZcodeInclusiveTokens(tokens) {
+  if (!tokens || typeof tokens !== "object") return tokens;
+  const rawInput = toNonNegativeInt(tokens.input);
+  const rawOutput = toNonNegativeInt(tokens.output);
+  const cacheRead = toNonNegativeInt(tokens.cache?.read);
+  const cacheWrite = toNonNegativeInt(tokens.cache?.write);
+  const reasoning = toNonNegativeInt(tokens.reasoning);
+  return {
+    ...tokens,
+    input: Math.max(0, rawInput - cacheRead - cacheWrite),
+    output: Math.max(0, rawOutput - reasoning),
+    reasoning,
+    cache: {
+      ...(tokens.cache && typeof tokens.cache === "object" ? tokens.cache : {}),
+      read: cacheRead,
+      write: cacheWrite,
+    },
+  };
+}
+
+function normalizeZcodeLegacyMessage(message) {
+  if (!message?.data?.tokens) return message;
+  return {
+    ...message,
+    data: {
+      ...message.data,
+      tokens: normalizeZcodeInclusiveTokens(message.data.tokens),
+    },
+  };
+}
+
 const ZCODE_NATIVE_USAGE_COLUMNS = new Set([
   "id",
   "logical_request_id",
@@ -5045,18 +5081,6 @@ function readZcodeNativeUsageMessages(dbPath, sqliteOptions = {}) {
     const startedAt = coerceEpochMs(row?.started_at);
     if (!providerID || !modelID || !sessionID || !id || !startedAt) continue;
 
-    // ZCode's persisted input/output columns are inclusive parents:
-    // cache read/write are subsets of input, and reasoning is a subset of
-    // output. TokenTracker stores those five columns disjointly, so split the
-    // subsets here before entering the shared OpenCode parser. This preserves
-    // sum(input + cache read + cache write + output + reasoning) without
-    // billing either subset twice.
-    const rawInput = toNonNegativeInt(row?.input_tokens);
-    const rawOutput = toNonNegativeInt(row?.output_tokens);
-    const cacheRead = toNonNegativeInt(row?.cache_read_input_tokens);
-    const cacheWrite = toNonNegativeInt(row?.cache_creation_input_tokens);
-    const reasoning = toNonNegativeInt(row?.reasoning_tokens);
-
     const data = {
       id,
       sessionID,
@@ -5064,15 +5088,15 @@ function readZcodeNativeUsageMessages(dbPath, sqliteOptions = {}) {
       providerID,
       modelID,
       time: { created: startedAt, completed: startedAt },
-      tokens: {
-        input: Math.max(0, rawInput - cacheRead - cacheWrite),
-        output: Math.max(0, rawOutput - reasoning),
-        reasoning,
+      tokens: normalizeZcodeInclusiveTokens({
+        input: row?.input_tokens,
+        output: row?.output_tokens,
+        reasoning: row?.reasoning_tokens,
         cache: {
-          read: cacheRead,
-          write: cacheWrite,
+          read: row?.cache_read_input_tokens,
+          write: row?.cache_creation_input_tokens,
         },
-      },
+      }),
     };
     if (typeof row?.directory === "string" && row.directory.trim()) {
       data.path = { cwd: row.directory.trim() };
@@ -5095,7 +5119,8 @@ function readZcodeDbMessages(dbPath, sqliteOptions = {}) {
   if (!dbPath || !fssync.existsSync(dbPath)) return [];
   const nativeMessages = readZcodeNativeUsageMessages(dbPath, sqliteOptions);
   const legacyMessages = readOpencodeDbMessages(dbPath, sqliteOptions)
-    .filter((message) => isZcodeNativeMessage(message.data));
+    .filter((message) => isZcodeNativeMessage(message.data))
+    .map(normalizeZcodeLegacyMessage);
   if (nativeMessages === null) return legacyMessages;
 
   const nativeStartMs = nativeMessages.reduce((earliest, message) => {

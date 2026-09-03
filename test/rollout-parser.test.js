@@ -3466,6 +3466,72 @@ test("readZcodeDbMessages snapshots native model_usage DBs on UNC paths", async 
   }
 });
 
+test("readZcodeDbMessages preserves normalized legacy history before native model_usage begins", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-zcode-native-history-"));
+  try {
+    const dbPath = path.join(tmp, "db.sqlite");
+    const legacyBeforeNative = {
+      id: "legacy-before-native",
+      sessionID: "session-real",
+      role: "assistant",
+      providerID: "builtin:zai-start-plan",
+      modelID: "GLM-5.2",
+      time: { created: 1781514000000, completed: 1781514060000 },
+      tokens: { input: 70, output: 14, reasoning: 4, cache: { read: 20, write: 10 } },
+    };
+    const legacyCoveredByNative = {
+      ...legacyBeforeNative,
+      id: "legacy-covered-by-native",
+      time: { created: 1787105605912, completed: 1787105665912 },
+    };
+    const beforeJson = JSON.stringify(legacyBeforeNative).replace(/'/g, "''");
+    const coveredJson = JSON.stringify(legacyCoveredByNative).replace(/'/g, "''");
+    runSqliteWrite(dbPath, `
+      CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT NOT NULL);
+      CREATE TABLE message (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        time_created INTEGER NOT NULL,
+        time_updated INTEGER NOT NULL,
+        data TEXT NOT NULL
+      );
+      CREATE TABLE model_usage (
+        id TEXT PRIMARY KEY,
+        logical_request_id TEXT NOT NULL,
+        attempt_index INTEGER NOT NULL DEFAULT 0,
+        session_id TEXT NOT NULL,
+        provider_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_input_tokens INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO session VALUES ('session-real', '/real/project');
+      INSERT INTO message VALUES
+        ('legacy-before-native', 'session-real', 1781514000000, 1781514060000, '${beforeJson}'),
+        ('legacy-covered-by-native', 'session-real', 1787105605912, 1787105665912, '${coveredJson}');
+      INSERT INTO model_usage VALUES
+        ('native', 'logical-native', 0, 'session-real', 'builtin:zai-start-plan', 'GLM-5.3',
+         'completed', 1787105605912, 101, 21, 6, 11, 31);
+    `);
+
+    const rows = readZcodeDbMessages(dbPath);
+    assert.deepEqual(rows.map((row) => row.id), ["legacy-before-native", "native"]);
+    assert.deepEqual(rows[0].data.tokens, {
+      input: 40,
+      output: 10,
+      reasoning: 4,
+      cache: { read: 20, write: 10 },
+    });
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("readZcodeDbMessages keeps Z.ai/BigModel + third-party rows, drops bundled sub-agent turns", async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tokentracker-zcode-db-"));
   try {
@@ -3503,6 +3569,7 @@ test("readZcodeDbMessages keeps Z.ai/BigModel + third-party rows, drops bundled 
     assert.deepEqual(models, ["GLM-5-Turbo", "GLM-5.2", "fugu-ultra", "mimo-v2.5-pro"]);
     // No bundled anthropic/openai/google sub-agent turn survives the filter.
     assert.ok(!rows.some((r) => /anthropic|openai|google/.test(r.data.providerID)));
+    assert.ok(rows.every((row) => row.data.tokens.input === 50));
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
@@ -3546,7 +3613,7 @@ test("parseOpencodeDbIncremental aggregates ZCode GLM rows into source=zcode buc
     // Model is stored with the DB's original case ("GLM-5.2"); the pricing
     // matcher is case-insensitive so cost still resolves to the curated key.
     assert.equal(queued[0].model, "GLM-5.2");
-    assert.equal(queued[0].input_tokens, 10478);
+    assert.equal(queued[0].input_tokens, 3438);
     assert.equal(queued[0].output_tokens, 203);
     assert.equal(queued[0].cached_input_tokens, 7040);
 

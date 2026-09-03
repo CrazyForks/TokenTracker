@@ -265,6 +265,7 @@ const CODEX_COLD_SCAN_AUDIT_MAX_SYNCS = 288;
 const MIMO_PROVIDER_REPAIR_KEY = "mimoClaudeMislabelRepair_2026_06";
 const DSH_LEGACY_SOURCE_MIGRATION_KEY = "deepseekHarnessSourceMigration_2026_08";
 const ZCODE_NATIVE_USAGE_REPAIR_KEY = "zcodeNativeUsageRepair_2026_08";
+const ZCODE_INCLUSIVE_TOKEN_REPAIR_KEY = "zcodeInclusiveTokenRepair_2026_09";
 const AUTO_SYNC_SOURCE_ALIASES = new Map([
   ["code", "every-code"],
   ["deepseek", "dsh"],
@@ -1441,6 +1442,13 @@ async function cmdSync(argv, context = {}) {
               projectQueueStatePath,
             });
           }
+          await repairZcodeInclusiveTokenMigration({
+            cursors,
+            queuePath,
+            queueStatePath,
+            projectQueuePath,
+            projectQueueStatePath,
+          });
           zcodeResult = await multiInstallParse({
             paths: zcodePaths, parserFn: parseOpencodeDbForInstall, providerName: "zcode",
             cursors, getParams: (p) => ({ dbPath: p, readFn: readZcodeDbMessages, source: "zcode", cursorKey: "zcode" }),
@@ -3206,6 +3214,7 @@ module.exports = {
   repairDroidDuplicateSessionInflation,
   repairMimoClaudeMislabel,
   repairZcodeNativeUsageMigration,
+  repairZcodeInclusiveTokenMigration,
   reincludeClaudeMemObserverFiles,
   repairGrokQueueFromSessionSnapshots,
   applyCloudConversationsBackfill,
@@ -4183,7 +4192,7 @@ async function repairMimoClaudeMislabel({
   return true;
 }
 
-async function resetUploadOffsetForZcodeNativeRepair(queueStatePath) {
+async function resetUploadOffsetForZcodeRepair(queueStatePath, note) {
   if (typeof queueStatePath !== "string" || !queueStatePath) return false;
   let state = {};
   try {
@@ -4193,7 +4202,7 @@ async function resetUploadOffsetForZcodeNativeRepair(queueStatePath) {
   }
   state.offset = 0;
   state.updatedAt = new Date().toISOString();
-  state.note = "reset_after_zcode_native_usage_repair_2026_08";
+  state.note = note;
   await ensureDir(path.dirname(queueStatePath));
   await fs.writeFile(queueStatePath, JSON.stringify(state, null, 2) + "\n", "utf8");
   return true;
@@ -4255,7 +4264,9 @@ async function dropZcodeQueueRows(filePath, { retainRetractions = false } = {}) 
   return { removed, retractions: retractions.size };
 }
 
-async function repairZcodeNativeUsageMigration({
+async function repairZcodeUsageMigration({
+  migrationKey,
+  queueStateNote,
   cursors,
   queuePath,
   queueStatePath,
@@ -4264,7 +4275,7 @@ async function repairZcodeNativeUsageMigration({
 } = {}) {
   if (!cursors || typeof cursors !== "object") return false;
   const migrations = (cursors.migrations ||= {});
-  if (migrations[ZCODE_NATIVE_USAGE_REPAIR_KEY]) return false;
+  if (migrations[migrationKey]) return false;
 
   const mainRepair = await dropZcodeQueueRows(queuePath, { retainRetractions: true });
   const projectRepair = projectQueuePath
@@ -4292,17 +4303,35 @@ async function repairZcodeNativeUsageMigration({
   }
   delete cursors.zcode;
 
-  if (mainRepair.removed > 0) await resetUploadOffsetForZcodeNativeRepair(queueStatePath);
-  if (projectRepair.removed > 0) {
-    await resetUploadOffsetForZcodeNativeRepair(projectQueueStatePath);
+  if (mainRepair.removed > 0) {
+    await resetUploadOffsetForZcodeRepair(queueStatePath, queueStateNote);
   }
-  migrations[ZCODE_NATIVE_USAGE_REPAIR_KEY] = {
+  if (projectRepair.removed > 0) {
+    await resetUploadOffsetForZcodeRepair(projectQueueStatePath, queueStateNote);
+  }
+  migrations[migrationKey] = {
     appliedAt: new Date().toISOString(),
     removedMain: mainRepair.removed,
     removedProject: projectRepair.removed,
     retractions: mainRepair.retractions,
   };
   return true;
+}
+
+async function repairZcodeNativeUsageMigration(options = {}) {
+  return repairZcodeUsageMigration({
+    ...options,
+    migrationKey: ZCODE_NATIVE_USAGE_REPAIR_KEY,
+    queueStateNote: "reset_after_zcode_native_usage_repair_2026_08",
+  });
+}
+
+async function repairZcodeInclusiveTokenMigration(options = {}) {
+  return repairZcodeUsageMigration({
+    ...options,
+    migrationKey: ZCODE_INCLUSIVE_TOKEN_REPAIR_KEY,
+    queueStateNote: "reset_after_zcode_inclusive_token_repair_2026_09",
+  });
 }
 
 async function repairGrokQueueFromSessionSnapshots({ cursors, queuePath, queueStatePath } = {}) {
