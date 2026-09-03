@@ -5724,16 +5724,14 @@ async function parseQoderDbIncremental({
 // to Electron main.sqlite + ~/.qoder/projects/<slug>/<sessionId>.jsonl.
 // The new transcript's message.usage no longer carries prompt_tokens — it is a
 // credit-billed SDK: {input_tokens:0, output_tokens:0, credits:3.2, billable:true}.
-// Token breakdown is unavailable in the new format; we estimate tokens from
-// credits for dashboard continuity and mark the bucket usage_precision so the
-// estimate is distinguishable from exact DB rows. Cost remains unknown — no
-// authoritative credit→USD rate is published, so total_cost_usd stays 0 and
-// dashboard falls back to token pricing (which will be 0 for unpriced qoder
-// models, intentionally not a pseudo-precise $ value).
+// Only rows with authoritative token fields are counted: credit-only usage
+// without tokens is intentionally not counted (usage stays unsupported, no
+// token delta) because there is no first-party evidence for a credit→token
+// rate. Cost was never estimated — no authoritative credit→USD rate is
+// published, so total_cost_usd stays 0.
 // Old local.db is kept as a legacy fallback; both sources now use distinct
 // cursor namespaces (qoder vs qoderNew) via disjoint messageKey prefixes
 // (row: vs jsonl:) but upload under the same source="qoder".
-const QODER_CREDITS_ESTIMATE_TOKENS_PER_CREDIT = 1500;
 
 function resolveQoderProjectsDir({ home = os.homedir(), env = process.env, platform = process.platform, deps = {} } = {}) {
   const override = typeof env.QODER_PROJECTS_DIR === "string" && env.QODER_PROJECTS_DIR.trim()
@@ -5823,7 +5821,6 @@ function qoderNewTimestampMs(record) {
 function normalizeQoderNewTokens(usage) {
   if (!usage || typeof usage !== "object") return null;
   const credits = Number(usage.credits ?? usage.original_credits ?? 0);
-  const billable = usage.billable !== false;
   let input = Number(usage.input_tokens ?? 0);
   let cached = Number(usage.cache_read_input_tokens ?? usage.cached_tokens ?? 0);
   let cacheCreation = Number(usage.cache_creation_input_tokens ?? 0);
@@ -5834,9 +5831,8 @@ function normalizeQoderNewTokens(usage) {
   if (!Number.isFinite(cached) || cached < 0) cached = 0;
   if (!Number.isFinite(cacheCreation) || cacheCreation < 0) cacheCreation = 0;
   if (!Number.isFinite(output) || output < 0) output = 0;
-  // New SDK reports 0 tokens but non-zero credits — estimate tokens from credits
-  // so the dashboard still shows activity. Keep estimate conservative and mark
-  // precision so it is distinguishable from exact local.db rows.
+  // Only rows with authoritative token fields are counted; anything else
+  // falls through to null (unsupported, no token delta).
   if (input > 0 || cached > 0 || cacheCreation > 0 || output > 0) {
     const inp = Math.max(0, Math.trunc(input));
     const cach = Math.max(0, Math.trunc(cached));
@@ -5854,28 +5850,10 @@ function normalizeQoderNewTokens(usage) {
       usage_precision: null,
     };
   }
-  if (Number.isFinite(credits) && credits > 0 && billable) {
-    // No authoritative credit→USD rate is published. Preserve token continuity
-    // via a documented heuristic; cost stays unknown (0) so dashboard does not
-    // render a pseudo-precise $ value. Token split is unknown, so attribute to
-    // input.
-    const estimated = Math.max(1, Math.round(credits * QODER_CREDITS_ESTIMATE_TOKENS_PER_CREDIT));
-    return {
-      input_tokens: estimated,
-      cached_input_tokens: 0,
-      cache_creation_input_tokens: 0,
-      output_tokens: 0,
-      reasoning_output_tokens: 0,
-      total_tokens: estimated,
-      billable_total_tokens: estimated,
-      credits,
-      usage_precision: "qoder_credits_estimate",
-    };
-  }
-  // Billable but zero tokens/credits — still count conversation, no token delta
-  if (billable && (input === 0 && output === 0 && credits === 0)) {
-    return null;
-  }
+  // Credit-only usage without authoritative token fields is intentionally
+  // not counted (no token delta): there is no first-party evidence for a
+  // credit→token rate. The caller still counts billable messages as
+  // conversation activity.
   return null;
 }
 
