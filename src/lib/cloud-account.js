@@ -72,9 +72,14 @@ function decodeJwtExpMs(token) {
 // that produced it.
 // The popover polls frequently, so caching avoids hammering /api/auth/refresh.
 let tokenCache = { cacheKey: null, accessToken: null, expMs: 0 };
+// Dashboard refreshes fan out to several account endpoints at once. Share a
+// refresh request while it is in flight so each endpoint does not make its own
+// identical network round-trip (especially costly for an expired session).
+let tokenRefreshInFlight = { cacheKey: null, promise: null };
 
 function __resetCloudAccountCacheForTests() {
   tokenCache = { cacheKey: null, accessToken: null, expMs: 0 };
+  tokenRefreshInFlight = { cacheKey: null, promise: null };
 }
 
 function csrfTokenFromRefreshPayload(data) {
@@ -111,6 +116,38 @@ async function mintAccessToken({
     return { accessToken: tokenCache.accessToken, refreshToken: null, csrfToken: null };
   }
 
+  if (tokenRefreshInFlight.cacheKey === cacheKey && tokenRefreshInFlight.promise) {
+    return tokenRefreshInFlight.promise;
+  }
+
+  const pending = mintAccessTokenUncached({
+    root,
+    cacheKey,
+    anonKey,
+    refreshToken,
+    fetchImpl,
+    now,
+    timeoutMs,
+  });
+  tokenRefreshInFlight = { cacheKey, promise: pending };
+  try {
+    return await pending;
+  } finally {
+    if (tokenRefreshInFlight.promise === pending) {
+      tokenRefreshInFlight = { cacheKey: null, promise: null };
+    }
+  }
+}
+
+async function mintAccessTokenUncached({
+  root,
+  cacheKey,
+  anonKey,
+  refreshToken,
+  fetchImpl = fetch,
+  now = Date.now,
+  timeoutMs,
+} = {}) {
   const headers = { "Content-Type": "application/json", Accept: "application/json" };
   if (anonKey) headers.apikey = anonKey;
 

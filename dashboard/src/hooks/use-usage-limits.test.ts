@@ -170,4 +170,40 @@ describe("useUsageLimits", () => {
       source: "manual-refresh",
     });
   });
+
+  it("does not let a slow mount read overwrite a newer manual refresh", async () => {
+    let resolveMount: ((value: any) => void) | null = null;
+    let resolveManual: ((value: any) => void) | null = null;
+    vi.mocked(getUsageLimits).mockImplementation((options: any = {}) =>
+      new Promise((resolve) => {
+        if (options?.refresh) resolveManual = resolve;
+        else resolveMount = resolve;
+      }),
+    );
+
+    const { result } = renderHook(() =>
+      useUsageLimits({ initialRefresh: true }),
+    );
+    await waitFor(() => expect(getUsageLimits).toHaveBeenCalledTimes(1));
+
+    let manualRefresh: Promise<void>;
+    await act(async () => {
+      manualRefresh = result.current.refresh();
+    });
+    await waitFor(() => expect(getUsageLimits).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      resolveManual?.(freshLimits);
+      await manualRefresh;
+    });
+    expect(result.current.data).toEqual(freshLimits);
+    expect(result.current.isLoading).toBe(false);
+
+    // The older page-load response arrives last and must be ignored.
+    await act(async () => {
+      resolveMount?.(existingLimits);
+    });
+    expect(result.current.data).toEqual(freshLimits);
+    expect(result.current.isLoading).toBe(false);
+  });
 });

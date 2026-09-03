@@ -58,4 +58,9 @@ test("Windows background sync stays native-only while manual sync preserves WSL 
     /StartTrackerProcess\(\s*nodePath,\s*entryPath,\s*false,\s*"serve"/,
     "The long-lived server must not receive the background-only WSL override",
   );
+  assert.match(
+    serverManager,
+    /args\.Length\s*>\s*0[\s\S]*TOKENTRACKER_NATIVE_SYNC_OWNER[\s\S]*"windows-host"/,
+    "The Windows host must disable the embedded server's duplicate fallback timer",
+  );
 });

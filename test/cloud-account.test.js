@@ -102,6 +102,27 @@ test("mintAccessToken caches by refresh token and skips re-fetch until near expi
   assert.equal(fetchCount, 2);
 });
 
+test("concurrent token refreshes share one in-flight request", async () => {
+  __resetCloudAccountCacheForTests();
+  const access = makeJwt({ expSeconds: Math.floor(Date.now() / 1000) + 3600 });
+  let calls = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const fetchImpl = async () => {
+    calls += 1;
+    await gate;
+    return jsonResponse({ accessToken: access });
+  };
+  const first = mintAccessToken({ baseUrl: "https://cloud.example", refreshToken: "same", fetchImpl });
+  const second = mintAccessToken({ baseUrl: "https://cloud.example", refreshToken: "same", fetchImpl });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 1);
+  release();
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.accessToken, access);
+  assert.equal(b.accessToken, access);
+});
+
 test("mintAccessToken scopes cache by base URL", async () => {
   __resetCloudAccountCacheForTests();
   const calls = [];

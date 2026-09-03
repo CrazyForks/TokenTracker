@@ -80,6 +80,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
     // WebView (to read the currency) once the dashboard has been opened.
     private readonly System.Windows.Forms.Timer _refreshTimer = new() { Interval = 2000 };
     private readonly System.Windows.Forms.Timer _syncTimer = new() { Interval = 5 * 60 * 1000 };
+    // WebView currency reads are asynchronous. Timer ticks, menu opens, and
+    // poller callbacks can arrive while one read is still pending; keep one
+    // pass active and request one follow-up pass for the newest stats instead
+    // of stacking ExecuteScript calls on the WebView renderer.
+    private Task? _summaryRefreshTask;
+    private bool _summaryRefreshRequested;
 
     public TrayApplicationContext(bool showPetOnLaunch = false)
     {
@@ -605,7 +611,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (_dashboard is not null) return;
         var dashboard = new DashboardWindow(_server);
         _dashboard = dashboard;
-        dashboard.ReleasedForIdle += OnDashboardReleasedForIdle;
         // Re-render the cost when the dashboard reports a currency change (and once
         // it has loaded, so we pick up the user's chosen currency right away), and cache
         // it natively so a future cold-launched pet shows the same unit before the
@@ -620,11 +625,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _trayIcon.ShowBalloonTip(7000, title, body, ToolTipIcon.Warning));
     }
 
-    private void OnDashboardReleasedForIdle(DashboardWindow dashboard)
+    /// <summary>
+    /// Recreate the visible dashboard WebView after a narrowly classified
+    /// disposal race reaches WPF's dispatcher-level handler.
+    /// </summary>
+    internal bool RecoverDashboardWebView(Exception exception)
     {
-        if (!ReferenceEquals(_dashboard, dashboard)) return;
-        dashboard.ReleasedForIdle -= OnDashboardReleasedForIdle;
-        _dashboard = null;
+        if (_dashboard is null) return false;
+        return _dashboard.RecoverFromDispatcherException(exception);
     }
 
     private void ApplyDashboardPetSetting(string key, string? value)
@@ -865,7 +873,33 @@ internal sealed class TrayApplicationContext : ApplicationContext
     }
 
     /// <summary>Render the today summary into the menu + tooltip, in the user's currency.</summary>
-    private async void RefreshSummary()
+    private void RefreshSummary()
+    {
+        _summaryRefreshRequested = true;
+        if (_summaryRefreshTask is { IsCompleted: false }) return;
+        _summaryRefreshTask = RefreshSummaryLoopAsync();
+    }
+
+    private async Task RefreshSummaryLoopAsync()
+    {
+        while (_summaryRefreshRequested)
+        {
+            _summaryRefreshRequested = false;
+            try
+            {
+                await RefreshSummaryOnceAsync();
+            }
+            catch (Exception ex)
+            {
+                // WebView2 can be disposed while a script is in flight. Keep
+                // timer/menu callbacks harmless and leave the last summary
+                // visible until the next successful pass.
+                DiagLog($"RefreshSummary failed: {ex}");
+            }
+        }
+    }
+
+    private async Task RefreshSummaryOnceAsync()
     {
         // Convert USD → the dashboard's chosen currency. Reading the currency is a
         // WebView2 ExecuteScript round-trip — the 2s _refreshTimer would otherwise
@@ -907,11 +941,23 @@ internal sealed class TrayApplicationContext : ApplicationContext
     /// <summary>Cache the dashboard's current currency natively so a cold-launched pet
     /// (no dashboard WebView yet) can show the right unit. Only called from the
     /// CurrencyChanged handler, where the read reflects a real, loaded value.</summary>
-    private async void PersistCurrencyFromDashboard()
+    private void PersistCurrencyFromDashboard()
     {
-        if (_dashboard is null) return;
-        var (symbol, rate) = await _dashboard.ReadCurrencyAsync();
-        Currency.Persist(symbol, rate);
+        _ = PersistCurrencyFromDashboardAsync();
+    }
+
+    private async Task PersistCurrencyFromDashboardAsync()
+    {
+        try
+        {
+            if (_dashboard is null) return;
+            var (symbol, rate) = await _dashboard.ReadCurrencyAsync();
+            Currency.Persist(symbol, rate);
+        }
+        catch (Exception ex)
+        {
+            DiagLog($"PersistCurrency failed: {ex.Message}");
+        }
     }
 
     private void PostToUi(Action action)

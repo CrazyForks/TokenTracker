@@ -3,6 +3,7 @@ import { getUsageLimits } from "../lib/api";
 import { publishUsageLimitsPreloadState } from "../lib/dashboard-preload.js";
 import { LIMIT_ALERTS_PREF_KEY } from "./use-limit-alert-prefs";
 import { sendPredictiveLimitAlerts } from "../lib/limit-alerts.js";
+import { useLatestRequestGuard } from "./use-latest-request-guard";
 
 type CodexLimitWindow = {
   readonly used_percent: number;
@@ -105,6 +106,11 @@ export function useUsageLimits(options?: UseUsageLimitsOptions) {
   const [isLoading, setIsLoading] = useState(!hasInitialState);
   const initialRefresh = Boolean(options?.initialRefresh);
   const publishToPreloadCache = Boolean(options?.publishToPreloadCache);
+  // Mount/cache reads and an explicit refresh can overlap (for example when a
+  // user clicks Refresh while the dashboard's preload request is still
+  // resolving). Keep only the newest response. Without this guard a slower
+  // cache response can overwrite fresh limits fetched by the manual request.
+  const beginRequest = useLatestRequestGuard([]);
 
   useEffect(() => {
     if (!data || typeof window === "undefined") return;
@@ -124,31 +130,41 @@ export function useUsageLimits(options?: UseUsageLimitsOptions) {
   );
 
   const refresh = useCallback(async () => {
+    const isCurrent = beginRequest();
     try {
       const res = await getUsageLimits({ refresh: true });
+      if (!isCurrent()) return;
       const nextData = res && typeof res === "object" ? res as UsageLimitsData : null;
       setData(nextData);
       setError(null);
+      setIsLoading(false);
       publishSuccessfulState(nextData, "manual-refresh");
     } catch (err) {
+      if (!isCurrent()) return;
       setError((err as Error)?.message || String(err));
+      setIsLoading(false);
     }
-  }, [publishSuccessfulState]);
+  }, [beginRequest, publishSuccessfulState]);
 
   const refreshFromServerCache = useCallback(async () => {
+    const isCurrent = beginRequest();
     try {
       // Non-forcing read: serve from the server's cache rather than hitting
       // upstream providers, mirroring the mount fetch (forcing on every focus
       // is what tripped Claude's OAuth usage endpoint rate limit).
       const res = await getUsageLimits();
+      if (!isCurrent()) return;
       const nextData = res && typeof res === "object" ? res as UsageLimitsData : null;
       setData(nextData);
       setError(null);
+      setIsLoading(false);
       publishSuccessfulState(nextData, "page-load");
     } catch (err) {
+      if (!isCurrent()) return;
       setError((err as Error)?.message || String(err));
+      setIsLoading(false);
     }
-  }, [publishSuccessfulState]);
+  }, [beginRequest, publishSuccessfulState]);
 
   // Auto-refresh when the dashboard regains focus / becomes visible again —
   // same throttled pattern as use-usage-data.ts, so a left-open Limits page
@@ -174,29 +190,26 @@ export function useUsageLimits(options?: UseUsageLimitsOptions) {
 
   useEffect(() => {
     if (hasInitialState && !initialRefresh) return;
-    let cancelled = false;
+    const isCurrent = beginRequest();
     (async () => {
       try {
         // Mount fetch reads the server's cache (in-memory + disk-backed) rather than forcing
         // a live upstream call on every navigation — that repeated forcing is what tripped
         // Claude's OAuth usage endpoint rate limit. Only the manual refresh() forces upstream.
         const res = await getUsageLimits();
-        if (cancelled) return;
+        if (!isCurrent()) return;
         const nextData = res && typeof res === "object" ? res as UsageLimitsData : null;
         setData(nextData);
         setError(null);
         publishSuccessfulState(nextData, "page-load");
       } catch (err) {
-        if (cancelled) return;
+        if (!isCurrent()) return;
         setError((err as Error)?.message || String(err));
       } finally {
-        if (!cancelled) setIsLoading(false);
+        if (isCurrent()) setIsLoading(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
-  }, [hasInitialState, initialRefresh, publishSuccessfulState]);
+  }, [beginRequest, hasInitialState, initialRefresh, publishSuccessfulState]);
 
   return { data, error, isLoading, refresh };
 }

@@ -45,6 +45,8 @@ internal sealed class UsagePoller : IDisposable
     private const string AccountQuery = "account=1";
     private readonly Func<string> _baseUrl;
     private CancellationTokenSource? _cts;
+    private int _refreshInFlight;
+    private int _refreshRequested;
 
     /// <summary>
     /// When true, each poll also gathers the heatmap + model-breakdown stats the pet's
@@ -85,12 +87,20 @@ internal sealed class UsagePoller : IDisposable
         {
             while (!token.IsCancellationRequested)
             {
-                var stats = await FetchAsync();
-                if (stats is { } s && !token.IsCancellationRequested) StatsUpdated?.Invoke(s);
-                if (IncludeLimits)
+                try
                 {
-                    var limits = await FetchLimitsAsync();
-                    if (limits is not null && !token.IsCancellationRequested) LimitsUpdated?.Invoke(limits);
+                    await RefreshAsync(token);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    // A subscriber or an unexpected parser failure must not
+                    // terminate the long-lived polling loop.  The next tick
+                    // can still recover and publish fresh usage.
+                    Log($"refresh loop failed: {ex}");
                 }
                 try { await Task.Delay(TimeSpan.FromSeconds(60), token); }
                 catch (TaskCanceledException) { break; }
@@ -101,25 +111,72 @@ internal sealed class UsagePoller : IDisposable
     public void RefreshNow()
     {
         var token = _cts?.Token ?? CancellationToken.None;
-        _ = Task.Run(async () =>
-        {
-            var stats = await FetchAsync();
-            if (stats is { } s && !token.IsCancellationRequested) StatsUpdated?.Invoke(s);
-            if (IncludeLimits)
-            {
-                var limits = await FetchLimitsAsync();
-                if (limits is not null && !token.IsCancellationRequested) LimitsUpdated?.Invoke(limits);
-            }
-        }, token);
+        // Do not pass the token to Task.Run itself. A manual refresh can be
+        // requested just as Start() replaces the CTS; scheduling with the old
+        // (already-cancelled) token would cause the delegate to be discarded
+        // before RefreshAsync gets a chance to drain the request.
+        _ = Task.Run(() => RefreshAsync(token));
     }
 
-    private async Task<string?> FetchLimitsAsync()
+    /// <summary>
+    /// Coalesce timer, sync-completion, and manual refresh requests. Without a
+    /// single-flight gate, a slow account-view request can leave several reads
+    /// in flight and allow an older response to overwrite newer totals.
+    /// </summary>
+    private async Task RefreshAsync(CancellationToken token)
+    {
+        Interlocked.Exchange(ref _refreshRequested, 1);
+        if (Interlocked.CompareExchange(ref _refreshInFlight, 1, 0) != 0) return;
+
+        try
+        {
+            while (!token.IsCancellationRequested &&
+                   Interlocked.Exchange(ref _refreshRequested, 0) == 1)
+            {
+                // Limits are independent of the usage summary. Start both
+                // requests together so a slow provider quota reader cannot add
+                // another full network round-trip to the visible refresh.
+                var includeLimits = IncludeLimits;
+                var statsTask = FetchAsync(token);
+                var limitsTask = includeLimits ? FetchLimitsAsync(token) : null;
+                var stats = await statsTask;
+                if (stats is { } s && !token.IsCancellationRequested) RaiseStatsUpdated(s);
+                if (includeLimits && limitsTask is not null)
+                {
+                    var limits = await limitsTask;
+                    if (limits is not null && !token.IsCancellationRequested) RaiseLimitsUpdated(limits);
+                }
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _refreshInFlight, 0);
+            // Drain a request that arrived between the loop's final check and
+            // releasing the gate without building an unbounded task chain.
+            // Use the current poller's token: Start() can replace a cancelled
+            // poll loop while its final request is still unwinding.
+            var currentToken = _cts?.Token ?? token;
+            if (Volatile.Read(ref _refreshRequested) == 1 && !currentToken.IsCancellationRequested)
+            {
+                // Keep the cancellation token inside RefreshAsync rather than
+                // passing it to Task.Run.  The token can be cancelled in the
+                // tiny window between the check above and queueing the work;
+                // Task.Run would then discard the delegate and leave
+                // _refreshRequested set forever, so the next refresh would be
+                // silently lost until another external trigger arrives.
+                _ = Task.Run(() => RefreshAsync(currentToken));
+            }
+        }
+    }
+
+    private async Task<string?> FetchLimitsAsync(CancellationToken cancellationToken = default)
     {
         try
         {
-            using var resp = await Http.GetAsync(_baseUrl() + "/functions/tokentracker-usage-limits");
+            using var resp = await Http.GetAsync(
+                _baseUrl() + "/functions/tokentracker-usage-limits", cancellationToken);
             if (!resp.IsSuccessStatusCode) return null;
-            return await resp.Content.ReadAsStringAsync();
+            return await resp.Content.ReadAsStringAsync(cancellationToken);
         }
         catch
         {
@@ -127,7 +184,7 @@ internal sealed class UsagePoller : IDisposable
         }
     }
 
-    private async Task<UsageStats?> FetchAsync()
+    private async Task<UsageStats?> FetchAsync(CancellationToken cancellationToken = default)
     {
         try
         {
@@ -141,7 +198,7 @@ internal sealed class UsagePoller : IDisposable
             var summaryUrl = $"{_baseUrl()}/functions/tokentracker-usage-summary"
                              + $"?from={today}&to={today}{tzQuery}&{AccountQuery}";
 
-            using var resp = await Http.GetAsync(summaryUrl);
+            using var resp = await Http.GetAsync(summaryUrl, cancellationToken);
             if (!resp.IsSuccessStatusCode) return null;
 
             // Track whether the server served the cross-device aggregate or fell
@@ -149,8 +206,8 @@ internal sealed class UsagePoller : IDisposable
             if (resp.Headers.TryGetValues("X-TokenTracker-Account-View", out var accountViewValues))
                 AccountViewActive = accountViewValues.FirstOrDefault() == "1";
 
-            await using var stream = await resp.Content.ReadAsStreamAsync();
-            using var doc = await JsonDocument.ParseAsync(stream);
+            await using var stream = await resp.Content.ReadAsStreamAsync(cancellationToken);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
             var root = doc.RootElement;
             if (!root.TryGetProperty("totals", out var totals)) return null;
 
@@ -183,8 +240,14 @@ internal sealed class UsagePoller : IDisposable
             IReadOnlyList<TopModelStat> models = NoModels;
             if (IncludeRichStats)
             {
-                (streak, activeAll) = await FetchHeatmapAsync(tzQuery);
-                models = await FetchTopModelsAsync(today, tzQuery);
+                // These two endpoints are independent. Fetching them in
+                // parallel cuts the rich-refresh tail from roughly 2× the HTTP
+                // timeout to a single timeout window when the backend is slow.
+                var heatmapTask = FetchHeatmapAsync(tzQuery, cancellationToken);
+                var modelsTask = FetchTopModelsAsync(today, tzQuery, cancellationToken);
+                await Task.WhenAll(heatmapTask, modelsTask);
+                (streak, activeAll) = await heatmapTask;
+                models = await modelsTask;
             }
 
             return new UsageStats(
@@ -202,15 +265,16 @@ internal sealed class UsagePoller : IDisposable
 
     /// <summary>Heatmap: all-time active days + current streak (streak is server-computed; the
     /// local server returns 0, matching how the macOS pet reads it against the same backend).</summary>
-    private async Task<(int Streak, int ActiveDays)> FetchHeatmapAsync(string tzQuery)
+    private async Task<(int Streak, int ActiveDays)> FetchHeatmapAsync(
+        string tzQuery, CancellationToken cancellationToken = default)
     {
         try
         {
             var url = $"{_baseUrl()}/functions/tokentracker-usage-heatmap?weeks=52{tzQuery}&{AccountQuery}";
-            using var resp = await Http.GetAsync(url);
+            using var resp = await Http.GetAsync(url, cancellationToken);
             if (!resp.IsSuccessStatusCode) return (0, 0);
-            await using var stream = await resp.Content.ReadAsStreamAsync();
-            using var doc = await JsonDocument.ParseAsync(stream);
+            await using var stream = await resp.Content.ReadAsStreamAsync(cancellationToken);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
             var root = doc.RootElement;
             return ((int)GetLong(root, "streak_days"), (int)GetLong(root, "active_days"));
         }
@@ -223,17 +287,18 @@ internal sealed class UsagePoller : IDisposable
     /// provider from the highest-token row for that name, percent = tokens / total billable
     /// (one decimal), sort by tokens desc then name asc, top 5.
     /// </summary>
-    private async Task<IReadOnlyList<TopModelStat>> FetchTopModelsAsync(string today, string tzQuery)
+    private async Task<IReadOnlyList<TopModelStat>> FetchTopModelsAsync(
+        string today, string tzQuery, CancellationToken cancellationToken = default)
     {
         try
         {
             var from = DateTime.Now.AddDays(-29).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
             var url = $"{_baseUrl()}/functions/tokentracker-usage-model-breakdown"
                       + $"?from={from}&to={today}{tzQuery}&{AccountQuery}";
-            using var resp = await Http.GetAsync(url);
+            using var resp = await Http.GetAsync(url, cancellationToken);
             if (!resp.IsSuccessStatusCode) return NoModels;
-            await using var stream = await resp.Content.ReadAsStreamAsync();
-            using var doc = await JsonDocument.ParseAsync(stream);
+            await using var stream = await resp.Content.ReadAsStreamAsync(cancellationToken);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
             if (!doc.RootElement.TryGetProperty("sources", out var sources)
                 || sources.ValueKind != JsonValueKind.Array) return NoModels;
 
@@ -329,6 +394,23 @@ internal sealed class UsagePoller : IDisposable
     {
         return TryGetLong(obj, name, out var value) ? value : 0;
     }
+
+    // Polling callbacks cross from the worker thread into WinForms/WPF. A
+    // window can close between scheduling and dispatch, so subscriber failures
+    // are diagnostic-only and must never stop future refreshes.
+    private void RaiseStatsUpdated(UsageStats stats)
+    {
+        try { StatsUpdated?.Invoke(stats); }
+        catch (Exception ex) { Log($"StatsUpdated handler failed: {ex}"); }
+    }
+
+    private void RaiseLimitsUpdated(string limitsJson)
+    {
+        try { LimitsUpdated?.Invoke(limitsJson); }
+        catch (Exception ex) { Log($"LimitsUpdated handler failed: {ex}"); }
+    }
+
+    private static void Log(string message) => Diag.Log("poller", message);
 
     /// <summary>The usage endpoints expect an IANA tz; Windows uses its own ids, so convert.</summary>
     private static string TimeZoneQuery()
