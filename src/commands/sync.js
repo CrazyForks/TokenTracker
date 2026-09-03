@@ -34,6 +34,10 @@ const {
   resolveQoderDbPaths,
   resolveQoderCnDbPaths,
   readQoderDbMessages,
+  resolveQoderProjectsDir,
+  resolveQoderCnProjectsDir,
+  listQoderNewSessionFiles,
+  parseQoderNewIncremental,
   resolveKiroDbPath,
   resolveKiroJsonlPath,
   resolveKiroBasePath,
@@ -1269,6 +1273,39 @@ async function cmdSync(argv, context = {}) {
       }
     }
 
+    // Qoder new (JSONL) — com.qoder.app.stable / ~/.qoder/projects (2026-08+)
+    // The new Electron app no longer writes SharedClientCache/local.db; all
+    // recent sessions live in ~/.qoder/projects as flat JSONL with credit-based
+    // usage. Parse them into the same "qoder" source so history is continuous.
+    // The legacy DB block above remains as a fallback for pre-migration rows.
+    if (sourceAllowed("qoder")) {
+      try {
+        const projectsDir = resolveQoderProjectsDir({ home, env: process.env });
+        const sessionFiles = await listQoderNewSessionFiles(projectsDir);
+        if (sessionFiles.length > 0) {
+          if (progress?.enabled) {
+            progress.start(`Parsing Qoder (new) ${renderBar(0)} | buckets 0`);
+          }
+          const parsed = await parseQoderNewIncremental({
+            sessionFiles,
+            cursors,
+            queuePath,
+            projectQueuePath,
+            onProgress: makeProviderProgress("Qoder (new)"),
+            sourceKey: "qoder",
+            cursorKey: "qoderNew",
+          });
+          qoderResult = {
+            recordsProcessed: qoderResult.recordsProcessed + (parsed.messagesProcessed || 0),
+            eventsAggregated: qoderResult.eventsAggregated + (parsed.eventsAggregated || 0),
+            bucketsQueued: qoderResult.bucketsQueued + (parsed.bucketsQueued || 0),
+          };
+        }
+      } catch (err) {
+        warnProviderParseFailure("Qoder (new)", err, opts);
+      }
+    }
+
     // ── Qoder CN (国内版) — same SharedClientCache/local.db schema, separate
     // Application Support/QoderCN data directory. Tracked as its own source
     // with its own cursor namespace: the two DBs each number rowids from 1, so
@@ -1317,6 +1354,44 @@ async function cmdSync(argv, context = {}) {
         } catch (err) {
           warnProviderParseFailure("Qoder CN", err, opts);
         }
+      }
+    }
+
+    // Qoder CN new (JSONL) — currently shares ~/.qoder/projects with international;
+    // keep distinct parsing only when CN projects dir diverges (future CN split)
+    // to avoid double-counting the same JSONL under two sources.
+    if (sourceAllowed("qoder-cn")) {
+      try {
+        const cnProjectsDir = resolveQoderCnProjectsDir({ home, env: process.env });
+        const intlProjectsDir = resolveQoderProjectsDir({ home, env: process.env });
+        const projectsDirKey = (p) => {
+          const normalized = path.normalize(p);
+          return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+        };
+        if (projectsDirKey(cnProjectsDir) !== projectsDirKey(intlProjectsDir)) {
+          const sessionFiles = await listQoderNewSessionFiles(cnProjectsDir);
+          if (sessionFiles.length > 0) {
+            if (progress?.enabled) {
+              progress.start(`Parsing Qoder CN (new) ${renderBar(0)} | buckets 0`);
+            }
+            const parsed = await parseQoderNewIncremental({
+              sessionFiles,
+              cursors,
+              queuePath,
+              projectQueuePath,
+              onProgress: makeProviderProgress("Qoder CN (new)"),
+              sourceKey: "qoder-cn",
+              cursorKey: "qoderCnNew",
+            });
+            qoderCnResult = {
+              recordsProcessed: qoderCnResult.recordsProcessed + (parsed.messagesProcessed || 0),
+              eventsAggregated: qoderCnResult.eventsAggregated + (parsed.eventsAggregated || 0),
+              bucketsQueued: qoderCnResult.bucketsQueued + (parsed.bucketsQueued || 0),
+            };
+          }
+        }
+      } catch (err) {
+        warnProviderParseFailure("Qoder CN (new)", err, opts);
       }
     }
 

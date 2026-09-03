@@ -74,6 +74,9 @@ const {
   resolveUnslothDbPath,
   resolveQoderDbPaths,
   resolveQoderCnDbPaths,
+  resolveQoderProjectsDir,
+  resolveQoderCnProjectsDir,
+  listQoderNewSessionFiles,
   resolveClaudeScienceDbPaths,
   resolveAnythingllmDbPath,
   resolveGooseDbPath,
@@ -128,6 +131,13 @@ function formatResolvedPaths(paths, filename) {
     try { if (fssync.existsSync(file)) active.push(`${label}: ${file}`); } catch (_e) {}
   }
   return active;
+}
+
+// Combine a legacy DB path with its new-JSONL projects-dir path for the
+// machine-readable summary. Either side may be "" (absent); both absent
+// yields "" so callers can fall back to "not found".
+function summarizeQoderDetail(dbPath, newPath) {
+  return [dbPath, newPath].filter(Boolean).join(" + ") || "";
 }
 
 // The Trae SOLO entitlement snapshot is read directly from the Trae Local
@@ -491,15 +501,28 @@ async function cmdStatus(argv = []) {
   const zcodeInstalled = zcodeActive.length > 0;
   const zcodeDbPath = zcodeActive.join(" | ");
 
-  // Qoder Desktop 1.18+ — token usage lives in SharedClientCache/local.db.
+  // Qoder Desktop 1.18+ — token usage lives in SharedClientCache/local.db (legacy)
+  // and since 2026-08 (app 0.1.2+) also in ~/.qoder/projects JSONL (credit-based).
   const qoderPaths = resolveQoderDbPaths({
     home,
     env: process.env,
     platform: process.platform,
   });
   const qoderActive = formatResolvedPaths(qoderPaths);
-  const qoderInstalled = qoderActive.length > 0;
+  // New JSONL location (com.qoder.app.stable + ~/.qoder/projects)
+  const qoderProjectsDirResolved = resolveQoderProjectsDir({ home, env: process.env });
+  let qoderNewFiles = [];
+  try {
+    qoderNewFiles = await listQoderNewSessionFiles(qoderProjectsDirResolved);
+  } catch (_e) {
+    qoderNewFiles = [];
+  }
+  const qoderNewInstalled = qoderNewFiles.length > 0;
+  const qoderInstalled = qoderActive.length > 0 || qoderNewInstalled;
   const qoderDbPath = qoderActive.join(" | ");
+  const qoderNewPath = qoderNewFiles.length > 0
+    ? `${qoderProjectsDirResolved} (${qoderNewFiles.length} sessions)`
+    : "";
 
   // Qoder CN (国内版) — same schema, separate Application Support/QoderCN dir.
   const qoderCnPaths = resolveQoderCnDbPaths({
@@ -508,8 +531,28 @@ async function cmdStatus(argv = []) {
     platform: process.platform,
   });
   const qoderCnActive = formatResolvedPaths(qoderCnPaths);
-  const qoderCnInstalled = qoderCnActive.length > 0;
+  // CN new-JSONL mirrors sync.js: CN and international currently share
+  // ~/.qoder/projects, and sync only parses the CN dir when it diverges from
+  // the international one (same files must not count under two sources). Only
+  // report CN JSONL when the dirs diverge.
+  const qoderCnProjectsDirResolved = resolveQoderCnProjectsDir({ home, env: process.env });
+  const qoderCnSharesIntlDir = path.normalize(qoderCnProjectsDirResolved) === path.normalize(qoderProjectsDirResolved)
+    || (process.platform === "win32"
+      && path.normalize(qoderCnProjectsDirResolved).toLowerCase() === path.normalize(qoderProjectsDirResolved).toLowerCase());
+  let qoderCnNewFiles = [];
+  if (!qoderCnSharesIntlDir) {
+    try {
+      qoderCnNewFiles = await listQoderNewSessionFiles(qoderCnProjectsDirResolved);
+    } catch (_e) {
+      qoderCnNewFiles = [];
+    }
+  }
+  const qoderCnNewInstalled = qoderCnNewFiles.length > 0;
+  const qoderCnInstalled = qoderCnActive.length > 0 || qoderCnNewInstalled;
   const qoderCnDbPath = qoderCnActive.join(" | ");
+  const qoderCnNewPath = qoderCnNewFiles.length > 0
+    ? `${qoderCnProjectsDirResolved} (${qoderCnNewFiles.length} sessions)`
+    : "";
 
   // Claude Science — token usage lives on the `frames` table of operon-cli.db.
   // Unlike the native/WSL pair other providers resolve to, this is an open-ended
@@ -945,10 +988,10 @@ async function cmdStatus(argv = []) {
           ? { installed: true, detail: zcodeDbPath }
           : { installed: false },
         qoder: qoderInstalled
-          ? { installed: true, detail: qoderDbPath }
+          ? { installed: true, detail: summarizeQoderDetail(qoderDbPath, qoderNewPath) }
           : { installed: false },
         "qoder-cn": qoderCnInstalled
-          ? { installed: true, detail: qoderCnDbPath }
+          ? { installed: true, detail: summarizeQoderDetail(qoderCnDbPath, qoderCnNewPath) }
           : { installed: false },
         "claude-science": claudeScienceInstalled
           ? { installed: true, detail: claudeScienceDbPath }
@@ -1107,10 +1150,10 @@ async function cmdStatus(argv = []) {
         ? `- ZCode: passive reader (${zcodeDbPath})`
         : null,
       qoderInstalled
-        ? `- Qoder: passive reader (${qoderDbPath})`
+        ? `- Qoder: passive reader (${[qoderDbPath, qoderNewPath].filter(Boolean).join(" + ") || "not found"}${qoderNewInstalled && qoderActive.length > 0 ? " [legacy DB + new JSONL (both tracked)]" : ""}${qoderNewInstalled && qoderActive.length === 0 ? " [new JSONL only]" : ""})`
         : null,
       qoderCnInstalled
-        ? `- Qoder CN: passive reader (${qoderCnDbPath})`
+        ? `- Qoder CN: passive reader (${summarizeQoderDetail(qoderCnDbPath, qoderCnNewPath) || "not found"}${qoderCnNewInstalled && qoderCnActive.length > 0 ? " [legacy DB + new JSONL (both tracked)]" : ""}${qoderCnNewInstalled && qoderCnActive.length === 0 ? " [new JSONL only]" : ""})`
         : null,
       claudeScienceInstalled
         ? `- Claude Science: passive reader (${claudeScienceDbPath})`
@@ -1462,4 +1505,4 @@ function parseEpochMsToIso(v) {
   return d.toISOString();
 }
 
-module.exports = { cmdStatus };
+module.exports = { cmdStatus, summarizeQoderDetail };
