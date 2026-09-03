@@ -72,14 +72,28 @@ function decodeJwtExpMs(token) {
 // that produced it.
 // The popover polls frequently, so caching avoids hammering /api/auth/refresh.
 let tokenCache = { cacheKey: null, accessToken: null, expMs: 0 };
-// Dashboard refreshes fan out to several account endpoints at once. Share a
-// refresh request while it is in flight so each endpoint does not make its own
-// identical network round-trip (especially costly for an expired session).
-let tokenRefreshInFlight = { cacheKey: null, promise: null };
+
+// In-flight refresh de-duplication ("single flight"), keyed the same way as
+// `tokenCache`. A full popover refresh fires six account reads concurrently; on
+// a cold cache every one of them used to POST /api/auth/refresh with the SAME
+// refresh token. When the backend rotates refresh tokens, the losers of that
+// race present an already-consumed token and fail — which is exactly the
+// intermittent "Activity silently dropped to this-machine data" symptom.
+const mintInflight = new Map();
 
 function __resetCloudAccountCacheForTests() {
   tokenCache = { cacheKey: null, accessToken: null, expMs: 0 };
-  tokenRefreshInFlight = { cacheKey: null, promise: null };
+  mintInflight.clear();
+}
+
+// Failure classes surfaced to local-api so it can tell an intentional local
+// view ("signed out", "cloud sync off") apart from a temporary cloud outage.
+class AccountAuthError extends Error {
+  constructor(code, message) {
+    super(message || code);
+    this.name = "AccountAuthError";
+    this.code = code;
+  }
 }
 
 function csrfTokenFromRefreshPayload(data) {
@@ -92,62 +106,11 @@ function csrfTokenFromRefreshPayload(data) {
 }
 
 /**
- * Mint (or reuse a cached) InsForge access token from a refresh token.
- * @returns {Promise<{accessToken: string, refreshToken: string|null, csrfToken: string|null}|null>}
- *   null when no refresh token is available or the refresh failed.
+ * Perform the actual refresh POST. Throws a classified `AccountAuthError` on
+ * every failure so callers can distinguish a transient outage (timeout,
+ * offline, rotated-token rejection) from an intentionally local view.
  */
-async function mintAccessToken({
-  baseUrl,
-  anonKey,
-  refreshToken,
-  fetchImpl = fetch,
-  now = Date.now,
-  skewMs = 60_000,
-  timeoutMs,
-} = {}) {
-  if (!refreshToken) return null;
-  const root = String(baseUrl || DEFAULT_BASE_URL).replace(/\/$/, "");
-  const cacheKey = `${root}\0${refreshToken}`;
-  if (
-    tokenCache.cacheKey === cacheKey &&
-    tokenCache.accessToken &&
-    tokenCache.expMs - skewMs > now()
-  ) {
-    return { accessToken: tokenCache.accessToken, refreshToken: null, csrfToken: null };
-  }
-
-  if (tokenRefreshInFlight.cacheKey === cacheKey && tokenRefreshInFlight.promise) {
-    return tokenRefreshInFlight.promise;
-  }
-
-  const pending = mintAccessTokenUncached({
-    root,
-    cacheKey,
-    anonKey,
-    refreshToken,
-    fetchImpl,
-    now,
-    timeoutMs,
-  });
-  tokenRefreshInFlight = { cacheKey, promise: pending };
-  try {
-    return await pending;
-  } finally {
-    if (tokenRefreshInFlight.promise === pending) {
-      tokenRefreshInFlight = { cacheKey: null, promise: null };
-    }
-  }
-}
-
-async function mintAccessTokenUncached({
-  root,
-  cacheKey,
-  anonKey,
-  refreshToken,
-  fetchImpl = fetch,
-  now = Date.now,
-  timeoutMs,
-} = {}) {
+async function performMint({ root, cacheKey, anonKey, refreshToken, fetchImpl, now, timeoutMs }) {
   const headers = { "Content-Type": "application/json", Accept: "application/json" };
   if (anonKey) headers.apikey = anonKey;
 
@@ -169,24 +132,37 @@ async function mintAccessTokenUncached({
       body: JSON.stringify({ refresh_token: refreshToken }),
       signal,
     });
-  } catch {
-    return null;
+  } catch (e) {
+    const aborted = e && (e.name === "AbortError" || e.name === "TimeoutError");
+    throw new AccountAuthError(
+      aborted ? "auth_timeout" : "auth_network",
+      e?.message || "token refresh failed",
+    );
   } finally {
     if (timeoutId) {
       clearTimeout(timeoutId);
     }
   }
-  if (!res || !res.ok) return null;
+  if (!res || !res.ok) {
+    const err = new AccountAuthError(
+      "auth_rejected",
+      `token refresh failed with HTTP ${res ? res.status : "?"}`,
+    );
+    err.status = res ? res.status : 0;
+    throw err;
+  }
 
   let data = null;
   try {
     data = await res.json();
-  } catch {
-    return null;
+  } catch (e) {
+    throw new AccountAuthError("auth_invalid", e?.message || "token refresh returned invalid JSON");
   }
 
   const accessToken = accessTokenFromRefreshPayload(data);
-  if (!accessToken) return null;
+  if (!accessToken) {
+    throw new AccountAuthError("auth_invalid", "token refresh returned no access token");
+  }
 
   const expMs = decodeJwtExpMs(accessToken) || now() + 10 * 60_000;
   tokenCache = { cacheKey, accessToken, expMs };
@@ -201,6 +177,60 @@ async function mintAccessTokenUncached({
     // dashboard's cookie-path refresh with 403 Invalid CSRF.
     csrfToken: csrfTokenFromRefreshPayload(data),
   };
+}
+
+/**
+ * Mint (or reuse a cached) InsForge access token from a refresh token.
+ *
+ * Concurrent callers with the same (baseUrl, refreshToken) share ONE in-flight
+ * refresh; see `mintInflight`.
+ *
+ * @param {boolean} [throwOnFailure] when true, reject with a classified
+ *   `AccountAuthError` instead of resolving to `null`.
+ * @returns {Promise<{accessToken: string, refreshToken: string|null, csrfToken: string|null}|null>}
+ *   null when no refresh token is available or the refresh failed.
+ */
+async function mintAccessToken({
+  baseUrl,
+  anonKey,
+  refreshToken,
+  fetchImpl = fetch,
+  now = Date.now,
+  skewMs = 60_000,
+  timeoutMs,
+  throwOnFailure = false,
+} = {}) {
+  if (!refreshToken) {
+    if (throwOnFailure) throw new AccountAuthError("auth_missing_refresh_token", "not signed in");
+    return null;
+  }
+  const root = String(baseUrl || DEFAULT_BASE_URL).replace(/\/$/, "");
+  const cacheKey = `${root}\0${refreshToken}`;
+  if (
+    tokenCache.cacheKey === cacheKey &&
+    tokenCache.accessToken &&
+    tokenCache.expMs - skewMs > now()
+  ) {
+    return { accessToken: tokenCache.accessToken, refreshToken: null, csrfToken: null };
+  }
+
+  let inflight = mintInflight.get(cacheKey);
+  if (!inflight) {
+    inflight = performMint({ root, cacheKey, anonKey, refreshToken, fetchImpl, now, timeoutMs })
+      .finally(() => {
+        // Only clear our own entry: a later caller may already have started a
+        // fresh mint after this one settled.
+        if (mintInflight.get(cacheKey) === inflight) mintInflight.delete(cacheKey);
+      });
+    mintInflight.set(cacheKey, inflight);
+  }
+
+  try {
+    return await inflight;
+  } catch (e) {
+    if (throwOnFailure) throw e;
+    return null;
+  }
 }
 
 /**
@@ -274,6 +304,7 @@ async function fetchAccountUsage({
 } = {}) {
   const slug = accountSlugFor(usageSlug);
   if (!slug) return null;
+  if (!refreshToken) return null;
 
   const startTime = now();
   const getRemainingTimeout = () => {
@@ -283,6 +314,9 @@ async function fetchAccountUsage({
     return remaining > 0 ? remaining : 1;
   };
 
+  // `throwOnFailure` keeps "not signed in" (null, handled above) distinct from
+  // "signed in but the refresh call failed" (throws) so the caller does not
+  // silently downgrade an account view into a this-machine view.
   const minted = await mintAccessToken({
     baseUrl,
     anonKey,
@@ -290,6 +324,7 @@ async function fetchAccountUsage({
     fetchImpl,
     now,
     timeoutMs: getRemainingTimeout(),
+    throwOnFailure: true,
   });
   if (!minted) return null;
 
@@ -306,6 +341,7 @@ async function fetchAccountUsage({
 }
 
 module.exports = {
+  AccountAuthError,
   USAGE_TO_ACCOUNT_SLUG,
   accountSlugFor,
   accessTokenFromRefreshPayload,

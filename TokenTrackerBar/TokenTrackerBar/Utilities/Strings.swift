@@ -190,6 +190,9 @@ enum Strings {
     }
     static var syncingUsageData: String { t("Syncing usage data…", "正在同步使用数据…", "正在同步使用資料…", "使用データを同期中…", "사용 데이터 동기화 중…") }
     static var syncingFirstLaunchHint: String { t("First launch may take a moment", "首次启动可能需要一点时间", "首次啟動可能需要一點時間", "初回起動は少し時間がかかる場合があります", "첫 실행은 잠시 시간이 걸릴 수 있습니다") }
+    /// Shown in the Activity header while the cross-device read is failing and
+    /// the popover has nothing but this machine's data to fall back on.
+    static var activityThisMacOnly: String { t("This Mac only · reconnecting", "仅本机 · 重连中", "僅本機 · 重新連線中", "このMacのみ · 再接続中", "이 Mac만 · 재연결 중") }
     static var limitsDisplayTitle: String { t("Limit Display", "限额显示", "限額顯示", "上限の表示", "한도 표시") }
     static var toastOnResetLabel: String { t("Toast on limits reset", "额度重置时显示提示", "額度重置時顯示提示", "リセット時に通知を表示", "한도 초기화 시 알림 표시") }
     static var confettiOnResetLabel: String { t("Confetti on limits reset", "额度重置时撒花", "額度重置時撒花", "リセット時に紙吹雪", "한도 초기화 시 색종이") }
