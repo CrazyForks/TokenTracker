@@ -500,6 +500,9 @@ async function fetchGroupedRows(
 }
 
 function computeRowCost(row: GroupedRow): number {
+  // LM Studio developer-server and LM Link traffic is local inference. Its
+  // logs do not represent Bionic Secure Cloud billing.
+  if (row.source === "lmstudio") return 0;
   // Pi's GitHub Copilot provider is subscription-backed. Keep its token
   // counts, but do not reprice the recorded Claude model as Anthropic API use.
   if (row.source === "pi-github-copilot" || row.source === "pi-copilot") return 0;
@@ -512,10 +515,14 @@ function computeRowCost(row: GroupedRow): number {
   // WorkBuddy's auto-router logs model="auto"; price it as its default Hunyuan
   // model (hy3-preview-agent) so it isn't billed as Cursor's composer-1. Mirrors
   // normalizeWorkbuddyModel in src/lib/pricing/matcher.js.
-  const modelForPricing =
-    row.source === "workbuddy" && (row.model || "").toLowerCase() === "auto"
+  const rawModel = String(row.model || "").trim();
+  const unslothUnpriced =
+    row.source === "unsloth" && /^(local|unpriced)\//i.test(rawModel);
+  const modelForPricing = unslothUnpriced
+    ? "__tokentracker_unpriced_unsloth_model__"
+    : row.source === "workbuddy" && rawModel.toLowerCase() === "auto"
       ? "hy3-preview-agent"
-      : row.model;
+      : rawModel;
   const p = getRowPricing({ ...row, model: modelForPricing });
   // Codex / every-code fold reasoning into output_tokens (OpenAI convention),
   // so charging reasoning_output_tokens again at the output rate double-counts.

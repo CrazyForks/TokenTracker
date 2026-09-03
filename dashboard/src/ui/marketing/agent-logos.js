@@ -44,4 +44,6 @@ export const AGENT_LOGOS = [
     nameKey: "provider.display.trae_work_cn",
     provider: "trae-cn",
   },
+  { id: 35, name: "LM Studio", provider: "lmstudio" },
+  { id: 36, name: "Unsloth Studio", provider: "unsloth" },
 ];

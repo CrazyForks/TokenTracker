@@ -579,7 +579,7 @@ export default async function (req: Request): Promise<Response> {
   const bySource = new Map<string, SourceAgg>();
   for (const row of filtered) {
     const src = row.source || "unknown";
-    const mdl = row.model || "unknown";
+    const mdl = String(row.model || "unknown").trim() || "unknown";
     let sa = bySource.get(src);
     if (!sa) {
       sa = { source: src, totals: newTotals(), models: new Map() };
@@ -606,10 +606,15 @@ export default async function (req: Request): Promise<Response> {
     ma.totals.cached_input_tokens += Number(row.cached_input_tokens) || 0;
     ma.totals.cache_creation_input_tokens += Number(row.cache_creation_input_tokens) || 0;
     ma.totals.reasoning_output_tokens += Number(row.reasoning_output_tokens) || 0;
-    const modelForPricing =
-      src === "workbuddy" && mdl.toLowerCase() === "auto" ? "hy3-preview-agent" : mdl;
+    const unslothUnpriced = src === "unsloth" && /^(local|unpriced)\//i.test(mdl);
+    const modelForPricing = unslothUnpriced
+      ? "__tokentracker_unpriced_unsloth_model__"
+      : src === "workbuddy" && mdl.toLowerCase() === "auto"
+        ? "hy3-preview-agent"
+        : mdl;
     const p = getRowPricing({ ...row, model: modelForPricing });
-    const subscriptionBacked = src === "pi-github-copilot" || src === "pi-copilot";
+    const subscriptionBacked =
+      src === "pi-github-copilot" || src === "pi-copilot" || src === "lmstudio";
     const reasoningIncludedInOutput = src === "codex" || src === "every-code";
     const reportedCost = Number(row.total_cost_usd);
     ma.totalCostUsd += subscriptionBacked

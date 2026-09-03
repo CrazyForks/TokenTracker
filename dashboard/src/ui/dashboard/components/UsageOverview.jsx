@@ -85,6 +85,8 @@ const PROVIDER_COLORS = {
   DROID: "#ef4444",        // red-500 (Factory brand)
   ZCODE: "#14b8a6",        // teal-500 (Z.ai / GLM — distinct from the blues)
   ANYTHINGLLM: "var(--provider-anythingllm)", // AnythingLLM primary cyan
+  LMSTUDIO: "var(--provider-lmstudio)", // LM Studio icon gradient lead
+  UNSLOTH: "var(--provider-unsloth)",  // Unsloth green
 };
 
 function getProviderColor(label, index) {

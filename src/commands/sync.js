@@ -104,6 +104,10 @@ const {
   parseRoocodeIncremental,
   resolveZedDbPath,
   parseZedIncremental,
+  resolveLmstudioLogFiles,
+  parseLmstudioIncremental,
+  resolveUnslothDbPath,
+  parseUnslothIncremental,
   resolveAnythingllmDbPath,
   parseAnythingllmIncremental,
   resolveGooseDbPath,
@@ -291,6 +295,7 @@ const AUTO_SYNC_SOURCES = new Set([
   "kiro",
   "kimi",
   "kimi-code",
+  "lmstudio",
   "mimo",
   "omp",
   "opencode",
@@ -301,6 +306,7 @@ const AUTO_SYNC_SOURCES = new Set([
   "reasonix",
   "roocode",
   "trae-cn",
+  "unsloth",
   "workbuddy",
   "zcode",
   "zed",
@@ -1473,6 +1479,47 @@ async function cmdSync(argv, context = {}) {
           });
         } catch (err) {
           warnProviderParseFailure("DeepSeek Harness", err, opts);
+        }
+      }
+    }
+
+    // ── LM Studio and Unsloth Studio — passive inference usage ──
+    let lmstudioResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+    if (sourceAllowed("lmstudio")) {
+      const lmstudioLogFiles = await resolveLmstudioLogFiles(process.env);
+      if (lmstudioLogFiles.length > 0) {
+        if (progress?.enabled) {
+          progress.start(
+            `Parsing LM Studio ${renderBar(0)} 0/${formatNumber(lmstudioLogFiles.length)} logs | buckets 0`,
+          );
+        }
+        try {
+          lmstudioResult = await parseLmstudioIncremental({
+            logFiles: lmstudioLogFiles,
+            cursors,
+            queuePath,
+            onProgress: makeProviderProgress("LM Studio"),
+          });
+        } catch (err) {
+          warnProviderParseFailure("LM Studio", err, opts);
+        }
+      }
+    }
+
+    let unslothResult = { recordsProcessed: 0, eventsAggregated: 0, bucketsQueued: 0 };
+    if (sourceAllowed("unsloth")) {
+      const unslothDbPath = resolveUnslothDbPath(process.env);
+      if (unslothDbPath && fssync.existsSync(unslothDbPath)) {
+        if (progress?.enabled) progress.start(`Parsing Unsloth ${renderBar(0)} | buckets 0`);
+        try {
+          unslothResult = await parseUnslothIncremental({
+            dbPath: unslothDbPath,
+            cursors,
+            queuePath,
+            onProgress: makeProviderProgress("Unsloth"),
+          });
+        } catch (err) {
+          warnProviderParseFailure("Unsloth", err, opts);
         }
       }
     }
@@ -2747,6 +2794,8 @@ async function cmdSync(argv, context = {}) {
       reasonixResult.recordsProcessed +
       grokResult.recordsProcessed +
       copilotResult.recordsProcessed +
+      lmstudioResult.recordsProcessed +
+      unslothResult.recordsProcessed +
       anythingllmResult.recordsProcessed +
       kiloResult.recordsProcessed +
       mimoResult.recordsProcessed +
@@ -2783,6 +2832,8 @@ async function cmdSync(argv, context = {}) {
       reasonixResult.bucketsQueued +
       grokResult.bucketsQueued +
       copilotResult.bucketsQueued +
+      lmstudioResult.bucketsQueued +
+      unslothResult.bucketsQueued +
       anythingllmResult.bucketsQueued +
       kiloResult.bucketsQueued +
       mimoResult.bucketsQueued +

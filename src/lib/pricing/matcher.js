@@ -164,6 +164,20 @@ function normalizeWorkbuddyModel(model) {
   return model;
 }
 
+// Unsloth Studio can mix local engines and paid API providers in one database.
+// The parser qualifies metered models with their provider and marks local,
+// subscription-backed, or ambiguous custom routes as unpriced. Returning a
+// sentinel here prevents the generic reverse-substring matcher from mistaking
+// a locally hosted model name for the similarly named cloud SKU.
+function normalizeUnslothModel(model) {
+  if (typeof model !== "string") return model;
+  const lower = model.trim().toLowerCase();
+  if (lower.startsWith("local/") || lower.startsWith("unpriced/")) {
+    return "__tokentracker_unpriced_unsloth_model__";
+  }
+  return model;
+}
+
 // Per-source model-name normalizers, applied at pricing-lookup time only (the
 // raw model name is preserved for storage/display). Add a source here when its
 // model strings don't match the LiteLLM/curated keys verbatim.
@@ -174,6 +188,7 @@ const SOURCE_MODEL_NORMALIZERS = {
   "pi-anthropic": normalizeClaudeModel,
   "prime-agent-anthropic": normalizeClaudeModel,
   zed: normalizeZedModel,
+  unsloth: normalizeUnslothModel,
   workbuddy: normalizeWorkbuddyModel,
 };
 

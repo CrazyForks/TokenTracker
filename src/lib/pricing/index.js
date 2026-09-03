@@ -21,6 +21,10 @@ const PI_SUBSCRIPTION_SOURCES = new Set([
   "prime-agent-github-copilot",
   "prime-agent-copilot",
 ]);
+// LM Studio's server logs describe inference served by the local developer
+// server (including LM Link). Secure Cloud usage has a separate billing path
+// and is not present in these logs.
+const LOCAL_INFERENCE_SOURCES = new Set(["lmstudio"]);
 const SOURCES_WITH_AUTHORITATIVE_COST = new Set(["grok"]);
 const SEED_SNAPSHOT_PATH = path.resolve(__dirname, "seed-snapshot.json");
 const DEEPSEEK_TIME_PRICED_MODELS = [
@@ -169,6 +173,7 @@ function getRowPricing(row) {
 // computeRowCost in src/lib/local-api.js. Moved here so vite mock + local
 // server share one source of truth.
 function computeRowCost(row) {
+  if (LOCAL_INFERENCE_SOURCES.has(String(row?.source || "").toLowerCase())) return 0;
   // Pi can route a turn through a subscription-backed Copilot provider. Pi's
   // usage record reports a zero marginal cost for those turns; do not
   // reinterpret the Claude model name as an Anthropic API bill.

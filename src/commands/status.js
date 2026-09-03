@@ -69,6 +69,9 @@ const {
   resolveKilocodeTaskFiles,
   resolveRoocodeTaskFiles,
   resolveZedDbPath,
+  resolveLmstudioHome,
+  resolveLmstudioLogFiles,
+  resolveUnslothDbPath,
   resolveQoderDbPaths,
   resolveQoderCnDbPaths,
   resolveClaudeScienceDbPaths,
@@ -637,6 +640,11 @@ async function cmdStatus(argv = []) {
   const dshSessionsDir = dshHomes.map((homeDir) => path.join(homeDir, "sessions")).join(", ");
   const dshSessionFiles = await resolveDshSessionFiles(process.env);
   const dshInstalled = dshSessionFiles.length > 0;
+  const lmstudioHome = resolveLmstudioHome(process.env);
+  const lmstudioLogFiles = await resolveLmstudioLogFiles(process.env);
+  const lmstudioInstalled = lmstudioLogFiles.length > 0;
+  const unslothDbPath = resolveUnslothDbPath(process.env);
+  const unslothInstalled = Boolean(unslothDbPath && fssync.existsSync(unslothDbPath));
 
   // Trae SOLO (ByteDance AI IDE) — passive entitlement snapshot reader.
   const traeStoragePath = resolveTraeStoragePath(process.env);
@@ -961,6 +969,16 @@ async function cmdStatus(argv = []) {
         dsh: dshInstalled
           ? { installed: true, files: dshSessionFiles.length, detail: dshSessionsDir }
           : { installed: false },
+        lmstudio: lmstudioInstalled
+          ? {
+              installed: true,
+              files: lmstudioLogFiles.length,
+              detail: path.join(lmstudioHome, "server-logs"),
+            }
+          : { installed: false },
+        unsloth: unslothInstalled
+          ? { installed: true, detail: unslothDbPath }
+          : { installed: false },
         trae: traeInstalled
           ? {
               installed: true,
@@ -1136,6 +1154,12 @@ async function cmdStatus(argv = []) {
         : null,
       dshInstalled
         ? `- DeepSeek Harness: passive reader (${dshSessionFiles.length} session${dshSessionFiles.length !== 1 ? "s" : ""} in ${dshSessionsDir})`
+        : null,
+      lmstudioInstalled
+        ? `- LM Studio: passive reader (${lmstudioLogFiles.length} log${lmstudioLogFiles.length !== 1 ? "s" : ""} in ${path.join(lmstudioHome, "server-logs")})`
+        : null,
+      unslothInstalled
+        ? `- Unsloth Studio: passive reader (${unslothDbPath})`
         : null,
       traeInstalled
         // Deliberately NOT "passive reader": every other line with that wording

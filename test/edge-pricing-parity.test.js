@@ -125,6 +125,27 @@ test("all cloud cost paths keep Pi Copilot subscription rows at zero cost", () =
   }
 });
 
+test("all cloud cost paths distinguish local usage from metered Unsloth providers", () => {
+  for (const name of [CANONICAL, ...MIRRORS]) {
+    const source = readEdge(name);
+    assert.ok(source.includes('"lmstudio"'), `${name}: LM Studio zero-cost guard missing`);
+    assert.ok(
+      source.includes('__tokentracker_unpriced_unsloth_model__'),
+      `${name}: Unsloth local/unpriced model guard missing`,
+    );
+    assert.match(
+      source,
+      /\^\(local\|unpriced\)\\\//,
+      `${name}: Unsloth guard must cover local and ambiguous provider routes`,
+    );
+    assert.match(
+      source,
+      /String\(row\.model \|\| (?:""|"unknown")\)\.trim\(\)/,
+      `${name}: model must be trimmed before the Unsloth pricing guard`,
+    );
+  }
+});
+
 test("all cloud cost paths only prefer provider-reported costs for authoritative sources", () => {
   for (const name of [CANONICAL, ...MIRRORS]) {
     const source = readEdge(name);

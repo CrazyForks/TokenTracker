@@ -66,6 +66,8 @@ const {
   resolvePiAgentDir,
   piAgentDirCollidesWithOmp,
   resolvePrimeAgentDir,
+  resolveLmstudioLogFiles,
+  resolveUnslothDbPath,
   resolveAnythingllmDbPath,
   resolveReasonixHome,
   resolveTraeStoragePath,
@@ -103,7 +105,7 @@ const DIVIDER = "----------------------------------------------";
 const DEFAULT_DASHBOARD_URL = "https://www.tokentracker.cc";
 
 // Single source of truth for the welcome screen's provider count + sample list.
-// test/discovery-metadata.test.js keeps this aligned with public 32-tool copy.
+// test/discovery-metadata.test.js keeps this aligned with public tool copy.
 const SUPPORTED_PROVIDERS = [
   "Claude Code",
   "Codex CLI",
@@ -139,6 +141,8 @@ const SUPPORTED_PROVIDERS = [
   "Claude Science",
   "DeepSeek Harness",
   "TRAE Work CN",
+  "LM Studio",
+  "Unsloth Studio",
 ];
 
 async function cmdInit(argv) {
@@ -793,6 +797,29 @@ async function applyIntegrationSetup({
     const mimoDbPath = path.join(mimoHome, "mimocode.db");
     if (fssync.existsSync(mimoDbPath)) {
       summary.push({ label: "Mimo", status: "detected", detail: "Passive reader (no hook needed)" });
+    }
+  }
+
+  // LM Studio and Unsloth Studio: passive readers — no hooks needed.
+  {
+    const lmstudioLogFiles = await resolveLmstudioLogFiles(process.env);
+    if (lmstudioLogFiles.length > 0) {
+      summary.push({
+        label: "LM Studio",
+        status: "detected",
+        detail: `Passive reader · ${lmstudioLogFiles.length} log${lmstudioLogFiles.length !== 1 ? "s" : ""}`,
+      });
+    }
+  }
+
+  {
+    const unslothDbPath = resolveUnslothDbPath(process.env);
+    if (unslothDbPath && fssync.existsSync(unslothDbPath)) {
+      summary.push({
+        label: "Unsloth Studio",
+        status: "detected",
+        detail: "Passive reader (no hook needed)",
+      });
     }
   }
 
