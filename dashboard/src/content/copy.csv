@@ -1592,3 +1592,7 @@ limits.agentPlan.setupHint.step3,ui,LimitsPage,UsageLimitsPanel,agent_plan_hint_
 limits.agentPlan.setupHint.note_app,ui,LimitsPage,UsageLimitsPanel,agent_plan_hint_note_app,"Refresh after signing in — no app restart needed.",,active
 limits.agentPlan.setupHint.copy,ui,LimitsPage,UsageLimitsPanel,agent_plan_hint_copy,"Copy",,active
 limits.agentPlan.setupHint.copied,ui,LimitsPage,UsageLimitsPanel,agent_plan_hint_copied,"Copied",,active
+limits.tooltip.ark_cached,ui,LimitsPage,UsageLimitsPanel,tooltip_ark_cached,"Cached limits. Run arkcli to refresh.",,active
+limits.agentPlan.setupHint.snippet_install,ui,LimitsPage,UsageLimitsPanel,agent_plan_hint_snippet_install,"npm install -g @volcengine/ark-cli",,active
+limits.agentPlan.setupHint.snippet_login,ui,LimitsPage,UsageLimitsPanel,agent_plan_hint_snippet_login,"arkcli auth login volc-sso   # browser SSO (recommended)",,active
+limits.agentPlan.setupHint.snippet_status,ui,LimitsPage,UsageLimitsPanel,agent_plan_hint_snippet_status,"arkcli auth status           # verify the session",,active

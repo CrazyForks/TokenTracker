@@ -147,10 +147,15 @@ function resolveArkProductItem(items) {
 }
 
 function percentFromPeriod(period) {
-  const direct = Number(period?.percent);
-  if (Number.isFinite(direct)) return direct;
-  // Agent Plan may provide used/total without percent (via omitempty handling
-  // in older arkcli builds or degraded payloads) — derive it.
+  // null / undefined / blank percent must fall through to the used/total
+  // fallback: Number(null) and Number("") both coerce to 0, which would
+  // otherwise report a fake fresh 0% window instead of deriving real usage
+  // (Agent Plan's 5h period can omit percent entirely, #555).
+  const rawPercent = period?.percent;
+  if (rawPercent !== null && rawPercent !== undefined && String(rawPercent).trim() !== "") {
+    const direct = Number(rawPercent);
+    if (Number.isFinite(direct)) return direct;
+  }
   const used = Number(period?.used);
   const total = Number(period?.total);
   if (Number.isFinite(used) && Number.isFinite(total) && total > 0) {

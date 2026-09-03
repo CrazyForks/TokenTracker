@@ -696,13 +696,25 @@ function renderProviderGroup(id, data, mode, expanded, onToggle, subscription = 
       badge = <StatusBadge label={copy("limits.label.antigravity_live")} tone="live" tooltip={copy("limits.tooltip.antigravity_live")} />;
     }
   }
-  if ((id === "qoder" || id === "qoderCn" || id === "codingPlan" || id === "agentPlan") && data.cached) {
+  if ((id === "qoder" || id === "qoderCn") && data.cached) {
     badge = (
       <StatusBadge
         label={copy("limits.label.antigravity_cached")}
         age={ago(data.cached_at)}
         tone="cached"
         tooltip={copy("limits.tooltip.qoder_cached")}
+      />
+    );
+  }
+  // Ark plans are refreshed by the local arkcli binary, not by launching an
+  // app — a Qoder-specific tooltip would send users to the wrong tool.
+  if ((id === "codingPlan" || id === "agentPlan") && data.cached) {
+    badge = (
+      <StatusBadge
+        label={copy("limits.label.antigravity_cached")}
+        age={ago(data.cached_at)}
+        tone="cached"
+        tooltip={copy("limits.tooltip.ark_cached")}
       />
     );
   }
@@ -926,10 +938,12 @@ function ArkCodingPlanSetupHint() {
 
 function ArkAgentPlanSetupHint() {
   const [copied, setCopied] = useState(false);
+  // Command lines stay identical across locales; only the inline comments
+  // localize. Kept as copy keys per the repo i18n convention (review 563).
   const snippet = [
-    "npm install -g @volcengine/ark-cli",
-    "arkcli auth login volc-sso   # browser SSO (recommended)",
-    "arkcli auth status           # verify the session",
+    copy("limits.agentPlan.setupHint.snippet_install"),
+    copy("limits.agentPlan.setupHint.snippet_login"),
+    copy("limits.agentPlan.setupHint.snippet_status"),
   ].join("\n");
 
   const onCopy = async (e) => {
@@ -938,7 +952,9 @@ function ArkAgentPlanSetupHint() {
       await navigator.clipboard.writeText(snippet);
       setCopied(true);
       setTimeout(() => setCopied(false), 1600);
-    } catch (_e) {}
+    } catch (_e) {
+      // Clipboard can be unavailable in embedded or restricted contexts.
+    }
   };
 
   return (
