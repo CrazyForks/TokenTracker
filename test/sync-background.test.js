@@ -6,6 +6,7 @@ const { test } = require("node:test");
 
 const { cmdSync } = require("../src/commands/sync");
 const { openLock } = require("../src/lib/fs");
+const { DEFAULT_ANON_KEY } = require("../src/lib/runtime-config");
 
 function tokenCountLine({ ts, totalTokens }) {
   const usage = {
@@ -110,6 +111,7 @@ async function withTempSyncEnv(fn) {
     REASONIX_STATE_HOME: process.env.REASONIX_STATE_HOME,
     TOKENTRACKER_DEVICE_TOKEN: process.env.TOKENTRACKER_DEVICE_TOKEN,
     TOKENTRACKER_INSFORGE_BASE_URL: process.env.TOKENTRACKER_INSFORGE_BASE_URL,
+    TOKENTRACKER_INSFORGE_ANON_KEY: process.env.TOKENTRACKER_INSFORGE_ANON_KEY,
     TOKENTRACKER_OPENCLAW_HOME: process.env.TOKENTRACKER_OPENCLAW_HOME,
     TOKENTRACKER_OPENCLAW_AGENT_ID: process.env.TOKENTRACKER_OPENCLAW_AGENT_ID,
     TOKENTRACKER_OPENCLAW_PREV_SESSION_ID: process.env.TOKENTRACKER_OPENCLAW_PREV_SESSION_ID,
@@ -128,6 +130,7 @@ async function withTempSyncEnv(fn) {
     delete process.env.REASONIX_STATE_HOME;
     delete process.env.TOKENTRACKER_DEVICE_TOKEN;
     delete process.env.TOKENTRACKER_INSFORGE_BASE_URL;
+    delete process.env.TOKENTRACKER_INSFORGE_ANON_KEY;
     delete process.env.TOKENTRACKER_OPENCLAW_AGENT_ID;
     delete process.env.TOKENTRACKER_OPENCLAW_PREV_SESSION_ID;
     delete process.env.TOKENTRACKER_OPENCLAW_SESSION_KEY;
@@ -526,9 +529,11 @@ test("explicit account publication uploads after bounded background parsing", as
     process.env.TOKENTRACKER_INSFORGE_BASE_URL = "https://cloud.example";
     const originalFetch = global.fetch;
     let ingestCalls = 0;
-    global.fetch = async (url) => {
+    let ingestHeaders = null;
+    global.fetch = async (url, options = {}) => {
       if (String(url).endsWith("/functions/tokentracker-ingest")) {
         ingestCalls += 1;
+        ingestHeaders = options.headers;
         return {
           ok: true,
           status: 200,
@@ -546,6 +551,7 @@ test("explicit account publication uploads after bounded background parsing", as
     }
 
     assert.equal(ingestCalls, 1);
+    assert.equal(ingestHeaders.apikey, DEFAULT_ANON_KEY);
     const queueState = JSON.parse(
       await fs.readFile(path.join(home, ".tokentracker", "tracker", "queue.state.json"), "utf8"),
     );

@@ -15,6 +15,7 @@ const {
   chmod600IfPossible,
   openLock,
   inspectLock,
+  updateJsonLocked,
 } = require("../lib/fs");
 const { physicalJsonlRecords } = require("../lib/jsonl-lines");
 const {
@@ -567,6 +568,8 @@ async function cmdSync(argv, context = {}) {
       legacyBaseUrlMigration = {
         previousDeviceToken,
         replacementDeviceToken,
+        hadPersistedAnonKey: Object.prototype.hasOwnProperty.call(config, "anonKey"),
+        persistedAnonKey: config.anonKey,
       };
     }
     const codexCursorRoots = [process.env.CODEX_HOME || path.join(home, ".codex")];
@@ -2886,6 +2889,9 @@ async function cmdSync(argv, context = {}) {
     progress?.stop();
 
     const runtimeConfig = config ? { ...config } : {};
+    if (legacyBaseUrlMigration) {
+      delete runtimeConfig.anonKey;
+    }
     if (legacyBaseUrlMigration?.replacementDeviceToken) {
       runtimeConfig.deviceToken = legacyBaseUrlMigration.replacementDeviceToken;
     }
@@ -2939,6 +2945,7 @@ async function cmdSync(argv, context = {}) {
         const drainWithToken = (deviceToken) =>
           drainQueueToCloud({
             baseUrl: runtime.baseUrl,
+            anonKey: runtime.anonKey,
             deviceToken,
             queuePath,
             queueStatePath,
@@ -2968,15 +2975,25 @@ async function cmdSync(argv, context = {}) {
         if (legacyBaseUrlMigration && uploadResult.batches > 0) {
           // device-login does not share the sync lock and may have written a
           // fresh current-backend config while the scan/upload was running.
-          // Re-read before committing, merge only while the legacy marker still
-          // exists, and never clobber a concurrently completed login.
-          const latestConfig = (await readJson(configPath)) || config;
-          if (isLegacyInsforgeBaseUrl(latestConfig.baseUrl)) {
-            latestConfig.deviceToken = successfulDeviceToken;
-            delete latestConfig.baseUrl;
-            await writeJson(configPath, latestConfig);
-            await chmod600IfPossible(configPath);
-          }
+          // Re-read before committing and only remove the anonymous key this
+          // migration observed. A concurrent login may replace the backend URL
+          // while preserving the old key, or another writer may replace the key
+          // while the legacy URL is still present.
+          await updateJsonLocked(configPath, async (latestConfig) => {
+            const hasLegacyBaseUrl = isLegacyInsforgeBaseUrl(latestConfig.baseUrl);
+            const hasUnchangedLegacyAnonKey =
+              legacyBaseUrlMigration.hadPersistedAnonKey &&
+              latestConfig.anonKey === legacyBaseUrlMigration.persistedAnonKey;
+            if (!hasLegacyBaseUrl && !hasUnchangedLegacyAnonKey) return null;
+            if (hasLegacyBaseUrl) {
+              latestConfig.deviceToken = successfulDeviceToken;
+              delete latestConfig.baseUrl;
+            }
+            if (hasUnchangedLegacyAnonKey) {
+              delete latestConfig.anonKey;
+            }
+            return latestConfig;
+          });
         }
         // Record success so the exponential backoff step resets — otherwise
         // a single past failure keeps us pessimistically throttled forever.
@@ -3664,7 +3681,7 @@ const AUTO_RETRY_MAX_DELAY_MS = 2 * 60 * 60 * 1000;
 const INGEST_SLUG = "tokentracker-ingest";
 const MAX_INGEST_BUCKETS = 500;
 
-async function drainQueueToCloud({ baseUrl, deviceToken, queuePath, queueStatePath, maxBatches = 5, batchSize = 200 }) {
+async function drainQueueToCloud({ baseUrl, anonKey, deviceToken, queuePath, queueStatePath, maxBatches = 5, batchSize = 200 }) {
   const state = (await readJson(queueStatePath)) || { offset: 0 };
   let offset = Number(state.offset || 0);
   let inserted = 0;
@@ -3683,7 +3700,6 @@ async function drainQueueToCloud({ baseUrl, deviceToken, queuePath, queueStatePa
     if (result.buckets.length === 0 && result.sessionStates.length === 0) break;
 
     const root = baseUrl.replace(/\/$/, "");
-    const anonKey = process.env.TOKENTRACKER_INSFORGE_ANON_KEY || "";
     const headers = {
       "Content-Type": "application/json",
       Accept: "application/json",
