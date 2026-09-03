@@ -74,6 +74,11 @@ test('release builds one artifact per Linux format and verifies every payload', 
   assert.match(linuxJob, /--appimage-extract/);
   assert.match(linuxJob, /dpkg-deb -x/);
   assert.match(linuxJob, /rpm2cpio/);
+  assert.match(
+    linuxJob,
+    /if ! \(cd "\$workdir\/rpm" && rpm2cpio[\s\S]*?fi\n\s+verify_payload "rpm"/,
+    'an rpm extractor status must not bypass the fail-closed payload check',
+  );
   assert.match(linuxJob, /verify_payload "AppImage"/);
   assert.match(linuxJob, /verify_payload "deb"/);
   assert.match(linuxJob, /verify_payload "rpm"/);

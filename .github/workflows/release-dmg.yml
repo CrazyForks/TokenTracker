@@ -556,7 +556,13 @@ jobs:
           echo "Built: $rpm_pkg"
           mkdir -p "$workdir/rpm"
           rpm_abs="$(realpath "$rpm_pkg")"
-          (cd "$workdir/rpm" && rpm2cpio "$rpm_abs" | cpio -idm --quiet)
+          # Some rpm2cpio/cpio combinations return a non-zero status after
+          # extracting the complete payload (for example on an archive trailer).
+          # Treat that status as diagnostic only; verify_payload below remains
+          # the authoritative, fail-closed check for the shipped runtime.
+          if ! (cd "$workdir/rpm" && rpm2cpio "$rpm_abs" | cpio -idm --quiet); then
+            echo "::warning::RPM extraction returned a non-zero status; checking the extracted payload"
+          fi
           verify_payload "rpm" "$workdir/rpm"
           cp "$rpm_pkg" "dist-linux/TokenTracker-linux-x86_64.rpm"
 
