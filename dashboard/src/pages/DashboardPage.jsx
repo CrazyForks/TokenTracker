@@ -56,6 +56,10 @@ import { CLOUD_USAGE_SYNCED_EVENT, getCurrentDeviceId } from "../lib/cloud-sync-
 import { ShareModal } from "../ui/share/ShareModal";
 import { useShareCardData } from "../ui/share/use-share-card-data";
 import { runSingleFlight } from "../lib/single-flight";
+import {
+  LOCAL_DASHBOARD_REFRESH_OPTIONS,
+  refreshDashboardAggregates,
+} from "../lib/dashboard-refresh";
 
 const PERIODS = ["day", "week", "month", "total", "custom"];
 const DETAILS_DATE_KEYS = new Set(["day", "hour", "month"]);
@@ -938,10 +942,10 @@ export function DashboardPage({
   const refreshAllFlightRef = useRef(null);
   const refreshAll = useCallback(async () => {
     return runSingleFlight(refreshAllFlightRef, refreshContextKey, async () => {
-      await Promise.all([
-        refreshUsageStats(),
-        refreshUsageLimits(),
-      ]);
+      await refreshDashboardAggregates({
+        refreshUsageStats,
+        refreshUsageLimits,
+      });
     });
   }, [refreshContextKey, refreshUsageLimits, refreshUsageStats]);
 
@@ -1005,7 +1009,7 @@ export function DashboardPage({
     setManualSyncLoading(true);
     try {
       if (isLocalMode) {
-        await triggerLocalSync();
+        await triggerLocalSync(LOCAL_DASHBOARD_REFRESH_OPTIONS);
       }
       await refreshAll();
     } catch (error) {
