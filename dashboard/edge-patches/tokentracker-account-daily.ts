@@ -207,6 +207,10 @@ const MODEL_PRICING: Record<string, { input: number; output: number; cache_read:
   //    matcher requires the user-supplied model name to CONTAIN the LiteLLM
   //    key, so the bare `glm-5.1` / `glm-4.6` strings reported by Claude
   //    Code-compatible GLM endpoints never match. Curate them here. ──
+  // GLM-5.3: flagship keeps the 5.2 list rate; Flash is a distinct cheap SKU
+  // (LiteLLM `zai/glm-5.3-flash`: $0.15/$0.50/$0.03 per MTok in/out/cache-read).
+  "glm-5.3": { input: 1.4, output: 4.4, cache_read: 0.26 },
+  "glm-5.3-flash": { input: 0.15, output: 0.5, cache_read: 0.03 },
   "glm-5.2": { input: 1.4, output: 4.4, cache_read: 0.26 },
   "glm-5.1": { input: 1.4, output: 4.4, cache_read: 0.26 },
   "glm-5": { input: 1.0, output: 3.2, cache_read: 0.2 },
@@ -368,6 +372,8 @@ function getModelPricing(model: string) {
   if (lower.includes("glm-4.7-flash")) return MODEL_PRICING["glm-4.7-flash"];
   if (lower.includes("glm-4.7")) return MODEL_PRICING["glm-4.7"];
   if (lower.includes("glm-4.6")) return MODEL_PRICING["glm-4.6"];
+  if (lower.includes("glm-5.3-flash")) return MODEL_PRICING["glm-5.3-flash"];
+  if (lower.includes("glm-5.3")) return MODEL_PRICING["glm-5.3"];
   if (lower.includes("glm-5-turbo")) return MODEL_PRICING["glm-5-turbo"];
   if (lower.includes("glm-5.2")) return MODEL_PRICING["glm-5.2"];
   if (lower.includes("glm-5.1")) return MODEL_PRICING["glm-5.1"];

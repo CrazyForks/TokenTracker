@@ -184,6 +184,36 @@ test("matcher: lookupPricing fuzzy match restores `digit-digit` to `digit.digit`
   assert.equal(r.value.input, 1.4);
 });
 
+test("matcher: GLM-5.3 and GLM-5.3-Flash resolve to their own curated rates (not the glm-5 fallback)", () => {
+  const curated = require("../src/lib/pricing/curated-overrides.json");
+  // LiteLLM keys the GLM-5.3 family only under provider prefixes
+  // (`zai/glm-5.3`, `zai/glm-5.3-flash`), so bare queue names must resolve
+  // via curated. Before these exact entries existed both ids fell through to
+  // the "glm-5" fuzzy needle, billing the flash SKU at $1.0/$3.2 per MTok —
+  // 6.7x its real rate.
+  const litellm = {};
+  const cases = [
+    // flagship 5.3 keeps the 5.2 list rate (LiteLLM `zai/glm-5.3`)
+    ["glm-5.3", 1.4, 4.4, 0.26, "curated:exact"],
+    // flash SKU mirrors LiteLLM `zai/glm-5.3-flash`
+    ["glm-5.3-flash", 0.15, 0.5, 0.03, "curated:exact"],
+    // cased / suffixed variants land on the flash entry via fuzzy
+    ["GLM-5.3-Flash", 0.15, 0.5, 0.03, "curated:fuzzy"],
+    ["glm-5.3-flash-thinking", 0.15, 0.5, 0.03, "curated:fuzzy"],
+    // droid dash-forms restore the dot and hit exact-dot
+    ["glm-5-3-flash", 0.15, 0.5, 0.03, "curated:exact-dot"],
+    ["glm-5-3", 1.4, 4.4, 0.26, "curated:exact-dot"],
+  ];
+  for (const [model, input, output, cache_read, source] of cases) {
+    const r = matcher.lookupPricing(model, { curated, litellm });
+    assert.equal(r.hit, true, `${model} should resolve`);
+    assert.equal(r.value.input, input, `${model} input`);
+    assert.equal(r.value.output, output, `${model} output`);
+    assert.equal(r.value.cache_read, cache_read, `${model} cache_read`);
+    if (source) assert.equal(r.source, source, `${model} source`);
+  }
+});
+
 test("matcher: lookupPricing strips a LiteLLM provider prefix for bare queue models", () => {
   // Queue rows store bare model names; LiteLLM keys are provider-qualified.
   const curated = { exact: {}, alias: {}, fuzzy: [] };
@@ -599,6 +629,35 @@ test("index: getModelPricing resolves GLM-5.2 from CURATED for ZCode rows", asyn
     reasoning_output_tokens: 0,
   });
   assert.equal(cost, 1.4);
+});
+
+test("index: getModelPricing resolves glm-5.3-flash at the LiteLLM flash rate, not glm-5", async () => {
+  pricing.resetPricingForTests();
+  const cachePath = tmpCachePath();
+  await pricing.ensurePricingLoaded({
+    cachePath,
+    fetchImpl: makeFetchImpl(FIXTURE_LITELLM),
+  });
+  // GLM-5.3-Flash reported by Claude Code-compatible GLM endpoints reaches
+  // the queue as a bare model name. It previously resolved through the
+  // "glm-5" fuzzy fallback ($1.0/$3.2 per MTok — 6.7x the real flash rate)
+  // because LiteLLM only keys it under the provider prefix `zai/glm-5.3-flash`.
+  const flash = pricing.getModelPricing("glm-5.3-flash", { source: "claude" });
+  assert.equal(flash.input, 0.15);
+  assert.equal(flash.output, 0.5);
+  assert.equal(flash.cache_read, 0.03);
+  // End-to-end: 1M input + 1M output must cost $0.65, not the $4.20 the
+  // glm-5 fallback charged.
+  const cost = pricing.computeRowCost({
+    source: "claude",
+    model: "glm-5.3-flash",
+    input_tokens: 1_000_000,
+    output_tokens: 1_000_000,
+    cached_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+    reasoning_output_tokens: 0,
+  });
+  assert.equal(cost, 0.65);
 });
 
 test("index: getModelPricing resolves Sakana Fugu Ultra from CURATED (issue #214)", async () => {

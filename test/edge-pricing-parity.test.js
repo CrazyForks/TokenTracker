@@ -70,6 +70,8 @@ test("canonical pricing block retains regression-prone entries and matcher order
     '"mimo-v2-flash"',
     '"cursor-grok-4.5"',
     '"cursor-grok-4.5-fast"',
+    '"glm-5.3"',
+    '"glm-5.3-flash"',
   ]) {
     assert.ok(block.includes(`${key}:`), `canonical table lost ${key}`);
   }
@@ -102,6 +104,11 @@ test("canonical pricing block retains regression-prone entries and matcher order
     'lower.includes("grok-4.5"))',
   );
   order('lower.includes("grok-4.5"))', 'lower.includes("grok-4"))');
+  // GLM-5.3 Flash is a distinct cheap SKU ($0.15/$0.50 vs the flagship's
+  // $1.4/$4.4); its matcher must precede the base glm-5.3 matcher (substring)
+  // and glm-5.3 must precede glm-5, or flash rows bill at 6.7x.
+  order('lower.includes("glm-5.3-flash")', 'lower.includes("glm-5.3")');
+  order('lower.includes("glm-5.3")', 'lower.includes("glm-5")');
 });
 
 test("all cloud cost paths keep Pi Copilot subscription rows at zero cost", () => {
