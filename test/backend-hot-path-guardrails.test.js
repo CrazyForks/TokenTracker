@@ -106,6 +106,52 @@ test("DeepSeek V4 time pricing survives account and leaderboard aggregation", ()
   assert.match(source, /REVOKE ALL ON FUNCTION public\.leaderboard_deepseek_v4_grouped/u);
 });
 
+test("single-scan account candidate preserves dedup and pricing without rereading hourly", () => {
+  const source = readMigrationBySuffix("add-single-scan-account-usage-candidate");
+
+  assert.match(source, /base AS MATERIALIZED/u);
+  assert.equal(
+    (source.match(/FROM public\.tokentracker_hourly h/gu) ?? []).length,
+    1,
+    "the large hourly table must be read once per aggregation",
+  );
+  assert.match(source, /COALESCE\(dm\.machine_cluster_id, h\.device_id::text\)/u);
+  assert.match(source, /h\.source = 'cursor'/u);
+  assert.match(source, /FROM public\.tokentracker_account_session_states s/u);
+  assert.match(source, /THEN 'peak' ELSE 'off_peak'/u);
+  assert.doesNotMatch(source, /account_usage_grouped_legacy_v1\(/u);
+  assert.doesNotMatch(source, /account_usage_deepseek_v4_grouped\(/u);
+  assert.match(
+    source,
+    /REVOKE ALL ON FUNCTION public\.account_usage_grouped_single_scan_candidate[\s\S]*FROM PUBLIC, anon, authenticated/u,
+  );
+});
+
+test("single-scan account aggregation is promoted without invalidating the shared cache", () => {
+  const migration = readMigrationBySuffix("promote-single-scan-account-usage");
+  const opsSource = read("scripts/ops/account-usage-grouped-rpc.sql");
+
+  assert.match(
+    migration,
+    /account_usage_grouped_single_scan_candidate[\s\S]*RENAME TO account_usage_grouped/u,
+  );
+  assert.match(migration, /CREATE OR REPLACE FUNCTION public\.account_usage_grouped_v2/u);
+  assert.match(migration, /DROP FUNCTION public\.account_usage_grouped_pre_single_scan/u);
+  assert.doesNotMatch(
+    migration,
+    /CREATE OR REPLACE FUNCTION public\.account_usage_grouped_cached/u,
+    "the stable cached wrapper and exact-result cache key must remain warm",
+  );
+  assert.match(opsSource, /base AS MATERIALIZED/u);
+  assert.equal(
+    (opsSource.match(/FROM tokentracker_hourly h/gu) ?? []).length,
+    1,
+    "the standalone deployment source must match the promoted single scan",
+  );
+  assert.doesNotMatch(opsSource, /account_usage_grouped_legacy_v1\(/u);
+  assert.doesNotMatch(opsSource, /account_usage_deepseek_v4_grouped\(/u);
+});
+
 test("leaderboard refresh fetches all user metadata with one RPC", () => {
   const source = read("dashboard/edge-patches/tokentracker-leaderboard-refresh.ts");
   assert.match(source, /rpc\("leaderboard_user_metadata"/u);
