@@ -117,11 +117,94 @@ test("leaderboard refresh fetches all user metadata with one RPC", () => {
 test("total leaderboard advances the cluster-aware rollup before reading it", () => {
   const source = read("dashboard/edge-patches/tokentracker-leaderboard-refresh.ts");
   const advance = source.indexOf('rpc(\n        "leaderboard_rollup_daily_advance_v2"');
-  const aggregate = source.indexOf('rpc(\n      "leaderboard_usage_grouped"');
+  const aggregate = source.indexOf('"leaderboard_usage_grouped_total_shard"', advance);
 
   assert.ok(advance > 0, "total refresh must advance the v2 closed-day rollup");
-  assert.ok(aggregate > advance, "aggregation must read only after the rollup advance succeeds");
+  assert.ok(aggregate > advance, "total shards must read only after the rollup advance succeeds");
   assert.match(source.slice(advance, aggregate), /if \(advanceErr\)[\s\S]*stage: "rollup_advance"/u);
+});
+
+test("total leaderboard reads a trigger-maintained all-time aggregate plus the live tail", () => {
+  const source = readMigrationBySuffix("cache-leaderboard-total-rollup");
+
+  assert.match(
+    source,
+    /CREATE TABLE IF NOT EXISTS public\.tokentracker_leaderboard_rollup_total_v2/u,
+    "the compact all-time aggregate must be durable",
+  );
+  assert.match(
+    source,
+    /LOCK TABLE public\.tokentracker_leaderboard_rollup_daily_v2\s+IN SHARE ROW EXCLUSIVE MODE/u,
+    "backfill and trigger installation must not race closed-day writers",
+  );
+  assert.match(
+    source,
+    /FROM public\.tokentracker_leaderboard_rollup_daily_v2\s+GROUP BY user_id, source, model, pricing_tier/u,
+    "the initial aggregate must preserve every pricing dimension",
+  );
+  for (const transition of [
+    "REFERENCING NEW TABLE AS new_rows",
+    "REFERENCING OLD TABLE AS old_rows",
+    "REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows",
+  ]) {
+    assert.match(source, new RegExp(transition), `${transition} must keep the aggregate current`);
+  }
+
+  const totalBranch = source.indexOf("p_from = TIMESTAMPTZ '1970-01-01 00:00:00+00'");
+  const boundedBranch = source.indexOf("ELSE", totalBranch);
+  assert.ok(totalBranch > 0, "only the exact all-time sentinel may use the total aggregate");
+  assert.match(
+    source.slice(totalBranch, boundedBranch),
+    /FROM public\.tokentracker_leaderboard_rollup_total_v2/u,
+    "the all-time branch must avoid regrouping the full daily history",
+  );
+  assert.match(
+    source.slice(totalBranch, boundedBranch),
+    /FROM public\.leaderboard_hourly_dedup_v2\(v_cut, p_to\)/u,
+    "the all-time branch must retain the current live tail",
+  );
+  assert.match(
+    source.slice(boundedBranch),
+    /FROM public\.tokentracker_leaderboard_rollup_daily_v2/u,
+    "bounded periods must retain their day-filtered rollup semantics",
+  );
+  assert.match(source, /ENABLE ROW LEVEL SECURITY/u);
+  assert.match(
+    source,
+    /REVOKE ALL ON public\.tokentracker_leaderboard_rollup_total_v2\s+FROM PUBLIC, anon, authenticated/u,
+  );
+});
+
+test("total leaderboard shards the model-granular response without changing pricing semantics", () => {
+  const migration = readMigrationBySuffix("shard-leaderboard-total-read");
+  const edgeSource = read("dashboard/edge-patches/tokentracker-leaderboard-refresh.ts");
+
+  assert.match(migration, /CREATE OR REPLACE FUNCTION public\.leaderboard_usage_grouped_total_shard/u);
+  assert.match(migration, /FROM public\.tokentracker_leaderboard_rollup_total_v2/u);
+  assert.match(migration, /FROM public\.leaderboard_hourly_dedup_v2\(v_cut, p_to\)/u);
+  assert.match(migration, /r\.user_id >= p_user_from/u);
+  assert.match(migration, /r\.user_id < p_user_to/u);
+  assert.match(migration, /GROUP BY u\.user_id, u\.source, u\.model, u\.pricing_tier/u);
+  assert.match(
+    migration,
+    /REVOKE ALL ON FUNCTION public\.leaderboard_usage_grouped_total_shard\([\s\S]*FROM PUBLIC, anon, authenticated/u,
+  );
+
+  assert.match(edgeSource, /const TOTAL_USER_SHARDS = \[/u);
+  assert.equal(
+    (edgeSource.match(/\{ from: "[0-9a-f-]+", to: (?:"[0-9a-f-]+"|null) \}/gu) ?? []).length,
+    8,
+    "total refresh must keep every model-granular response below the RPC timeout",
+  );
+  assert.match(edgeSource, /shardIndex \+= 2/u);
+  assert.match(edgeSource, /TOTAL_USER_SHARDS\.slice\(shardIndex, shardIndex \+ 2\)\.map/u);
+  assert.match(edgeSource, /"leaderboard_usage_grouped_total_shard"/u);
+  assert.match(edgeSource, /totalRows\.push\(\.\.\.result\.data\)/u);
+  assert.match(
+    edgeSource,
+    /for \(const row of grouped\)[\s\S]*agg\.estimated_cost_usd \+= computeRowCost\(row\)/u,
+    "sharded rows must still use the canonical edge pricing function",
+  );
 });
 
 test("signed-in users cannot trigger expensive month, total, or all-period leaderboard refreshes", () => {

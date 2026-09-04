@@ -112,6 +112,16 @@ async function authorizeRefresh(req: Request): Promise<RefreshAuthorization | nu
 
 type Period = "week" | "month" | "total";
 const ALL_PERIODS: Period[] = ["week", "month", "total"];
+const TOTAL_USER_SHARDS = [
+  { from: "00000000-0000-0000-0000-000000000000", to: "20000000-0000-0000-0000-000000000000" },
+  { from: "20000000-0000-0000-0000-000000000000", to: "40000000-0000-0000-0000-000000000000" },
+  { from: "40000000-0000-0000-0000-000000000000", to: "60000000-0000-0000-0000-000000000000" },
+  { from: "60000000-0000-0000-0000-000000000000", to: "80000000-0000-0000-0000-000000000000" },
+  { from: "80000000-0000-0000-0000-000000000000", to: "a0000000-0000-0000-0000-000000000000" },
+  { from: "a0000000-0000-0000-0000-000000000000", to: "c0000000-0000-0000-0000-000000000000" },
+  { from: "c0000000-0000-0000-0000-000000000000", to: "e0000000-0000-0000-0000-000000000000" },
+  { from: "e0000000-0000-0000-0000-000000000000", to: null },
+] as const;
 const RAW_BLOCKED_LEADERBOARD_USER_IDS = Deno.env.get("LEADERBOARD_BLOCKED_USER_IDS");
 /**
  * Whether the block list was configured at all. An unset secret and a
@@ -919,10 +929,42 @@ export default async function (req: Request): Promise<Response> {
     }
 
     const __t0 = Date.now();
-    const { data: groupedData, error: rpcErr } = await client.database.rpc(
-      "leaderboard_usage_grouped",
-      { p_from: rangeStart, p_to: rangeEnd },
-    );
+    let groupedData: unknown;
+    let rpcErr: { message: string } | null = null;
+    if (period === "total") {
+      // A single all-time RPC response eventually exceeded the database
+      // client's fixed 10s transport budget even after the historical scan was
+      // replaced by a compact rollup. Eight disjoint UUID ranges keep every
+      // response bounded while retaining model/pricing-tier rows for the one
+      // canonical TypeScript pricing implementation below.
+      const totalRows: unknown[] = [];
+      for (let shardIndex = 0; shardIndex < TOTAL_USER_SHARDS.length; shardIndex += 2) {
+        const shardBatch = await Promise.all(
+          TOTAL_USER_SHARDS.slice(shardIndex, shardIndex + 2).map(({ from, to }) =>
+            client.database.rpc(
+              "leaderboard_usage_grouped_total_shard",
+              { p_to: rangeEnd, p_user_from: from, p_user_to: to },
+            )
+          ),
+        );
+        const failedShard = shardBatch.find((result) => result.error);
+        if (failedShard?.error) {
+          rpcErr = failedShard.error;
+          break;
+        }
+        for (const result of shardBatch) {
+          if (Array.isArray(result.data)) totalRows.push(...result.data);
+        }
+      }
+      groupedData = rpcErr ? null : totalRows;
+    } else {
+      const result = await client.database.rpc(
+        "leaderboard_usage_grouped",
+        { p_from: rangeStart, p_to: rangeEnd },
+      );
+      groupedData = result.data;
+      rpcErr = result.error;
+    }
     const __tAfterRpc = Date.now();
     if (rpcErr) {
       logRefreshEvent({
@@ -936,7 +978,7 @@ export default async function (req: Request): Promise<Response> {
         error: rpcErr.message,
         duration_ms: Date.now() - periodStartedAt,
       });
-      return json({ error: rpcErr.message }, 500);
+      return json({ error: rpcErr.message, stage: "rpc_aggregate" }, 500);
     }
     const grouped = (Array.isArray(groupedData) ? groupedData : []) as HourlyRow[];
     const scannedRows = grouped.length; // pre-aggregated groups (not raw rows)
