@@ -1798,11 +1798,12 @@ function mergeSessionFragments(rows) {
     if (!cur.forked_from_id && row.forked_from_id) cur.forked_from_id = row.forked_from_id;
     if (!cur.agent_nickname && row.agent_nickname) cur.agent_nickname = row.agent_nickname;
     if (!cur.agent_role && row.agent_role) cur.agent_role = row.agent_role;
-    // Representative project comes from the busiest fragment (most tokens) so
-    // a tiny sidechain cannot overwrite the real working directory. Models are
-    // merged independently above; a multi-model session is represented as mixed.
+    // Legacy records (including Claude) have no per-model usage, so retain
+    // their busiest-fragment model as a display label. Codex model_usage is
+    // merged independently and overrides this representative during repricing.
     if (finite(row.total_tokens) > finite(cur._repr_tokens)) {
       cur._repr_tokens = finite(row.total_tokens);
+      if (row.model && row.model !== "unknown") cur.model = row.model;
       // Project needs its own guard: a subagent running in a git worktree has
       // that throwaway directory as its cwd, so the busiest fragment can label
       // the whole session with a temp name like "agent-a3cb8089a11d3471a" and
@@ -1824,7 +1825,11 @@ function mergeSessionFragments(rows) {
     row.duration_ms = finite(row.active_ms);
     row.first_pass = finite(row.edit_turns) === 1 && finite(row.retry_turns) === 0;
     row.one_shot = row.first_pass;
-    repriceSessionRecord(row);
+    // Only a complete per-model breakdown can reprice merged usage safely.
+    // Claude fragments may use different models: their summed cost is exact,
+    // while charging all tokens at the representative model changes that sum.
+    if (row.model_usage.length > 0) repriceSessionRecord(row);
+    else row.cost_per_edit = row.edit_turns > 0 ? finite(row.cost_usd) / row.edit_turns : null;
     merged.push(row);
   }
   return merged;

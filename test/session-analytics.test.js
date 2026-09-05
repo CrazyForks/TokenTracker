@@ -507,6 +507,42 @@ test("session browser merges same-session fragments into one resumable row", asy
   assert.equal(merged.resume_command, resumeCommandFor("claude", "shared-session"));
 });
 
+for (const largeFirst of [false, true]) {
+  test(`Claude mixed-model fragments preserve cost regardless of order (${largeFirst ? "large" : "small"} first)`, async (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-mixed-claude-fragments-"));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const fragments = [];
+    for (const [index, model, input] of [
+      [0, "claude-haiku-4-5", 100_000],
+      [1, "claude-sonnet-4-5", 1_000_000],
+    ]) {
+      const filePath = path.join(dir, `fragment-${index}.jsonl`);
+      fs.writeFileSync(filePath, `${JSON.stringify({
+        type: "assistant",
+        sessionId: "shared-mixed-session",
+        cwd: "/synthetic/repo",
+        timestamp: `2026-09-01T00:0${index}:00Z`,
+        message: {
+          id: `unique-message-${index}`,
+          model,
+          usage: { input_tokens: input, output_tokens: 0 },
+          content: [],
+        },
+      })}\n`);
+      fragments.push(await scanClaudeSession(filePath));
+    }
+    if (largeFirst) fragments.reverse();
+    const expectedCost = fragments.reduce((sum, row) => sum + row.cost_usd, 0);
+    assert.equal(expectedCost, 3.1);
+    assert.equal(summarizeSessions(fragments).summary.cost_usd, expectedCost);
+    const merged = listSessionsForBrowser(fragments).sessions[0];
+    assert.equal(merged.cost_usd, expectedCost);
+    assert.equal(merged.model, "claude-sonnet-4-5");
+    assert.equal(merged.total_tokens, 1_100_000);
+    assert.equal(merged.model_usage[0].cost_usd, expectedCost);
+  });
+}
+
 test("session browser source filter isolates codex from claude after merge", async () => {
   const claudeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-src-claude-"));
   const claudeFile = path.join(claudeDir, "session.jsonl");
