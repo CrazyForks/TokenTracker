@@ -30,6 +30,7 @@ const SOURCE_IDENTICAL_KEY_ALLOWLIST = [
   /^settings[.]menubar[.]iconStyle[.](?:clawd|bot)$/,
   /^settings[.]menubar[.]updates[.]footerCore$/,
   /^limits[.]provider[.]/,
+  /^limits[.]agentPlan[.]setupHint[.]snippet_install$/,
   /^provider[.]display[.](?:omp|deepseek_harness)$/,
   /^limits[.]label[.](?:cursor_api|zcode_glm52|zcode_glm5t|claude_opus|codex_spark_[57][hd]|gemini_(?:pro|flash|lite)|antigravity_)/,
   /^skills[.]mode[.]skillssh$/,
