@@ -162,6 +162,39 @@ final class WeeklyLimitResetDetectorTests: XCTestCase {
         )
     }
 
+    func testArkPlansDecodeAndKeepIndependentResetWindows() throws {
+        let json = """
+        {
+          "fetched_at": "2026-09-05T00:00:00Z",
+          "claude": { "configured": false },
+          "codex": { "configured": false },
+          "cursor": { "configured": false },
+          "gemini": { "configured": false },
+          "kiro": { "configured": false },
+          "antigravity": { "configured": false },
+          "codingPlan": {
+            "configured": true, "plan_label": "Lite",
+            "primary_window": { "used_percent": 10, "reset_at": "2026-09-05T05:00:00Z" }
+          },
+          "agentPlan": {
+            "configured": true, "plan_label": "Medium",
+            "primary_window": { "used_percent": 25, "reset_at": "2026-09-05T05:00:00Z" },
+            "secondary_window": { "used_percent": 40, "reset_at": "2026-09-07T00:00:00Z" },
+            "tertiary_window": { "used_percent": 60, "reset_at": "2026-10-01T00:00:00Z" }
+          }
+        }
+        """
+        let response = try JSONDecoder().decode(UsageLimitsResponse.self, from: Data(json.utf8))
+        XCTAssertEqual(response.codingPlan?.planLabel, "Lite")
+        XCTAssertEqual(response.agentPlan?.planLabel, "Medium")
+        let readings = response.limitWindowReadings()
+        XCTAssertEqual(readings.map { $0.windowKey }, [
+            "codingPlan.primary", "agentPlan.primary", "agentPlan.secondary", "agentPlan.tertiary"
+        ])
+        XCTAssertEqual(readings.map { $0.usedPercent }, [10, 25, 40, 60])
+        XCTAssertEqual(LimitResetProviderIconCatalog.svgFilename(for: "agentPlan"), "volcano-ark.svg")
+    }
+
     func testReadingsUsePlanAndBonusLabelsForQoderAndQoderCn() throws {
         // The menu-bar panel renders these windows as "Plan" / "Bonus"
         // (Strings.qoderPlanLabel / qoderBonusLabel); the reset detector must
