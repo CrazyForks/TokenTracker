@@ -627,6 +627,12 @@ function createCodexDeliverySignalCollector() {
       beginTurn(String(obj.payload?.turn_id || obj.timestamp || turns + 1), model);
       return;
     }
+    // Between two turn_context rows the attributed model only moves when a
+    // model/rerouted event fires mid-turn. recordModelUsage() bills the rest of
+    // the turn's tokens to the new model, so the turn's edits have to move with
+    // them - otherwise one turn's tokens and its edit count land on two
+    // different rows and by_model.tokens_per_edit divides across models.
+    if (currentTurnOpen && model && model !== currentTurnModel) currentTurnModel = model;
     const prompt = extractCodexPrompt(obj);
     if (prompt) {
       const fingerprint = promptFingerprint(prompt);

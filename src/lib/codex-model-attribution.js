@@ -13,6 +13,14 @@
 // in the UI - seconds to minutes before the switch takes effect - so usage
 // still streaming from the in-flight turn belongs to the previous model.
 // turn_context is the only signal that marks where a turn actually begins.
+//
+// session_meta is a defensive fallback, not an observed source. Codex has
+// never written a model into it - 0 of 10310 session_meta rows across 5849
+// local rollouts carry the field (codex-cli 0.151.0); the payload records
+// model_provider ("openai"), which is provenance rather than a model. The
+// fallback only fills selectedModel when nothing else has, so a future format
+// that does carry one attributes instead of falling through to "unknown". It
+// never overrides a turn_context model.
 
 function cleanString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -81,6 +89,16 @@ function applyCodexModelEvent(state, obj) {
     state.rerouted = false;
     state.rerouteReason = null;
     return { type: "turn_context", selectedModel };
+  }
+
+  // Strictly weaker than turn_context, and never allowed to overwrite it: a
+  // forked rollout replays the parent's session_meta rows after its own.
+  if (obj?.type === "session_meta" && obj.payload && typeof obj.payload === "object") {
+    const metaModel = cleanString(obj.payload.model);
+    if (!metaModel || state.selectedModel) return null;
+    state.selectedModel = metaModel;
+    state.effectiveModel = state.effectiveModel || metaModel;
+    return { type: "session_meta", selectedModel: metaModel };
   }
 
   const reroute = extractModelReroute(obj);

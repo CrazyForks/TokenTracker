@@ -1153,3 +1153,75 @@ test("sidecar omits reconstructible model_usage fields without losing informatio
   assert.equal(restored.edit_turns, 1);
   assert.equal(warm[0].model_usage.find((row) => row.model === "gpt-5.6-terra").edit_turns, 0);
 });
+
+test("a mid-turn reroute moves the open turn's edits onto the model that is now billed", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-session-reroute-edit-"));
+  const usage = (input, output) => ({
+    input_tokens: input,
+    cached_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+    output_tokens: output,
+    reasoning_output_tokens: 0,
+    total_tokens: input + output,
+  });
+  const filePath = path.join(dir, "rollout-2026-07-24T08-00-00-00000000-0000-4000-8000-00000000000d.jsonl");
+  fs.writeFileSync(filePath, `${[
+    { timestamp: "2026-07-24T08:00:00Z", type: "session_meta", payload: { id: "codex-reroute-edit", cwd: dir, model_provider: "openai" } },
+    { timestamp: "2026-07-24T08:00:01Z", type: "turn_context", payload: { turn_id: "turn-1", cwd: dir, model: "gpt-5.6-sol" } },
+    { timestamp: "2026-07-24T08:00:02Z", type: "response_item", payload: { type: "function_call", name: "apply_patch", arguments: "{}" } },
+    { timestamp: "2026-07-24T08:00:03Z", type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage(1000, 200), total_token_usage: usage(1000, 200) } } },
+    { timestamp: "2026-07-24T08:00:04Z", method: "model/rerouted", params: { threadId: "codex-reroute-edit", turnId: "turn-1", fromModel: "gpt-5.6-sol", toModel: "gpt-5.6-terra", reason: "capacity" } },
+    { timestamp: "2026-07-24T08:00:05Z", type: "response_item", payload: { type: "function_call", name: "apply_patch", arguments: "{}" } },
+    { timestamp: "2026-07-24T08:00:06Z", type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage(3000, 300), total_token_usage: usage(4000, 500) } } },
+    { timestamp: "2026-07-24T08:01:00Z", type: "turn_context", payload: { turn_id: "turn-2", cwd: dir, model: "gpt-5.6-sol" } },
+    { timestamp: "2026-07-24T08:01:01Z", type: "response_item", payload: { type: "function_call", name: "apply_patch", arguments: "{}" } },
+    { timestamp: "2026-07-24T08:01:02Z", type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage(500, 100), total_token_usage: usage(4500, 600) } } },
+  ].map(JSON.stringify).join("\n")}\n`);
+
+  const session = await scanCodexSession(filePath);
+  assert.equal(session.model, "mixed");
+  assert.equal(session.edit_turns, 2);
+  const byModel = Object.fromEntries(session.model_usage.map((row) => [row.model, row]));
+  assert.equal(byModel["gpt-5.6-terra"].total_tokens, 3300);
+  assert.equal(byModel["gpt-5.6-sol"].total_tokens, 1800);
+
+  // turn-1 was rerouted to terra partway through, so terra pays for the rest of
+  // that turn's tokens and owns its edit. The reroute does not leak past the
+  // turn boundary: turn-2 starts a fresh turn_context back on sol.
+  assert.equal(byModel["gpt-5.6-terra"].edit_turns, 1);
+  assert.equal(byModel["gpt-5.6-sol"].edit_turns, 1);
+
+  const summary = summarizeSessions([session]);
+  assert.equal(
+    summary.by_model.reduce((acc, row) => acc + row.edit_turns, 0),
+    summary.summary.edit_turns,
+  );
+});
+
+test("a Codex session whose only model signal is session_meta attributes rather than falling to unknown", async () => {
+  // The field has never been observed in a real rollout (0 of 10310
+  // session_meta rows across 5849 local files), so the fixture is synthetic by
+  // necessity. It guards the fallback, not the format: without it a session
+  // that named a model only in its metadata bills every token to "unknown"
+  // and renders as an unpriced session.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-session-meta-model-"));
+  const usage = {
+    input_tokens: 100,
+    cached_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+    output_tokens: 20,
+    reasoning_output_tokens: 0,
+    total_tokens: 120,
+  };
+  const filePath = path.join(dir, "rollout-2026-07-25T08-00-00-00000000-0000-4000-8000-00000000000e.jsonl");
+  fs.writeFileSync(filePath, `${[
+    { timestamp: "2026-07-25T08:00:00Z", type: "session_meta", payload: { id: "codex-meta-model", cwd: dir, model_provider: "openai", model: "gpt-5.6-sol" } },
+    { timestamp: "2026-07-25T08:00:01Z", type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage, total_token_usage: usage } } },
+  ].map(JSON.stringify).join("\n")}\n`);
+
+  const session = await scanCodexSession(filePath);
+  assert.equal(session.model, "gpt-5.6-sol");
+  assert.deepEqual(session.model_usage.map((row) => [row.model, row.total_tokens]), [["gpt-5.6-sol", 120]]);
+  assert.equal(session.model_usage[0].model_attribution, "selected");
+  assert.ok(session.cost_usd > 0, "an attributed model is priced; unknown is not");
+});
