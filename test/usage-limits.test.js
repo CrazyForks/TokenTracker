@@ -3504,6 +3504,22 @@ lang      123 me    23u  IPv4 0x124                0t0  TCP 127.0.0.1:51235 (LIS
     }
   });
 
+  it("does not retry ps on timeout or abort errors", async () => {
+    const calls = [];
+    const timeoutError = new Error("spawn /bin/ps ETIMEDOUT");
+    timeoutError.code = "ETIMEDOUT";
+
+    const commandRunner = (command, args) => {
+      calls.push({ command, args });
+      return { status: null, stdout: "", stderr: "", error: timeoutError };
+    };
+
+    const result = await detectAntigravityProcess({ commandRunner });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].command, "/bin/ps");
+    assert.equal(result.configured, false);
+  });
+
   it("parses listening ports from ss command output", () => {
     const output = [
       "State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process",
@@ -3514,6 +3530,45 @@ lang      123 me    23u  IPv4 0x124                0t0  TCP 127.0.0.1:51235 (LIS
 
     const ports = parseSsListeningPorts(output, 456);
     assert.deepEqual(ports, [32919, 35345]);
+  });
+
+  it("exercises listAntigravityPorts Linux fallback chain (procfs miss -> lsof miss -> ss hit)", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tokentracker-listports-fallback-"));
+    try {
+      const calls = [];
+      const commandRunner = (command, args) => {
+        calls.push({ command, args });
+        if (command === "which") {
+          if (args[0] === "lsof") return { status: 1, stdout: "", stderr: "" };
+          if (args[0] === "ss") return { status: 0, stdout: "/usr/bin/ss\n", stderr: "" };
+        }
+        if (command === "/usr/bin/ss" || command === "ss") {
+          return {
+            status: 0,
+            stdout: [
+              "State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process",
+              'LISTEN 0      4096       127.0.0.1:35345      0.0.0.0:*     users:(("agy",pid=456,fd=14))',
+              'LISTEN 0      4096       127.0.0.1:32919      0.0.0.0:*     users:(("agy",pid=456,fd=12))',
+            ].join("\n"),
+            stderr: "",
+          };
+        }
+        return { status: 1, stdout: "", stderr: "" };
+      };
+
+      const ports = await listAntigravityPorts(456, {
+        commandRunner,
+        platform: "linux",
+        procRoot: tmp, // procfs miss
+      });
+
+      assert.deepEqual(ports, [32919, 35345]);
+      assert.ok(calls.some((c) => c.command === "which" && c.args[0] === "lsof"));
+      assert.ok(calls.some((c) => c.command === "which" && c.args[0] === "ss"));
+      assert.ok(calls.some((c) => c.command === "/usr/bin/ss" || c.command === "ss"));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it("persists live Antigravity quota for use after the process exits", async () => {

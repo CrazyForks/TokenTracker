@@ -2171,7 +2171,10 @@ async function detectAntigravityProcess({
       timeout: timeoutMs,
       signal,
     });
-    if (result?.error && !result?.stdout) {
+    const isSpawnFailure = result?.error
+      && result.error.code !== "ETIMEDOUT"
+      && result.error.name !== "AbortError";
+    if (isSpawnFailure && !result?.stdout) {
       result = await runCommand(commandRunner, "ps", ["-ax", "-o", "pid=,command="], {
         timeout: timeoutMs,
         signal,
