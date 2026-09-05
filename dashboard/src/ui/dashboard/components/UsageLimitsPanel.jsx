@@ -645,6 +645,7 @@ function renderProviderGroup(id, data, mode, expanded, onToggle, subscription = 
         <StatusLine>{copy("limits.status.not_connected")}</StatusLine>
         {id === "opencodeGo" ? <OpenCodeGoSetupHint /> : null}
         {id === "codingPlan" ? <ArkCodingPlanSetupHint /> : null}
+        {id === "agentPlan" ? <ArkAgentPlanSetupHint /> : null}
       </>,
       expanded,
       onToggle,
@@ -674,6 +675,7 @@ function renderProviderGroup(id, data, mode, expanded, onToggle, subscription = 
           : null}
         {id === "opencodeGo" ? <OpenCodeGoSetupHint /> : null}
         {id === "codingPlan" ? <ArkCodingPlanSetupHint /> : null}
+        {id === "agentPlan" ? <ArkAgentPlanSetupHint /> : null}
       </>,
       expanded,
       onToggle,
@@ -694,13 +696,25 @@ function renderProviderGroup(id, data, mode, expanded, onToggle, subscription = 
       badge = <StatusBadge label={copy("limits.label.antigravity_live")} tone="live" tooltip={copy("limits.tooltip.antigravity_live")} />;
     }
   }
-  if ((id === "qoder" || id === "qoderCn" || id === "codingPlan") && data.cached) {
+  if ((id === "qoder" || id === "qoderCn") && data.cached) {
     badge = (
       <StatusBadge
         label={copy("limits.label.antigravity_cached")}
         age={ago(data.cached_at)}
         tone="cached"
         tooltip={copy("limits.tooltip.qoder_cached")}
+      />
+    );
+  }
+  // Ark plans are refreshed by the local arkcli binary, not by launching an
+  // app — a Qoder-specific tooltip would send users to the wrong tool.
+  if ((id === "codingPlan" || id === "agentPlan") && data.cached) {
+    badge = (
+      <StatusBadge
+        label={copy("limits.label.antigravity_cached")}
+        age={ago(data.cached_at)}
+        tone="cached"
+        tooltip={copy("limits.tooltip.ark_cached")}
       />
     );
   }
@@ -922,6 +936,69 @@ function ArkCodingPlanSetupHint() {
   );
 }
 
+function ArkAgentPlanSetupHint() {
+  const [copied, setCopied] = useState(false);
+  // Command lines stay identical across locales; only the inline comments
+  // localize. Kept as copy keys per the repo i18n convention (review 563).
+  const snippet = [
+    copy("limits.agentPlan.setupHint.snippet_install"),
+    copy("limits.agentPlan.setupHint.snippet_login"),
+    copy("limits.agentPlan.setupHint.snippet_status"),
+  ].join("\n");
+
+  const onCopy = async (e) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(snippet);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch (_e) {
+      // Clipboard can be unavailable in embedded or restricted contexts.
+    }
+  };
+
+  return (
+    <div className="mt-1.5 rounded-lg border border-oai-gray-200 dark:border-oai-gray-700/60 bg-oai-gray-50/50 dark:bg-oai-gray-900/20 p-3 text-[11px] text-oai-gray-600 dark:text-oai-gray-300">
+      <div className="text-[12px] font-semibold text-oai-gray-800 dark:text-oai-gray-100">{copy("limits.agentPlan.setupHint.title")}</div>
+      <div className="mt-0.5 leading-snug text-oai-gray-500 dark:text-oai-gray-400">{copy("limits.agentPlan.setupHint.subtitle")}</div>
+
+      <ol className="mt-2.5 space-y-2.5">
+        <HintStep n="1">
+          <div>{copy("limits.agentPlan.setupHint.step1")}</div>
+          <a
+            href="https://www.volcengine.com/docs/82379/2536875"
+            target="_blank"
+            rel="noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="mt-1 inline-flex items-center gap-1 rounded-md bg-oai-brand/10 px-2 py-1 font-medium text-oai-brand hover:bg-oai-brand/15 transition-colors"
+          >
+            {copy("limits.agentPlan.setupHint.cta")}
+            <ExternalArrow />
+          </a>
+        </HintStep>
+        <HintStep n="2">
+          <div>{copy("limits.agentPlan.setupHint.step2")}</div>
+          <div className="mt-0.5 text-oai-gray-500 dark:text-oai-gray-400">{copy("limits.agentPlan.setupHint.step2_remote")}</div>
+        </HintStep>
+        <HintStep n="3">
+          <div className="flex items-center gap-2">
+            <span>{copy("limits.agentPlan.setupHint.step3")}</span>
+            <button
+              type="button"
+              onClick={onCopy}
+              className="shrink-0 rounded-md border border-oai-gray-300 dark:border-oai-gray-700 px-2 py-0.5 text-[10.5px] text-oai-gray-700 dark:text-oai-gray-200 hover:bg-oai-gray-100 dark:hover:bg-oai-gray-800 transition-colors"
+            >
+              {copied ? copy("limits.agentPlan.setupHint.copied") : copy("limits.agentPlan.setupHint.copy")}
+            </button>
+          </div>
+          <pre className="mt-1.5 overflow-x-auto rounded-md bg-oai-gray-100 dark:bg-oai-gray-900/60 px-2 py-1.5 font-mono text-[10.5px] leading-relaxed whitespace-pre">{snippet}</pre>
+          <div className="mt-1 text-[10px] text-oai-gray-400 dark:text-oai-gray-500">{copy("limits.agentPlan.setupHint.note_app")}</div>
+        </HintStep>
+      </ol>
+    </div>
+  );
+}
+
 /**
  * Width of the widest rendered row label, so every label column matches it.
  * Mirrors the macOS popover behavior: bars stay aligned without reserving
@@ -956,8 +1033,8 @@ function useWidestLabelWidth(containerRef) {
   return labelWidth;
 }
 
-export function UsageLimitsPanel({ claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot, zcode, opencodeGo, qoder, qoderCn, codingPlan, order, visibility, displayMode, subscriptions = [], showSubscriptions = true }) {
-  const dataById = { claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot, zcode, opencodeGo, qoder, qoderCn, codingPlan };
+export function UsageLimitsPanel({ claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot, zcode, opencodeGo, qoder, qoderCn, codingPlan, agentPlan, order, visibility, displayMode, subscriptions = [], showSubscriptions = true }) {
+  const dataById = { claude, codex, cursor, gemini, kimi, kiro, grok, antigravity, copilot, zcode, opencodeGo, qoder, qoderCn, codingPlan, agentPlan };
   const containerRef = useRef(null);
   const labelWidth = useWidestLabelWidth(containerRef);
   const [expandedId, setExpandedId] = useState(null);

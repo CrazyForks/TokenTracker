@@ -32,6 +32,7 @@ const { fetchZcodeLimits } = require("./zcode-limits");
 const { fetchOpencodeGoLimits } = require("./opencode-go-limits");
 const { fetchQoderLimits, fetchQoderCnLimits } = require("./qoder-limits");
 const { fetchArkCodingPlanLimits } = require("./ark-coding-plan-limits");
+const { fetchArkAgentPlanLimits } = require("./ark-agent-plan-limits");
 const { fetchProviderServiceStatus } = require("./provider-status");
 const { readSqliteJsonRows, readSqliteJsonRowsAsync } = require("./sqlite-reader");
 const {
@@ -3619,7 +3620,7 @@ async function fetchUsageLimitsUncached({
     : null;
 
   const providerFetch = withFetchTimeout(fetchImpl, providerTimeoutMs);
-  const [claudeResult, codexResult, cursor, kimi, gemini, kiro, antigravity, copilot, grok, zcode, opencodeGoRaw, qoder, qoderCn, codingPlan, claudeServiceStatus] = await Promise.all([
+  const [claudeResult, codexResult, cursor, kimi, gemini, kiro, antigravity, copilot, grok, zcode, opencodeGoRaw, qoder, qoderCn, codingPlan, agentPlan, claudeServiceStatus] = await Promise.all([
     claudeToken && !freshClaudeCache && !claudeRetryAtMs
       ? withProviderTimeout(fetchClaudeUsageLimits(claudeToken, { fetchImpl: providerFetch, maxAttempts: 1 }), "Claude", providerTimeoutMs).then(
           (value) => ({ status: "fulfilled", value }),
@@ -3692,10 +3693,10 @@ async function fetchUsageLimitsUncached({
       "Qoder CN",
       providerTimeoutMs,
     ).catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
-    // Ark Coding Plan (火山方舟): subscription quota via the user's own
-    // arkcli binary. No token-consumption source — consumption for the
-    // compatible CLIs is already counted from their local files; this only
-    // surfaces the 5h/week/month quota percentages.
+    // Ark Coding Plan / Agent Plan (火山方舟): two parallel subscription
+    // products sharing the same arkcli binary. No token-consumption source —
+    // consumption for the compatible CLIs is already counted from their
+    // local files; these only surface the 5h/week/month quota percentages.
     withAbortableProviderTimeout(
       (signal) => fetchArkCodingPlanLimits({
         commandRunner,
@@ -3706,6 +3707,18 @@ async function fetchUsageLimitsUncached({
         providerTimeoutMs,
       }),
       "Ark Coding Plan",
+      providerTimeoutMs,
+    ).catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
+    withAbortableProviderTimeout(
+      (signal) => fetchArkAgentPlanLimits({
+        commandRunner,
+        home,
+        nowMs,
+        platform,
+        signal,
+        providerTimeoutMs,
+      }),
+      "Ark Agent Plan",
       providerTimeoutMs,
     ).catch((reason) => ({ configured: true, error: reason?.message || "Unknown error" })),
     // Public status-page probe (fail-soft, own 5-min cache in provider-status.js).
@@ -3904,6 +3917,7 @@ async function fetchUsageLimitsUncached({
     qoder: withPlanLabel(qoder, qoder?.plan_label, "Qoder"),
     qoderCn: withPlanLabel(qoderCn, qoderCn?.plan_label, "Qoder CN"),
     codingPlan: withPlanLabel(codingPlan, codingPlan?.plan_label, "Ark Coding Plan"),
+    agentPlan: withPlanLabel(agentPlan, agentPlan?.plan_label, "Ark Agent Plan"),
   };
 
   for (const [providerName, provider] of Object.entries(data)) {
