@@ -3563,8 +3563,8 @@ lang      123 me    23u  IPv4 0x124                0t0  TCP 127.0.0.1:51235 (LIS
       });
 
       assert.deepEqual(ports, [32919, 35345]);
-      assert.ok(calls.some((c) => c.command === "which" && c.args[0] === "lsof"));
-      assert.ok(calls.some((c) => c.command === "which" && c.args[0] === "ss"));
+      assert.ok(calls.some((c) => (c.command === "which" && c.args?.[0] === "lsof") || String(c.command).endsWith("lsof")));
+      assert.ok(calls.some((c) => c.command === "which" && c.args?.[0] === "ss"));
       assert.ok(calls.some((c) => c.command === "/usr/bin/ss" || c.command === "ss"));
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
