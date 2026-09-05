@@ -50,6 +50,7 @@ vi.mock("../lib/copy", () => ({
 
 vi.mock("../lib/native-bridge", () => ({
   isNativeApp: () => true,
+  isNativeWindowsApp: () => false,
   isBridgeAvailable: () => nativeSettingsMock.available,
 }));
 

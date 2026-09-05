@@ -18,6 +18,7 @@ import { useNativeSettings } from "../hooks/use-native-settings.js";
 import { useProxySettings } from "../hooks/use-proxy-settings.js";
 import { cn } from "../lib/cn";
 import { copy } from "../lib/copy";
+import { isNativeWindowsApp } from "../lib/native-bridge.js";
 
 const SETTINGS_SECTION_IDS = {
   APPEARANCE: "appearance",
@@ -58,7 +59,8 @@ export function SettingsPage() {
   const { available: proxySettingsAvailable } = proxySettings;
   const toastOnReset = nativeSettings?.toastOnReset !== false;
   const confettiOnReset = nativeSettings?.confettiOnReset !== false;
-  const windowsNativeSettings = nativeSettings?.platform === "windows";
+  const windowsNativeSettings =
+    isNativeWindowsApp() || nativeSettings?.platform === "windows";
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const requestedSection = searchParams.get("section");

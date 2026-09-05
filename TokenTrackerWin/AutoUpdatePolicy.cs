@@ -19,9 +19,21 @@ internal static class AutoUpdatePolicy
 
     public static bool IsEnabled() => ResolveEnabled(ReadSettings());
 
-    /// <summary>Resolve a persisted settings object, defaulting to enabled.</summary>
-    internal static bool ResolveEnabled(JsonObject? settings) =>
-        settings?[EnabledKey]?.GetValue<bool>() ?? true;
+    /// <summary>
+    /// Resolve a persisted settings object, defaulting to enabled. A valid
+    /// boolean <c>false</c> must survive; only a missing or malformed value
+    /// (e.g. persisted as a string by an older build) falls back to enabled.
+    /// </summary>
+    internal static bool ResolveEnabled(JsonObject? settings)
+    {
+        if (settings?[EnabledKey] is JsonValue value
+            && value.TryGetValue<bool>(out var enabled))
+        {
+            return enabled;
+        }
+
+        return true;
+    }
 
     public static void SetEnabled(bool enabled)
     {
