@@ -28,6 +28,10 @@ actor APIClient {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 10
         config.timeoutIntervalForResource = 30
+        // Local API responses are live state. A future system clock can otherwise
+        // leave URLCache entries "fresh" after the clock is restored.
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        config.urlCache = nil
         self.session = URLSession(configuration: config)
 
         let syncConfig = URLSessionConfiguration.default
