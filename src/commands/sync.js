@@ -1357,9 +1357,11 @@ async function cmdSync(argv, context = {}) {
       }
     }
 
-    // Qoder CN new (JSONL) — currently shares ~/.qoder/projects with international;
-    // keep distinct parsing only when CN projects dir diverges (future CN split)
-    // to avoid double-counting the same JSONL under two sources.
+    // Qoder CN new (JSONL) — the new CN app (com.qodercn.app.stable) writes
+    // ~/.qoder-cn/projects, a sibling of the international ~/.qoder/projects.
+    // Keep the divergence guard: if a user (or a future app build) points both
+    // resolvers at the same directory, the same JSONL files must not count
+    // under two sources.
     if (sourceAllowed("qoder-cn")) {
       try {
         const cnProjectsDir = resolveQoderCnProjectsDir({ home, env: process.env });

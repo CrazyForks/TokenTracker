@@ -531,10 +531,10 @@ async function cmdStatus(argv = []) {
     platform: process.platform,
   });
   const qoderCnActive = formatResolvedPaths(qoderCnPaths);
-  // CN new-JSONL mirrors sync.js: CN and international currently share
-  // ~/.qoder/projects, and sync only parses the CN dir when it diverges from
-  // the international one (same files must not count under two sources). Only
-  // report CN JSONL when the dirs diverge.
+  // CN new-JSONL mirrors sync.js: the new CN app writes ~/.qoder-cn/projects,
+  // but sync only parses the CN dir when it diverges from the international
+  // one (same files must not count under two sources). Only report CN JSONL
+  // when the dirs diverge.
   const qoderCnProjectsDirResolved = resolveQoderCnProjectsDir({ home, env: process.env });
   const qoderCnSharesIntlDir = path.normalize(qoderCnProjectsDirResolved) === path.normalize(qoderProjectsDirResolved)
     || (process.platform === "win32"

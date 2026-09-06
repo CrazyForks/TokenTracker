@@ -5841,17 +5841,21 @@ function resolveQoderCnProjectsDir({ home = os.homedir(), env = process.env, pla
     ? path.resolve(env.QODER_CN_PROJECTS_DIR.trim())
     : null;
   if (override) return override;
-  // CN and international currently share ~/.qoder; keep a distinct override for
-  // future split without double-counting by default.
+  // The new CN app (com.qodercn.app.stable, 2026-08+) keeps its sessions in
+  // ~/.qoder-cn/projects — a sibling of the international ~/.qoder, not a
+  // shared directory. Pointing CN at ~/.qoder/projects made the "CN dir
+  // diverges from international" guards in sync.js/status.js always false,
+  // so new-version CN JSONL usage was silently never parsed (and on
+  // international-only installs would have double-counted under qoder-cn).
   if (platform === "win32" && !env.QODER_CN_PROJECTS_DIR) {
     const discoverWslHome = deps.discoverWslHome || wsl.discoverWslHome;
-    const wslRoot = wsl.shouldProbeWsl(env) ? discoverWslHome(".qoder", { ...deps, env }) : null;
+    const wslRoot = wsl.shouldProbeWsl(env) ? discoverWslHome(".qoder-cn", { ...deps, env }) : null;
     if (wslRoot) {
       const wslProjects = path.join(wslRoot, "projects");
       if ((deps.existsSync || fssync.existsSync)(wslProjects)) return wslProjects;
     }
   }
-  return path.join(home, ".qoder", "projects");
+  return path.join(home, ".qoder-cn", "projects");
 }
 
 async function listQoderNewSessionFiles(projectsDir) {
@@ -5876,7 +5880,15 @@ async function listQoderNewSessionFiles(projectsDir) {
 function qoderNewModelFromRecord(record) {
   const msgModel = record?.message?.model;
   const direct = typeof msgModel === "string" ? msgModel.trim() : "";
-  return normalizeModelInput(direct) || "qoder-agent";
+  // CN BYOK routes embed an install-local provider UUID in the model id
+  // ("qoder-custom-<uuid>/glm-5.3-flash"). Keep the bare model id so bucket
+  // keys stay stable across reinstalls and don't fragment per user; official
+  // ids (e.g. "qmodel_38max") have no prefix and pass through unchanged.
+  const stripped = direct.replace(
+    /^qoder-custom-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\//i,
+    "",
+  );
+  return normalizeModelInput(stripped) || "qoder-agent";
 }
 
 function qoderNewMessageKey(record, filePath, lineIndex = 0) {
