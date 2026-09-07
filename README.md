@@ -415,6 +415,8 @@ Requires **Xcode 16+** and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
 
 ## 🔧 Troubleshooting
 
+**ZCode totals decreased after v0.96.0?** This release corrects historical cache/reasoning double counting, including previously uploaded months. See the [ZCode history correction](docs/zcode-history-correction.md) for the accounting change and local backup details.
+
 ### CLI
 
 <details>
