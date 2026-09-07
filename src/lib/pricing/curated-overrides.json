@@ -47,6 +47,13 @@
       "cache_write": 1.25,
       "note": "Canonical undated alias emitted by Cursor. Pin to the same rates as claude-haiku-4-5-20251001 so local cost does not depend on which dated LiteLLM aliases are present in the current cache."
     },
+    "gpt-6-astra": {
+      "input": 10,
+      "output": 50,
+      "cache_read": 1,
+      "cache_write": 12.5,
+      "note": "Official Standard USD/MTok rates verified 2026-09-07: https://developers.openai.com/api/docs/models/gpt-6-astra. Requests above 272K input tokens use 2x input/cache and 1.5x output rates; computeRowCost applies this only to observed long-context request subsets. Cloud aggregates use Standard short-context estimates because they do not retain per-request context or service tier. Reasoning-effort suffixes use the same base rates."
+    },
     "gpt-5.6-sol": {
       "input": 4,
       "output": 20,
@@ -414,6 +421,10 @@
     "auto": "composer-1"
   },
   "fuzzy": [
+    {
+      "match": "gpt-6-astra",
+      "ref": "gpt-6-astra"
+    },
     {
       "match": "gpt-5.6-sol",
       "ref": "gpt-5.6-sol"

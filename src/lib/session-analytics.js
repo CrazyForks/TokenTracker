@@ -190,8 +190,8 @@ function normalizeModelUsageRows(rows) {
 // selected_models re-seeds from `model`, model_attribution is derived from
 // rerouted_usage_events, and cost_usd is always recomputed by
 // repriceSessionRecord(). Worth ~19% of the file on a 6.8k-session history,
-// most of it the long_context_* counters that stay at zero (see
-// OPENAI_LONG_CONTEXT_INPUT_THRESHOLD in src/lib/pricing/index.js).
+// most of it the long_context_* counters for sessions with no requests over
+// OPENAI_LONG_CONTEXT_INPUT_THRESHOLD in src/lib/pricing/index.js.
 function serializeModelUsageRow(row) {
   const out = { model: row.model };
   for (const field of MODEL_USAGE_SUM_FIELDS) {

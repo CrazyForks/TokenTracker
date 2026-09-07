@@ -25,10 +25,9 @@ const PI_SUBSCRIPTION_SOURCES = new Set([
 // server (including LM Link). Secure Cloud usage has a separate billing path
 // and is not present in these logs.
 const LOCAL_INFERENCE_SOURCES = new Set(["lmstudio"]);
-// Forward-looking: unreachable for Codex today. Every observed token_count
-// reports model_context_window = 258400, below this threshold, so no request
-// can exceed it (max raw input seen locally: 238853). The long-context
-// repricing stays in place for when OpenAI ships a larger Codex window.
+// OpenAI long-context pricing depends on a single request's raw input,
+// including cached tokens, never a session/day aggregate. Astra supports
+// a larger context window; only observed request subsets receive the premium.
 const OPENAI_LONG_CONTEXT_INPUT_THRESHOLD = 272_000;
 const SOURCES_WITH_AUTHORITATIVE_COST = new Set(["grok"]);
 const SEED_SNAPSHOT_PATH = path.resolve(__dirname, "seed-snapshot.json");
@@ -207,9 +206,9 @@ function computeRowCost(row) {
   );
 
   const model = String(row?.model || "").toLowerCase();
-  const usesGpt56SolLongContextTier =
-    model === "gpt-5.6" || model.includes("gpt-5.6-sol");
-  if (!usesGpt56SolLongContextTier) return baseCost;
+  const usesOpenAILongContextTier =
+    model === "gpt-5.6" || model.includes("gpt-5.6-sol") || model.includes("gpt-6-astra");
+  if (!usesOpenAILongContextTier) return baseCost;
 
   const bounded = (value, total) => Math.min(
     Math.max(0, Number(value) || 0),
