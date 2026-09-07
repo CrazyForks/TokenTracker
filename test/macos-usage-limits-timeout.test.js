@@ -64,7 +64,7 @@ test("macOS local API session bypasses URLCache after a system clock rollback", 
 
   assert.match(
     source,
-    /let config = URLSessionConfiguration\.default[\s\S]*config\.requestCachePolicy = \.reloadIgnoringLocalCacheData[\s\S]*config\.urlCache = nil[\s\S]*self\.session = URLSession\(configuration: config\)/,
-    "Dynamic localhost responses must not be replayed from a future-dated URLCache entry.",
+    /self\.session = URLSession\(configuration: LocalAPIConfiguration\.makeSessionConfiguration\(\)\)/,
+    "The API client must use the configuration covered by the native runtime test.",
   );
 });

@@ -5,6 +5,17 @@ namespace TokenTrackerWin;
 
 public sealed class AutoUpdatePolicyTests
 {
+    [Theory]
+    [InlineData("false", false)]
+    [InlineData("true", true)]
+    [InlineData("\"false\"", true)]
+    [InlineData("null", true)]
+    public void DeserializedPreferencePreservesValidBooleans(string jsonValue, bool expected)
+    {
+        var settings = JsonNode.Parse("{\"" + AutoUpdatePolicy.EnabledKey + "\":" + jsonValue + "}")!.AsObject();
+        Assert.Equal(expected, AutoUpdatePolicy.ResolveEnabled(settings));
+    }
+
     [Fact]
     public void MissingPreferenceKeepsAutomaticUpdatesEnabled()
     {

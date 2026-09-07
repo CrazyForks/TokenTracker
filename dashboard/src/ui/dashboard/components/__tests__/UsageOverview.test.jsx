@@ -411,12 +411,12 @@ describe("UsageOverview", () => {
         summaryLabel="Total"
         summaryValue="123"
         fleetData={[]}
-        from="2026-09-01"
-        to="2026-09-07"
+        from="2026-09-07"
+        to="2026-09-13"
       />,
     );
 
-    expect(screen.getByText("Sep 1 — Sep 7")).toBeTruthy();
+    expect(screen.getByText("Sep 7 — Sep 13")).toBeTruthy();
     expect(screen.queryByText(copy("usage.overview.week_cross_month_hint"))).toBeNull();
   });
 });

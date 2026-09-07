@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsPage } from "./SettingsPage.jsx";
 
 const nativeSettingsMock = vi.hoisted(() => ({
+  windows: false,
   available: true,
   settings: {
     toastOnReset: true,
@@ -50,7 +51,7 @@ vi.mock("../lib/copy", () => ({
 
 vi.mock("../lib/native-bridge", () => ({
   isNativeApp: () => true,
-  isNativeWindowsApp: () => false,
+  isNativeWindowsApp: () => nativeSettingsMock.windows,
   isBridgeAvailable: () => nativeSettingsMock.available,
 }));
 
@@ -140,6 +141,7 @@ function renderSettings(initialPath = "/settings") {
 
 describe("SettingsPage category navigation", () => {
   beforeEach(() => {
+    nativeSettingsMock.windows = false;
     nativeSettingsMock.available = true;
     nativeSettingsMock.settings = {
       toastOnReset: true,
@@ -147,6 +149,19 @@ describe("SettingsPage category navigation", () => {
     };
     nativeSettingsMock.setSetting.mockReset();
     proxySettingsMock.available = false;
+  });
+
+  it("hides macOS reset controls on Windows before native settings arrive", () => {
+    nativeSettingsMock.windows = true;
+    nativeSettingsMock.settings = null;
+    const view = renderSettings("/settings?section=limits");
+    expect(screen.queryByRole("switch", { name: "Toast on limits reset" })).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Confetti on limits reset" })).toBeNull();
+
+    nativeSettingsMock.settings = { platform: "windows" };
+    view.rerender(<MemoryRouter initialEntries={["/settings?section=limits"]}><SettingsPage /></MemoryRouter>);
+    expect(screen.queryByRole("switch", { name: "Toast on limits reset" })).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Confetti on limits reset" })).toBeNull();
   });
 
   it("switches the visible category while keeping every section mounted", async () => {
