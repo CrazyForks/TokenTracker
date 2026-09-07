@@ -58,3 +58,13 @@ test("macOS usage-limits hydrates the last good record before refreshing", () =>
     "A successful background refresh should persist the replacement record.",
   );
 });
+
+test("macOS local API session bypasses URLCache after a system clock rollback", () => {
+  const source = readAPIClient();
+
+  assert.match(
+    source,
+    /self\.session = URLSession\(configuration: LocalAPIConfiguration\.makeSessionConfiguration\(\)\)/,
+    "The API client must use the configuration covered by the native runtime test.",
+  );
+});

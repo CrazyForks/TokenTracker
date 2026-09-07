@@ -25,10 +25,7 @@ actor APIClient {
     private(set) var latestAccountSummaryReadCompletedAt: Date?
 
     private init() {
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 10
-        config.timeoutIntervalForResource = 30
-        self.session = URLSession(configuration: config)
+        self.session = URLSession(configuration: LocalAPIConfiguration.makeSessionConfiguration())
 
         let syncConfig = URLSessionConfiguration.default
         syncConfig.timeoutIntervalForRequest = Self.localSyncResourceTimeout

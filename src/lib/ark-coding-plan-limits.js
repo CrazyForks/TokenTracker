@@ -25,7 +25,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { runCommand, resolveBinaryPath, statBinaryInDirs, commonGlobalBinDirectories } = require("./command-runner");
+const { runCommand, resolveBinaryPath, statBinaryInDirs, commonGlobalBinDirectories, resolvedCliEnvironment } = require("./command-runner");
 
 const ARK_LIMITS_CACHE_FILE = "ark-coding-plan-limits-cache.json";
 const ARK_LIMITS_CACHE_UNKNOWN_RESET_TTL_MS = 12 * 60 * 60 * 1000;
@@ -382,6 +382,7 @@ async function fetchArkCodingPlanLimits({
   if (!arkcliPath) return { configured: false };
 
   const commandOptions = {
+    env: resolvedCliEnvironment(arkcliPath, { platform }),
     signal,
     killProcessGroup: true,
     platform,
@@ -446,16 +447,13 @@ async function fetchArkCodingPlanLimits({
       || (result?.status !== 0 && result?.status !== null
         ? `arkcli exited with code ${result.status}`
         : "arkcli usage plan failed");
-    // 127 is the classic "command not found" — on a machine with arkcli
-    // installed it almost always means the installed arkcli is too old to
-    // support `usage plan --format json` or the binary shim is broken.
-    // Surface an actionable hint while still honoring the disk-cache fallback.
+    // Exit 127 can mean a missing interpreter as well as an outdated CLI.
+    // Preserve stderr so users can distinguish runtime and command failures.
     const detail = isExit127
-      ? "arkcli exited with code 127 — please update arkcli: npm i -g @volcengine/ark-cli"
+      ? "arkcli exited with code 127 — check its runtime/PATH or update arkcli: npm i -g @volcengine/ark-cli"
       : baseDetail;
     const stderr = trimStderr(result?.stderr);
-    // Avoid duplicating the stale 127 hint when stderr already contains it.
-    const message = stderr && !isExit127 ? `${detail}: ${stderr}` : detail;
+    const message = stderr ? `${detail}: ${stderr}` : detail;
     return failWithCache(message);
   }
 

@@ -214,7 +214,7 @@ brew install xiufengsun/tokentracker/tokentracker
 >
 > 任何时候都可以用 `tokentracker status` 查看每个集成的状态。如果显示 `skipped`，`detail` 列会解释原因（例如某工具 CLI 不在 `PATH` 上、config 不可读等）。
 >
-> 更深入的资料：[OpenClaw 集成与排障](docs/openclaw-integration.md)。
+> 更深入的资料：[OpenClaw 集成与排障](docs/openclaw-integration.md)。升级 v0.96.0 后 ZCode 历史总量下降，请参阅 [ZCode 历史计数修正说明](docs/zcode-history-correction.md)，了解缓存/推理重复计数修正及本地备份。
 
 工具没在列表里？[提个 Issue](https://github.com/xiufengsun/TokenTracker/issues/new) —— 加一个新 provider 通常只是加一个 parser 文件的事。
 

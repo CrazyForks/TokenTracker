@@ -4,6 +4,15 @@ import XCTest
 /// `hasAnyProviderWithoutError` predicate and the `displayRecord` retention
 /// rule used by DashboardViewModel after a successful limits fetch.
 final class UsageLimitsRetentionTests: XCTestCase {
+    func testLocalAPISessionDisablesResponseCaching() {
+        let session = URLSession(configuration: LocalAPIConfiguration.makeSessionConfiguration())
+        defer { session.invalidateAndCancel() }
+        XCTAssertEqual(session.configuration.requestCachePolicy, .reloadIgnoringLocalCacheData)
+        XCTAssertNil(session.configuration.urlCache)
+        XCTAssertEqual(session.configuration.timeoutIntervalForRequest, 10)
+        XCTAssertEqual(session.configuration.timeoutIntervalForResource, 30)
+    }
+
     func testLastGoodCacheRoundTripsAcrossAppRestarts() throws {
         let suiteName = "UsageLimitsRetentionTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -29,6 +38,22 @@ final class UsageLimitsRetentionTests: XCTestCase {
         XCTAssertNil(UsageLimitsCache.load(defaults: defaults))
     }
 
+    func testFutureDatedLastGoodCacheIsIgnoredAfterClockRollback() throws {
+        let suiteName = "UsageLimitsRetentionTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let futureResponse = try decodeResponse(overrides: [
+            "fetched_at": "2026-11-01T00:59:36.105Z",
+            "codex": ["configured": true],
+        ])
+        let now = try XCTUnwrap(
+            ISO8601DateFormatter().date(from: "2026-09-07T00:00:00Z")
+        )
+
+        UsageLimitsCache.save(futureResponse, defaults: defaults)
+
+        XCTAssertNil(UsageLimitsCache.load(defaults: defaults, now: now))
+    }
 
     // MARK: - hasAnyProviderWithoutError
 

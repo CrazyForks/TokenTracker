@@ -25,7 +25,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { runCommand, resolveBinaryPath, statBinaryInDirs, commonGlobalBinDirectories } = require("./command-runner");
+const { runCommand, resolveBinaryPath, statBinaryInDirs, commonGlobalBinDirectories, resolvedCliEnvironment } = require("./command-runner");
 
 const ARK_LIMITS_CACHE_FILE = "ark-agent-plan-limits-cache.json";
 const ARK_LIMITS_CACHE_UNKNOWN_RESET_TTL_MS = 12 * 60 * 60 * 1000;
@@ -315,6 +315,7 @@ async function fetchArkAgentPlanLimits({
   if (!arkcliPath) return { configured: false };
 
   const commandOptions = {
+    env: resolvedCliEnvironment(arkcliPath, { platform }),
     signal,
     killProcessGroup: true,
     platform,
@@ -362,10 +363,10 @@ async function fetchArkAgentPlanLimits({
         ? `arkcli exited with code ${result.status}`
         : "arkcli usage plan failed");
     const detail = isExit127
-      ? "arkcli exited with code 127 — please update arkcli: npm i -g @volcengine/ark-cli"
+      ? "arkcli exited with code 127 — check its runtime/PATH or update arkcli: npm i -g @volcengine/ark-cli"
       : baseDetail;
     const stderr = trimStderr(result?.stderr);
-    const message = stderr && !isExit127 ? `${detail}: ${stderr}` : detail;
+    const message = stderr ? `${detail}: ${stderr}` : detail;
     return failWithCache(message);
   }
 
