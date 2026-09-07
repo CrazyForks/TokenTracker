@@ -39,6 +39,8 @@ internal sealed class ServerManager : IDisposable
 
     private Process? _serverProcess;
     private Process? _syncProcess;
+    private CancellationTokenSource? _backgroundSyncCts;
+    private bool _syncInFlight;
     private readonly object _syncLock = new();
     private readonly SemaphoreSlim _serverGate = new(1, 1);
     private readonly object _restartLock = new();
@@ -59,6 +61,14 @@ internal sealed class ServerManager : IDisposable
     // app then thinks startup failed even though the server is up. UseProxy=false = direct.
     private static readonly HttpClient Http =
         new(new HttpClientHandler { UseProxy = false }) { Timeout = TimeSpan.FromSeconds(3) };
+
+    // The local API owns its configured network timeouts (which may be
+    // unbounded) and its 120s sync-child timeout. Do not impose a finite
+    // native timeout that could release the single-flight slot while the
+    // server is still publishing; shutdown cancels this request and kills the
+    // server/child process instead.
+    private static readonly HttpClient LocalSyncHttp =
+        new(new HttpClientHandler { UseProxy = false }) { Timeout = Timeout.InfiniteTimeSpan };
 
     /// <summary>Raised on the thread-pool when the running state flips. UI must marshal to the UI thread.</summary>
     public event Action<ServerStatus>? StatusChanged;
@@ -183,16 +193,28 @@ internal sealed class ServerManager : IDisposable
     /// <summary>Run a one-shot `tracker sync` against the resolved runtime.</summary>
     public void TriggerSync()
     {
-        StartSync(auto: false);
+        StartDirectSync();
     }
 
     /// <summary>Run a quiet, non-overlapping background sync for live tray totals.</summary>
     public void TriggerBackgroundSync()
     {
-        StartSync(auto: true);
+        CancellationTokenSource cts;
+        lock (_syncLock)
+        {
+            if (_stopping || Status != ServerStatus.Running || _syncInFlight) return;
+
+            cts = new CancellationTokenSource();
+            _backgroundSyncCts = cts;
+            _syncInFlight = true;
+            RaiseSyncStarted();
+        }
+
+        // Keep the timer/UI thread free while the local API runs the sync child.
+        _ = RunBackgroundSyncAsync(cts);
     }
 
-    private bool StartSync(bool auto)
+    private bool StartDirectSync()
     {
         var runtime = FindEmbeddedServer() ?? FindDevServer() ?? FindRepoDevServer();
         if (runtime is null) return false;
@@ -204,20 +226,23 @@ internal sealed class ServerManager : IDisposable
             // critical section and leave a stale sync slot behind.  Treat a
             // disposed/exited instance as idle and clear it before starting the
             // replacement.
+            if (_stopping || _backgroundSyncCts is not null) return false;
             if (_syncProcess is { } existing)
             {
                 if (IsProcessAlive(existing)) return false;
                 _syncProcess = null;
+                _syncInFlight = false;
                 try { existing.Dispose(); } catch { }
             }
+            if (_syncInFlight) return false;
 
-            var args = auto
-                ? new[] { "sync", "--auto", "--background" }
-                : new[] { "sync" };
+            var args = new[] { "sync" };
             var proc = StartTrackerProcess(
-                runtime.Value.NodePath, runtime.Value.EntryPath, auto, args);
+                runtime.Value.NodePath, runtime.Value.EntryPath,
+                false, args);
             if (proc is null) return false;
 
+            _syncInFlight = true;
             _syncProcess = proc;
             // Attach the handler before enabling events.  A short-lived sync can
             // exit between Process.Start and EnableRaisingEvents; subscribing
@@ -232,7 +257,11 @@ internal sealed class ServerManager : IDisposable
             {
                 // If event registration itself fails, do not leave the process
                 // occupying the single-flight slot or leak the child.
-                if (ReferenceEquals(_syncProcess, proc)) _syncProcess = null;
+                if (ReferenceEquals(_syncProcess, proc))
+                {
+                    _syncProcess = null;
+                    _syncInFlight = false;
+                }
                 try { proc.Kill(entireProcessTree: true); } catch { }
                 try { proc.Dispose(); } catch { }
                 return false;
@@ -251,13 +280,47 @@ internal sealed class ServerManager : IDisposable
         lock (_syncLock)
         {
             wasCurrent = ReferenceEquals(_syncProcess, process);
-            if (wasCurrent) _syncProcess = null;
+            if (wasCurrent)
+            {
+                _syncProcess = null;
+                _syncInFlight = false;
+            }
         }
         try { process.Dispose(); } catch { }
         // EnableRaisingEvents may report an already-exited process immediately,
         // and a defensive manual cleanup can race that callback.  Only the
         // callback that owns the slot emits one completion notification.
         if (wasCurrent) RaiseSyncCompleted();
+    }
+
+    private async Task RunBackgroundSyncAsync(CancellationTokenSource cts)
+    {
+        try
+        {
+            await new LocalSyncPublisher(LocalSyncHttp, BaseUrl).PublishAsync(cts.Token);
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            Log("background sync cancelled");
+        }
+        catch (Exception ex)
+        {
+            // Never include the local-auth response/header in diagnostics.
+            Log($"background sync failed ({ex.GetType().Name})");
+        }
+        finally
+        {
+            lock (_syncLock)
+            {
+                if (ReferenceEquals(_backgroundSyncCts, cts))
+                {
+                    _backgroundSyncCts = null;
+                    _syncInFlight = false;
+                }
+            }
+            cts.Dispose();
+            RaiseSyncCompleted();
+        }
     }
 
     public void StopServer()
@@ -270,6 +333,7 @@ internal sealed class ServerManager : IDisposable
             if (_syncProcess is { } sync)
             {
                 _syncProcess = null;
+                _syncInFlight = false;
                 try
                 {
                     if (IsProcessAlive(sync)) sync.Kill(entireProcessTree: true);
@@ -288,6 +352,12 @@ internal sealed class ServerManager : IDisposable
         Interlocked.Increment(ref _healthGeneration);
         var healthCts = Interlocked.Exchange(ref _healthCts, null);
         try { healthCts?.Cancel(); } catch { }
+
+        // Cancel publication when its owning server is stopped or replaced.
+        lock (_syncLock)
+        {
+            _backgroundSyncCts?.Cancel();
+        }
 
         var process = Interlocked.Exchange(ref _serverProcess, null);
         if (process is null) return;
